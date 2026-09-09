@@ -1,5 +1,7 @@
 # Task Board
 
+### 🔗 Live application: [https://app-board.pages.dev](https://app-board.pages.dev)
+
 Multi-tenant SaaS platform for project management, task tracking, and team collaboration.
 
 ## Tech Stack
