@@ -136,9 +136,9 @@ checklist:
 
 ## 7. Design review (main-agent review of captured screenshots)
 
-Reviewed: P07, P08, P10, P11 (light+dark), P12, P13, P14, P18 desktop captures in [`screenshots/`](screenshots/).
-Overall verdict: clean, consistent Helm-based visual language; spacing/alignment rhythm is good; dark theme legible. The
-issues below are functional-visual and should be fixed before polish passes.
+Reviewed: P07, P08, P10, P11 (light+dark), P12, P13, P14, and P18 desktop captures in the captured `screenshots/`
+directory. Overall verdict: clean, consistent Helm-based visual language; spacing/alignment rhythm is good; dark theme
+legible. The issues below are functional-visual and should be fixed before polish passes.
 
 | ID   | Sev   | Page(s)         | Finding                                                                                                                                                                                                                                                                                                       |
 | ---- | ----- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -300,8 +300,8 @@ user record was deleted during the S-F user-deletion step. Test data left in pla
 ### V3 execution notes (2026-08-26) — Screenshot capture
 
 Executor used Playwright MCP against UI `http://localhost:4200` / server `http://localhost:8787`, logged in as owner
-`v2owner@t.local`. Screenshots saved to [`product-analysis/screenshots/`](screenshots/) (89 files, full-page).
-Viewports: Desktop 1440×900, Tablet 768×1024, Mobile 390×844.
+`v2owner@t.local`. Screenshots were saved under `product-analysis/screenshots/` (89 files, full-page). Viewports:
+Desktop 1440×900, Tablet 768×1024, Mobile 390×844.
 
 Seed data added for realistic renders (API): renamed leftover "hacked" task to a real title; created tasks V2P-4…V2P-8
 across REOPENED/IN_REVIEW/DONE/IN_PROGRESS; labels `ux` + `v2label` attached to V2P-3/V2P-4; one comment on V2P-3;

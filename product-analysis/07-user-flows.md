@@ -48,7 +48,7 @@ Error path: checkout step cannot fail permanently (mock); a retry affordance is 
 ## 4. Mock checkout
 
 Covered in flow 3 (steps C–E). Constraint: billing boundary isolated; replacing mock with a real provider must not touch
-domain code ([user-flows §3.1](../business_analysis/project-management-user-flows.md)).
+domain code (user-flows §3.1).
 
 ## 5. First Project creation
 
@@ -86,7 +86,7 @@ flowchart TD
     F --> G[Audit event records resolution]
 ```
 
-Never silently overwrite ([user-flows §11](../business_analysis/project-management-user-flows.md)).
+Never silently overwrite (user-flows §11).
 
 ## 8. Task commenting
 

@@ -27,8 +27,7 @@ This mirrors the requirements doc §3 and matches the dominant industry hierarch
 
 - **Tenant switcher** (if >1 accessible Tenant) — switching clears Project context, keeps session.
 - **User menu** — profile, display name, logout.
-- Context breadcrumb: `Tenant → Project → Feature` so current scope is always obvious
-  ([user-flows doc §7](../business_analysis/project-management-user-flows.md)).
+- Context breadcrumb: `Tenant → Project → Feature` so current scope is always obvious (user-flows doc §7).
 
 ### 2.2 Tenant-level navigation
 
@@ -69,8 +68,7 @@ Why this split:
   afterwards.
 - **Settings** groups configuration that only admins touch; hiding it from Editors/Viewers reduces noise (Viewer UX
   principle).
-- Domain boundaries match [user-flows doc §6](../business_analysis/project-management-user-flows.md) exactly; visual
-  arrangement may vary.
+- Domain boundaries match user-flows doc §6 exactly; visual arrangement may vary.
 
 ### 2.4 Task-level navigation
 
@@ -108,7 +106,7 @@ Rules:
   human-readable deep links. Internal resolution: slug → tenantId, key → projectId, number → taskId.
 - Task URLs are canonical via project key + task number; board/tasks URLs carry view state in query params.
 - Direct navigation performs: authenticate → load context → authorize → load resource → render or correct error state
-  ([user-flows doc §41](../business_analysis/project-management-user-flows.md)).
+  (user-flows doc §41).
 - Invalid page after deletions snaps to nearest valid page instead of an error table.
 - Slug/key changes are out of scope for MVP (see OQ-005 for project keys; tenant slug mutability deferred — recommend
   immutable in MVP to avoid link rot).

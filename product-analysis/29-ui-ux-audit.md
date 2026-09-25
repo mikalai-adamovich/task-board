@@ -11,21 +11,19 @@ Screen-by-screen review of the current Angular UI against the agreed IA
 
 ### X-1 — Dead global search in the header (REMOVE or REPLACE)
 
-[`shell/header/header-search/header-search.ts`](../ui/src/app/shell/header/header-search.ts) renders an input bound to a
-local `searchValue` signal with **no behavior at all** — it cannot search anything. Meanwhile the Tasks table already
-has a working, URL-bound search that acts as a table filter (which is exactly what
-[08-screen-and-page-specification.md](08-screen-and-page-specification.md) S11 specifies). Options: remove the header
-input entirely (MVP), or replace it later with a real global search / command palette (roadmap). → **UQ-01**.
+`shell/header/header-search/header-search.ts` rendered an input bound to a local `searchValue` signal with **no behavior
+at all** — it could not search anything. Meanwhile the Tasks table already has a working, URL-bound search that acts as
+a table filter (which is exactly what [08-screen-and-page-specification.md](08-screen-and-page-specification.md) S11
+specifies). Options: remove the header input entirely (MVP), or replace it later with a real global search / command
+palette (roadmap). → **UQ-01**.
 
 ### X-2 — Broken project deep links: `projectId` passed where the router expects `projectKey`
 
-Routes are defined as `projects/:projectKey` ([app.routes.ts](../ui/src/app/app.routes.ts):57), but at least two places
-navigate with the **id**:
+Routes were defined as `projects/:projectKey` ([app.routes.ts](../ui/src/app/app.routes.ts):57), but at least two places
+navigated with the **id**:
 
-- [`owner-dashboard.html:85`](../ui/src/app/features/dashboard/owner-dashboard/owner-dashboard.html) — My Recent Tasks
-  links `[... 'projects', task.projectId, 'tasks', task.id]`
-- [`workspace-detail.html:63`](../ui/src/app/features/tenants/workspace-detail/workspace-detail.html) — project list
-  links `'projects', project.id`
+- `owner-dashboard.html:85` — My Recent Tasks linked `[... 'projects', task.projectId, 'tasks', task.id]`
+- `workspace-detail.html:63` — the project list linked `'projects', project.id`
 
 Unless `projectGuard` resolves ids, these links 404/misroute. Root cause is the unresolved choice between key-based and
 id-based URLs. → **UQ-03**.

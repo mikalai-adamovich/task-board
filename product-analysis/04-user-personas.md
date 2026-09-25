@@ -89,7 +89,7 @@ map personas 1:1 to roles.
    conflict handling.
 3. **Administration must be legible to Grace** (P6): one permission matrix, audit trail, no hidden effective-permission
    logic.
-4. **Viewer UX (Omar)** should hide write affordances entirely rather than show disabled controls everywhere
-   ([user-flows doc §32](../business_analysis/project-management-user-flows.md)).
+4. **Viewer UX (Omar)** should hide write affordances entirely rather than show disabled controls everywhere (user-flows
+   doc §32).
 5. **Invitation UX (Priya)** must handle existing-account vs new-account routing explicitly — never show "email already
    registered" as a dead end.
