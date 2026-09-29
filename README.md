@@ -24,7 +24,7 @@ Multi-tenant SaaS platform for project management, task tracking, and team colla
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/Nikolai-Adamovich/task-board.git
+git clone https://github.com/mikalai-adamovich/task-board.git
 cd task-board
 npm install
 ```
