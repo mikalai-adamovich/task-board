@@ -105,6 +105,9 @@ Open **http://localhost:4200** in your browser.
 
 ## Project Structure
 
+Working with an AI agent (or just looking for the project conventions, the always-on rules, or the measurement harness)?
+Start at [`AGENTS.md`](AGENTS.md) — it is the agent entry point and the router to everything else.
+
 ```
 task-board/
 ├── shared/          # Zod schemas, TypeScript types, API contracts

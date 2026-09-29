@@ -181,6 +181,20 @@ export default [
       '**/coverage/',
       '**/.angular/',
       '**/.wrangler/',
+      // LEGACY in-repository worktree location: the runtime creates worktrees OUTSIDE the repository, so nothing
+      // writes this path. Kept because an orphan left there is another checkout of the source tree, and linting it
+      // would walk it on every run.
+      '.harness/state/worktrees/',
+      // Harness prose is validated by the harness itself (`.harness/tests/`), not by the application linter: the
+      // `docs/` entry below covers only the application docs, so without these the `**/*.md` block above walks
+      // harness documentation on every run. Markdown-scoped; the harness `.mjs` fixtures stay covered by
+      // `**/*.mjs`, unchanged. No apostrophes in this comment: the self-test reads this array as quoted source.
+      '.harness/**/*.md',
+      // The harness-evaluator capability file loads for the harness-evaluator mode alone, and is the same layer.
+      '.roo/rules-harness-evaluator/**/*.md',
+      // Agent scratch is throwaway and disposable: linting it wastes wall clock on every run and can hang on a
+      // generated file, for content nobody will ever commit.
+      '.agent-scratch/',
       'docs/',
       '**/*.mjs',
       '**/*.cjs',

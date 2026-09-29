@@ -1,0 +1,7 @@
+# Normalise line endings in the repository, so a contributor's `core.autocrlf=true`
+# cannot rewrite the two operator shell scripts with CRLF and break them.
+* text=auto eol=lf
+
+# The shell scripts are the files a Windows checkout would actually corrupt.
+*.sh text eol=lf
+

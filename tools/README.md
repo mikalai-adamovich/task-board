@@ -46,8 +46,13 @@ are not network-related.
 
 ## parse-dbev-tail.py — `wrangler tail` DBEV event parser
 
-Parses `wrangler tail --format json` output containing `DBEV {json}` log lines (emitted by the temporary mongo.ts
-diagnostic instrumentation) and correlates them with client-side JSONL rows from `api-series.py` by timestamp.
+Parses `wrangler tail --format json` output containing `DBEV {json}` log lines and correlates them with client-side
+JSONL rows from `api-series.py` by timestamp.
+
+> **The `DBEV` producer no longer exists.** The temporary `mongo.ts` diagnostic instrumentation that emitted these lines
+> was removed in `377917f` (`chore(server): remove Mongo lifecycle instrumentation`); `grep -rn DBEV server/src/` is
+> empty. The parser is retained for a re-instrumented run — **against the current tree it produces nothing**, so a
+> latency investigation that runs it will wait on an input nothing produces.
 
 ```bash
 # 1. capture tail while running a series

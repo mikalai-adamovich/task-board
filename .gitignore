@@ -31,6 +31,28 @@ ng-cli-output.log
 .DS_Store
 Thumbs.db
 
+# Harness state: task contracts are tracked operator inputs; the other homes hold generated state.
+.harness/state/runs/*
+.harness/state/ledgers/*
+.harness/state/reports/*
+.harness/state/telemetry/*
+.harness/state/control/*
+# LEGACY: the runtime creates worktrees OUTSIDE the repository, so nothing writes this path any more. It stays
+# ignored because `remove-workspace.sh` reports orphans left here and `harness workspace prepare` refuses to run
+# while any exist — an unignored orphan would appear in `git status` and move `status_hash_pre/post`.
+.harness/state/worktrees/
+# Historical-workspace attestations (P1). Operator state, not evidence: gitignored so `git status --porcelain` does
+# not start including it and `status_hash_pre/post` moves for unrelated reasons.
+.harness/state/workspaces/
+# Append-only trial/census log (`regress --repeat`, `census`). Operator state, not evidence: gitignored for the same
+# reason as the attestations above, so `git status --porcelain` does not start including it and `status_hash_pre/post`
+# moves for unrelated reasons.
+.harness/state/regress-trials/
+
+# Agent scratch: throwaway analysis, probes and one-off scripts. Never committed.
+.agent-scratch/*
+!.agent-scratch/.gitkeep
+
 # Logs
 logs/
 *.log
@@ -42,6 +64,10 @@ pnpm-debug.log*
 # Testing
 coverage/
 .nyc_output/
+# Playwright (`npm run test:e2e`): failure artifacts, the HTML report and the per-run traces.
+ui/test-results/
+playwright-report/
+ui/.playwright/
 
 # OS
 .DS_Store
