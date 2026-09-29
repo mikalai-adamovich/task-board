@@ -582,15 +582,20 @@ The artifact is written under `.harness/state/reports/` with the exclusive-creat
 - **Git has no representation for a flaky predicate** (`0` good, `1–127` bad, `125` skip). Mapping `INCONCLUSIVE` onto
   `125` makes git **skip exactly the undecidable commits**, suppressing the very commit that would explain the result.
 - There is **no `pick_winner`** when one side is undecidable.
-- **The `check` gate is UNDEFINED over most of this repository's own history.** Over the **143 commits reachable from
-  `HEAD`**, **86 (60.1 %)** do not declare a `ui` `typecheck` script at all, so a whole-project `check` gate cannot be
-  defined from their own manifests. The block is **contiguous and older** — its boundary is **`81165e6`**, the oldest
-  commit that _does_ declare the script.
+- **The `check` gate is UNDEFINED over most of this repository's own history.** Over the **143 commits of the range that
+  ends at `bcf7b19`**, **86 (60.1 %)** do not declare a `ui` `typecheck` script at all, so a whole-project `check` gate
+  cannot be defined from their own manifests. The block is **contiguous and older** — its boundary is **`81165e6`**, the
+  oldest commit that _does_ declare the script.
 
 > **Basis (reproduce it, do not trust it).** For each of the 143 commits, read `<commit>:ui/package.json` and test
 > `scripts.typecheck` for a string. The 86 without it are `false` for every commit from `e5ece52` (the newest of them)
-> to `1e06f13` (the oldest), with no interruption. `git log --format=%H -n 143` supplies the window; the script is four
-> lines and the figure is recomputed, never remembered.
+> to `1e06f13` (the oldest), with no interruption. `git log --format=%H -n 143 bcf7b19` supplies the window; the script
+> is four lines and the figure is recomputed, never remembered.
+>
+> **The window is PINNED to `bcf7b19`, not to `HEAD`, on purpose.** The figure is a property of a fixed range of
+> history, so the range is named by its tip: a commit landing on top of `bcf7b19` cannot change what those 143 commits
+> contain. A sliding window over live history compared against a frozen constant is red on every commit that lands after
+> the constant was measured — which is what happened here, and why the literal is 86 and not 85.
 
 **Those 86 commits are UNDEFINED, not red.** No gate was run there, nothing failed, and nothing is attributed to those
 commits. "Undefined" is not a weaker "fail" — a failure is a measurement, and there is no measurement. A bisect over
@@ -683,9 +688,9 @@ reporting that exit code as a step failure would manufacture a `FAIL` out of the
 is spawned, `step_scope.state` is `UNDEFINED`, `gate_exit_code` is an explicit **`null`** (never `0`, which is the one
 number that silently reads as a pass), no `verification_started` / `verification_finished` pair is emitted, and a side
 measured that way is **`INCONCLUSIVE`** — never `PASS`, never `FAIL`, never a direction. This matters at exactly the
-scale the compatibility census found: **86 of the 143 commits** reachable from `HEAD` declare no `ui typecheck` script,
-so a whole `check` gate is `UNDEFINED` over **60.1 %** of this repository's own history — and those commits are
-**UNDEFINED, not red**.
+scale the compatibility census found: **86 of the 143 commits** in the range ending at `bcf7b19` declare no
+`ui typecheck` script, so a whole `check` gate is `UNDEFINED` over **60.1 %** of that range of this repository's own
+history — and those commits are **UNDEFINED, not red**.
 
 **Composition, with no second anything.** `--step` reaches `workspace prepare` as well as `evaluate`, so a per-step run
 happens inside a fully attested historical workspace (install, lockfile digest, installed-state digest, tree fingerprint

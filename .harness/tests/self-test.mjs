@@ -8035,8 +8035,23 @@ export function runSelfTest(s2 = {}) {
   // F4. The measured gate-undefined figure, where an operator reads the NO-GO, with its basis, and stated as undefined
   // rather than red. The numbers are re-derived here from the repository itself, so the document cannot drift from the
   // history it describes.
+  //
+  // THE WINDOW IS PINNED TO A NAMED RANGE, not to "the last 143 commits" (the defect this line used to encode). A
+  // sliding window over LIVE history compared against a FROZEN constant is red on every commit that lands after the
+  // constant was measured: `eb0c73a` was the 144th commit, so the oldest one — `1e06f13`, which declares no
+  // `ui typecheck` — fell out of the window, the measured count went 86 -> 85, and the literal stayed at 86. Re-basing
+  // the literal to 85 would have moved the cliff to the NEXT commit rather than removed it. So the range is named at its
+  // TIP instead: the window is the 143 commits ENDING AT `I25_CENSUS_TIP`, the commit the figure was measured at, which
+  // is immutable however many commits land on top of it. The tip is additionally asserted to be an ANCESTOR of `HEAD`, so
+  // a rewritten history fails loudly here rather than silently measuring a different range, and the window's own first
+  // entry is asserted equal to the tip, so the range cannot quietly become a different one.
+  const I25_CENSUS_TIP = 'bcf7b1986da6961a3436c138a6900f0d8b013136';
   const historyWindow = 143;
-  const history = git(['log', '--format=%H', `-n`, String(historyWindow)], REAL_REPO_ROOT).stdout.trim().split('\n');
+  const history = git(
+    ['log', '--format=%H', '-n', String(historyWindow), I25_CENSUS_TIP],
+    REAL_REPO_ROOT,
+  ).stdout.trim().split('\n');
+  const censusTipIsAncestor = git(['merge-base', '--is-ancestor', I25_CENSUS_TIP, 'HEAD'], REAL_REPO_ROOT).status === 0;
   const withoutUiTypecheck = history.filter((commit) => {
     const raw = git(['show', `${commit}:ui/package.json`], REAL_REPO_ROOT).stdout;
     try {
@@ -8056,10 +8071,18 @@ export function runSelfTest(s2 = {}) {
     'I25',
     'the-gate-is-UNDEFINED-over-86-of-143-commits-recorded-where-an-operator-reads-the-NO-GO-and-not-as-red',
     history.length === historyWindow &&
+      history[0] === I25_CENSUS_TIP &&
+      censusTipIsAncestor &&
       withoutUiTypecheck.length === 86 &&
       boundary !== null &&
       boundary.slice(0, 7) === '81165e6' &&
       contiguous &&
+      // Both documents must name the PINNED RANGE and must NOT describe the window as "reachable from `HEAD`", or the
+      // recipe they print reproduces a different number than this assertion measures.
+      /bcf7b19/.test(readmeNoGo) &&
+      /bcf7b19/.test(schemaNoGo) &&
+      !/reachable from/.test(readmeNoGo) &&
+      !/reachable from/.test(schemaNoGo) &&
       /\*\*86 \(60\.1 %\)\*\*/.test(readmeNoGo) &&
       /\*\*86 \(60\.1 %\)\*\*/.test(schemaNoGo) &&
       /UNDEFINED, not red/.test(readmeNoGo) &&
@@ -8068,7 +8091,8 @@ export function runSelfTest(s2 = {}) {
       /81165e6/.test(schemaNoGo) &&
       /Basis/.test(readmeNoGo) &&
       /Basis/.test(schemaNoGo),
-    `window=${history.length} without_ui_typecheck=${withoutUiTypecheck.length} boundary=${boundary?.slice(0, 7)}`,
+    `window=${history.length} tip=${history[0]?.slice(0, 7)} tip_is_ancestor_of_HEAD=${censusTipIsAncestor} ` +
+      `without_ui_typecheck=${withoutUiTypecheck.length} boundary=${boundary?.slice(0, 7)}`,
   );
   check(
     'I25',
@@ -8105,12 +8129,13 @@ export function runSelfTest(s2 = {}) {
     // to the four repointed out of `agentsDoc`; only the read target changed, and each of BOTH owning documents is
     // required so the claim cannot survive in one while the other drifts.
     //
-    // Why the figure belongs here and not in `AGENTS.md`: 86 of 143 commits reachable from `HEAD` declare no `ui`
-    // `typecheck` script, so a whole-project `check` gate is not derivable from their manifests. That is a measured
-    // property of the HARNESS's reach over THIS repository — a research finding recorded in the `git bisect` NO-GO — not
-    // an everyday application fact, and `AGENTS.md` is injected into every session in every mode. The check right above
+    // Why the figure belongs here and not in `AGENTS.md`: 86 of 143 commits declare no `ui` `typecheck` script, so a
+    // whole-project `check` gate is not derivable from their manifests. That is a measured property of the HARNESS's
+    // reach over THIS repository — a research finding recorded in the `git bisect` NO-GO — not an everyday application
+    // fact, and `AGENTS.md` is injected into every session in every mode. The check right above
     // (`the-gate-is-UNDEFINED-over-86-of-143-commits-...`) still RE-DERIVES the 86/143/81165e6 from the repository itself
-    // against live `git`, so the numbers here are still checked against history rather than trusted as prose.
+    // against live `git` — over the PINNED range ending at `I25_CENSUS_TIP`, so a new commit cannot move it — so the
+    // numbers here are still checked against history rather than trusted as prose.
     [readmeDoc, schemaDoc].every(
       (doc) =>
         /\*\*86 \(60\.1 %\)\*\*/.test(doc) &&
