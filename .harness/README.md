@@ -182,31 +182,32 @@ Summary: `0` a passing gate **or** a passing single step (`SINGLE_STEP` — one 
 
 `npm run check:harness` runs:
 
-1. `node .harness/runtime/harness.mjs self-test` — currently **491 assertions** across 40 invariant groups
-2. `node .harness/tests/compatibility.mjs` — currently **224 cases**
+1. `node .harness/runtime/harness.mjs self-test` — asserts every invariant group this suite carries
+2. `node .harness/tests/compatibility.mjs` — exercises the public CLI contract
 
-These literals are **checked, not trusted**: the self-test's final assertion reads them out of this file and out of
-`AGENTS.md` and compares them against the totals it is itself producing and against a count computed from the
-compatibility suite's own case bodies. A number that goes stale here therefore turns the gate red rather than misleading
-the next reader — which is the only way a number in prose stops rotting on its own.
+**The totals are deliberately not written down here.** A count in prose rots the first time a group is added or two
+assertions are merged, and a reader who trusts a remembered literal is worse off than a reader who runs the gate. Both
+suites print their own totals on every run — the assertion and group counts on the self-test's summary line, the case
+count counted from the compatibility suite's own labels — and that measured output is the only figure to quote. Run the
+gate; do not count it.
 
-Both counts are computed, never asserted against a fixed value. What the gate enforces is CONSISTENCY: the documented
-figures are read out of this file and out of `AGENTS.md` and compared against the totals the run is actually producing,
-so a number that rots here turns the gate red.
+The drift is what the gate polices, not the figure. `I25` scans this manual for the numeric shapes it used to carry, so
+putting a count back into this prose turns the gate RED rather than being believed. What this document is still held to
+is the part that cannot rot: the invariant group IDENTIFIATORS it names must be groups the self-test actually exercised,
+so a renamed or dropped group is caught where it is written down.
 
 Monotonicity is a separate, WEAKER property, and it is enforced as a FLOOR rather than as a fixed value. Each measured
 count is asserted to be **at or above** a floor recorded in the self-test (`ASSERTION_FLOOR`). The floor is a floor, not
 a target: a cycle that adds assertions may raise the floor so the reduction is unrepeatable, and a cycle that
 deliberately removes coverage may LOWER it — with a comment on the constant naming what the reduction cost and why it
 was accepted. That is the whole mechanism. A reduction cannot be made invisible: the floor move is a diff like any
-other, and the comment it carries is the written justification the reduction has to have. A deletion done to PRESERVE a
-documented number — editing prose to match a shrunken suite rather than recording the shrink — is what the floor cannot
-catch and what a reviewer is for.
+other, and the comment it carries is the written justification the reduction has to have. A deletion hidden by moving
+the floor in the same diff is what the floor cannot catch and what a reviewer is for.
 
-The history is representable precisely because the floor is a floor: 422 → 486 across the suite's life, and a cycle's
-deliberate deletions, are both ordinary moves of the floor rather than a rewrite of the assertion set. A declared case
-label with no case body is a **FAILURE**, not a pass: the labels are seeded with a throwing body, so an unassigned label
-cannot be counted as a green case (`SAN-09` asserts this, and asserts that every shipped label has a real body).
+The suite's history is representable precisely because the floor is a floor: every recorded move of it, and a cycle's
+deliberate deletions, are ordinary edits to that one constant rather than a rewrite of the assertion set. A declared
+case label with no case body is a **FAILURE**, not a pass: the labels are seeded with a throwing body, so an unassigned
+label cannot be counted as a green case (`SAN-09` asserts this, and asserts that every shipped label has a real body).
 
 The self-test uses generated temporary repositories and state. It also captures a deterministic manifest of the complete
 `.harness/runtime/` source tree before the complete test body and compares it after all test operations. The manifest

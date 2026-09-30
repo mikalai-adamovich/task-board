@@ -39,7 +39,7 @@ npm run check:fast       # lint + typechecks (shared, server, UI)           ~20 
 npm run check            # CANONICAL GATE: check:fast + both test suites   ~45-90 s
 npm run check:full       # check + all three builds                       ~60-120 s
 npm run build            # shared → server → ui
-npm run typecheck        # shared + server ONLY — no UI; use check/check:fast, never this alone
+npm run typecheck        # shared + server ONLY — no UI, no build; use check/check:fast, never this alone
 npm test                 # vitest: run both server and ui suites
 npm run lint             # eslint across repo
 npm run harness -- list  # NOT everyday work — the measurement layer; `--help` screens it, .harness/README.md is the manual
@@ -80,11 +80,13 @@ wrangler secret put JWT_SECRET
 `npm run check` is the application project gate. It deliberately includes the **UI typecheck**, which
 `npm run typecheck` alone does not cover — a change that breaks Angular compilation must never be called green.
 
-| Work changed                   | Run                                                    | Coverage and scope                                                                                                                                         |
-| ------------------------------ | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `server/`, `ui/`, or `shared/` | `npm run check`                                        | Application project gate: lint, typecheck, and server/UI tests.                                                                                            |
-| `.harness/` or `.roomodes`     | `npm run check:harness`                                | Agent-harness gate: harness self-test and frozen compatibility check.                                                                                      |
-| Harness in CI/CD               | `npm run check:harness` (paths-filtered `harness` job) | Deliberately NOT the project gate: the harness has no effect on production, so it is a separate job that only runs when `.harness/` or `.roomodes` change. |
+| Work changed                   | Run                     | Coverage and scope                                                    |
+| ------------------------------ | ----------------------- | --------------------------------------------------------------------- |
+| `server/`, `ui/`, or `shared/` | `npm run check`         | Application project gate: lint, typecheck, and server/UI tests.       |
+| `.harness/` or `.roomodes`     | `npm run check:harness` | Agent-harness gate: harness self-test and frozen compatibility check. |
+
+The harness gate is **local only**: no workflow in `.github/workflows/` runs `npm run check:harness`, so no harness
+result can reach CI, a required status, or a deploy. Run it yourself when `.harness/` or `.roomodes` change.
 
 Running the project gate during harness-only work, or the harness gate during project-only work, is wasted time: each
 gate covers its own side.
@@ -118,7 +120,6 @@ the meantime.
 | `e2e` job                                                                          | **advisory** — not a required check | owner-deferred (**C-11**). NOT a workflow setting: the job carries no `continue-on-error`. The required-check status is a **branch-protection rule on the hosting service**, outside this repository.                                                                                            |
 | `npm audit --audit-level=high`                                                     | **blocking**                        | the step fails the build and carries no `continue-on-error`. Measured on the current tree: exit 0 — 0 high, 0 critical, 2 moderate (below the enforced level). A transitive whose parent pins it exactly cannot be fixed by `npm audit fix`; root `overrides` is the only lever npm offers there |
 | `format:check`                                                                     | **advisory**                        | carries a stated condition and a re-evaluation date; re-evaluating it is the owner's date call                                                                                                                                                                                                   |
-| `harness` job                                                                      | **blocking when it runs**           | paths-filtered to `.harness/` / `.roomodes`; it is a separate gate because it has no production effect                                                                                                                                                                                           |
 
 Report the command and its outcome in the completion message; your own statement is never the evidence:
 
@@ -318,8 +319,8 @@ code, so it is a do-not-do, not a pending improvement. Re-measure before proposi
   the mitigation removed a knob that could not have caused the incident it was credited with.
 - Two further findings stay **unexplained**, so do not read any later change as fixing them: a pre-DB stall of 140-320
   ms before the first Mongo checkout (edge/DO layer, not Mongo) and a rare post-deploy transient hang of 75-90 s.
-- The narrative these claims came from is `product-analysis/100-performance-optimizations.md` §2.7; it still carries the
-  refuted mechanism and is **not yet corrected**.
+- The narrative these claims came from is `product-analysis/100-performance-optimizations.md` §2.7 (with §4.13 carrying
+  the same driver-level reading); the refuted mechanism is withdrawn there too, and the two findings above stay open.
 - Diagnostic scripts (keep-alive series, curl timing): `tools/README.md`. Attributing time inside the Worker needs the
   request path instrumented first — nothing in the tree emits the driver/timing events a `wrangler tail` capture would
   be correlated with.

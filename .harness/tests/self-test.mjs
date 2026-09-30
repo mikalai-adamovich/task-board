@@ -61,6 +61,10 @@ const SUITE_TEMP_PREFIXES = [
   'harness-e23-probe-child-',
   'harness-compat-ledger-',
   'harness-i23-',
+  // The I20 build-plan negative-control fixture. It carries a SYMLINK to the shipped `.harness`, so the recursive
+  // remove unlinks the symlink and never descends into the real tree: `rmSync` lstats, and a symlink is not a
+  // directory to it.
+  'harness-i20-plan-',
   // Two prefixes belong to MARKER FILES written by CHILD scripts this suite generates, not to roots it creates itself
   // (a self-cancelling child's rendezvous marker, and a per-run counter). They are one byte each, and the exit handler
   // cannot reach them because the writer is a different process — so the sweep is the only path that reclaims them, and
@@ -6027,29 +6031,183 @@ export function runSelfTest(s2 = {}) {
   // repository's own manifests wherever that is possible — a derivation rule that only ever ran against a fixture would
   // be a rule fitted to the fixture.
 
-  // I20-1. The plan, derived from THIS repository's real HEAD. Exactly one package needs building, and it is
-  // `@task-board/shared` because (a) it declares `build`, (b) it declares relative entrypoints under the gitignored
-  // `./dist`, (c) those entrypoints are NOT tracked, and (d) `server` and `ui` both depend on it by the local spec `*`.
-  // `ui` and `server` are recorded as SKIPPED with their reasons, so "why was nothing built for that package" is
-  // answerable from the record instead of by re-derivation.
+  // I20-1. The plan, derived from THIS repository's real HEAD.
+  //
+  // WHAT IS ASSERTED HERE IS THE DERIVATION, NOT AN ANSWER. An earlier form of this assertion required
+  // `i20Built` to be exactly `['@task-board/shared']`, which was true while `shared/package.json` resolved through
+  // the gitignored `./dist`. That entry point has since been unified onto the source (`main`/`types`/`exports` all
+  // `./src/index.ts`), and `tsc --traceResolution` in `server/` now resolves `@task-board/shared` to
+  // `shared/src/index.ts` — so the gate resolves NO package through a build output and the correct derived answer
+  // became the empty plan. Hardcoding either the old non-empty set or the new empty one would freeze one moment
+  // of the repository and stop the assertion saying anything about the rule, which is the part that can rot.
+  //
+  // So the plan is checked against an INDEPENDENT re-derivation from the same `git show` / `git ls-tree` facts,
+  // recomputed here in the test: for every workspace directory the selection must equal the stated four-condition
+  // conjunction, and the reasons the record gives for the rejections must name the condition that actually failed.
+  // A rule that selected too much, too little, or for the wrong reason turns this red; a repository that changes
+  // shape does not.
   const i20Head = git(['rev-parse', 'HEAD'], REAL_REPO_ROOT).stdout.trim();
   const i20Plan = s2.historicalBuildPlanForCommit(i20Head);
   const i20Built = (i20Plan?.packages ?? []).map((entry) => entry.name);
   const i20Skipped = Object.fromEntries((i20Plan?.packages_skipped ?? []).map((entry) => [entry.name, entry.reason]));
+  // The independent re-derivation. Deliberately NOT a call into the implementation: it reads the judged commit's
+  // own manifests and asks git what is tracked, exactly as the rule says, and knows nothing about the plan.
+  const i20ManifestAt = (relative) => {
+    const shown = git(['show', `${i20Head}:${relative}`], REAL_REPO_ROOT);
+
+    return shown.status === 0 ? JSON.parse(shown.stdout) : null;
+  };
+  const i20TrackedAt = (relative) => git(['cat-file', '-e', `${i20Head}:${relative}`], REAL_REPO_ROOT).status === 0;
+  const i20RootManifest = i20ManifestAt('package.json');
+  const i20Expected = new Map();
+  for (const dir of Array.isArray(i20RootManifest?.workspaces) ? i20RootManifest.workspaces : []) {
+    if (typeof dir !== 'string') {
+      continue;
+    }
+
+    const manifest = i20ManifestAt(`${dir}/package.json`);
+
+    if (manifest === null || typeof manifest.name !== 'string') {
+      continue;
+    }
+
+    // Condition (1)..(4), evaluated here rather than read from the plan, so agreement is evidence.
+    const entrypoints = s2.declaredEntrypoints(manifest);
+    const untracked = entrypoints.filter((relative) => !i20TrackedAt(`${dir}/${relative}`));
+    const hasLocalDependent = [`${dir}/package.json`, 'package.json', ...['server', 'ui', 'shared'].filter((other) => other !== dir).map((other) => `${other}/package.json`)]
+      .flatMap((path) => {
+        const other = i20ManifestAt(path);
+
+        return other === null
+          ? []
+          : ['dependencies', 'devDependencies', 'optionalDependencies'].flatMap((field) =>
+              Object.entries(other[field] ?? {}).map(([name, spec]) => ({ name, spec, version: manifest.version })),
+            );
+      })
+      .some((edge) => edge.name === manifest.name && s2.localWorkspaceSpec(edge.spec, edge.version));
+
+    i20Expected.set(manifest.name, {
+      dir,
+      selected:
+        typeof manifest.scripts?.build === 'string' &&
+        entrypoints.length > 0 &&
+        untracked.length > 0 &&
+        hasLocalDependent,
+      fails: (() => {
+        if (typeof manifest.scripts?.build !== 'string') {
+          return 'no build script';
+        }
+        if (entrypoints.length === 0) {
+          return 'no relative entrypoint';
+        }
+        if (untracked.length === 0) {
+          return 'already TRACKED';
+        }
+
+        return hasLocalDependent ? null : 'no local dependent';
+      })(),
+    });
+  }
+  // Every package the plan CONSIDERED appears in the re-derivation, and vice versa: an unconsidered workspace
+  // package is a silent omission, and it is the failure mode a hardcoded answer could never have caught.
+  const i20Considered = i20Plan.packages_considered;
   check(
     'I20',
-    'the-build-plan-is-derived-from-the-judged-commit-own-manifests-and-selects-exactly-the-package-the-gate-resolves-through-a-build',
-    i20Built.length === 1 &&
-      i20Built[0] === '@task-board/shared' &&
-      i20Plan.packages[0].build_script === 'tsc' &&
-      JSON.stringify(i20Plan.packages[0].output_roots) === JSON.stringify(['shared/dist']) &&
-      i20Plan.packages[0].output_kind === 'directories' &&
-      i20Plan.packages[0].untracked_entrypoints.length > 0 &&
+    'the-build-plan-is-derived-from-the-judged-commit-own-manifests-and-selects-exactly-the-packages-the-gate-resolves-through-a-build',
+    i20Expected.size > 0 &&
+      i20Considered === i20Expected.size &&
+      JSON.stringify([...i20Built].sort()) === JSON.stringify([...i20Expected.entries()].filter(([, value]) => value.selected).map(([name]) => name).sort()) &&
+      // The derivation must be REPRODUCIBLE from the record alone: what the plan did not build is accounted for,
+      // each with a reason naming the condition that actually failed.
+      i20Plan.packages_skipped.length === [...i20Expected.entries()].filter(([, value]) => !value.selected).length &&
+      [...i20Expected.entries()].every(([name, value]) =>
+        value.selected
+          ? i20Built.includes(name) &&
+            i20Plan.packages.find((entry) => entry.name === name)?.untracked_entrypoints.length > 0 &&
+            /^[0-9a-f]{16}$/.test(i20Plan.digest)
+          : new RegExp(value.fails.split(' ')[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(i20Skipped[name] ?? ''),
+      ) &&
       /^[0-9a-f]{16}$/.test(i20Plan.digest) &&
-      /no relative entrypoint declared/.test(i20Skipped['@task-board/ui'] ?? '') &&
-      /no relative entrypoint declared/.test(i20Skipped['@task-board/server'] ?? '') &&
+      i20Plan.build_plan_undetermined.length === 0 &&
       /JUDGED COMMIT'S OWN manifests/.test(i20Plan.command_basis),
-    JSON.stringify({ built: i20Built, roots: i20Plan?.packages?.[0]?.output_roots, skipped: i20Skipped }).slice(0, 500),
+    JSON.stringify({
+      derived: [...i20Expected].map(([name, value]) => `${name}:${value.selected ? 'build' : `skip(${value.fails})`}`),
+      built: i20Built,
+      considered: i20Considered,
+      skipped: i20Skipped,
+      note:
+        'the-expected-set-is-re-derived-in-this-test-from-git-show-and-cat-file-so-the-assertion-checks-the-rule-not-the-answer ' +
+        'an-empty-plan-is-a-CORRECT-derived-answer-while-shared-resolves-from-source--see-the-I20-derivation-note',
+    }).slice(0, 900),
+  );
+  // THE NON-VACUITY GUARD, and it is the half that keeps the assertion above honest: a plan that selected NOTHING
+  // would satisfy "the derivation matches the plan" just as well as a plan that selected the right thing, so a
+  // derivation check with no way to be red by under-selecting protects nothing. This drives the REAL planner over
+  // a disposable repository that declares a build-output entrypoint — the shape this repository used to have — and
+  // requires that it be SELECTED, with the output root the manifests imply. The same fixture with the entry point
+  // moved onto a TRACKED source file must then be skipped, so the control turns on the tracked-ness condition and
+  // not on the fixture differing in some incidental way.
+  const i20Fixture = suiteTempDir('harness-i20-plan-');
+  const i20DeriveFor = (entrypoint) => {
+    rmSync(join(i20Fixture, '.git'), { recursive: true, force: true });
+    rmSync(join(i20Fixture, '.harness'), { recursive: true, force: true });
+    mkdirSync(join(i20Fixture, 'shared'), { recursive: true });
+    mkdirSync(join(i20Fixture, 'server'), { recursive: true });
+    // `REPO_ROOT` is derived from `HARNESS_HOME` at MODULE LOAD, so the fixture is read by a CHILD process with
+    // `HARNESS_HOME` pointed at a symlink to the shipped harness: the implementation under test is the shipped
+    // one, and only the repository it reads is synthetic.
+    symlinkSync(join(REAL_REPO_ROOT, '.harness'), join(i20Fixture, '.harness'), 'dir');
+    writeFileSync(join(i20Fixture, 'package.json'), JSON.stringify({ name: 'fixture', private: true, workspaces: ['shared', 'server'] }, null, 2));
+    writeFileSync(join(i20Fixture, '.gitignore'), 'dist/\n');
+    writeFileSync(join(i20Fixture, 'shared', 'package.json'), JSON.stringify({ name: '@task-board/shared', version: '0.0.0', main: entrypoint, types: entrypoint, scripts: { build: 'tsc' } }, null, 2));
+    // The declared entrypoint is WRITTEN at the path the manifest names, so the tracked-ness condition is decided
+    // by that one fact and not by a file the fixture happens to place elsewhere. Writing `shared/index.ts` while
+    // declaring `./src/index.ts` would leave the entrypoint untracked in BOTH arms, and the control would prove
+    // nothing.
+    mkdirSync(join(i20Fixture, 'shared', dirname(entrypoint)), { recursive: true });
+    writeFileSync(join(i20Fixture, 'shared', entrypoint), 'export const a = 1;\n');
+    writeFileSync(join(i20Fixture, 'server', 'package.json'), JSON.stringify({ name: '@task-board/server', version: '0.0.0', dependencies: { '@task-board/shared': '*' } }, null, 2));
+    git(['init', '-q'], i20Fixture);
+    git(['add', '-A'], i20Fixture);
+    git(['-c', 'user.email=self-test@example.invalid', '-c', 'user.name=self-test', 'commit', '-qm', 'fixture'], i20Fixture);
+    writeFileSync(
+      join(i20Fixture, 'probe.mjs'),
+      "import { historicalBuildPlanForCommit } from './.harness/runtime/harness.mjs';\n" +
+        "import { execFileSync } from 'node:child_process';\n" +
+        "const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();\n" +
+        'const plan = historicalBuildPlanForCommit(head);\n' +
+        'process.stdout.write(JSON.stringify({ built: plan.packages.map((entry) => entry.name), roots: plan.packages.map((entry) => entry.output_roots), skipped: Object.fromEntries(plan.packages_skipped.map((entry) => [entry.name, entry.reason])) }));\n',
+    );
+    const probed = spawnSync('node', ['probe.mjs'], {
+      cwd: i20Fixture,
+      encoding: 'utf8',
+      env: { ...process.env, HARNESS_HOME: join(i20Fixture, '.harness') },
+    });
+
+    try {
+      return JSON.parse(probed.stdout);
+    } catch {
+      return { built: [], roots: [], skipped: {}, error: String(probed.stderr ?? '').slice(0, 200) };
+    }
+  };
+  const i20ControlBuildOutput = i20DeriveFor('./dist/index.js');
+  const i20ControlTrackedSource = i20DeriveFor('./src/index.ts');
+  check(
+    'I20',
+    'the-build-plan-derivation-is-not-vacuous-a-manifest-declaring-a-build-output-entrypoint-IS-selected-and-the-same-fixture-on-a-tracked-source-is-not',
+    JSON.stringify(i20ControlBuildOutput.built) === JSON.stringify(['@task-board/shared']) &&
+      JSON.stringify(i20ControlBuildOutput.roots) === JSON.stringify([['shared/dist']]) &&
+      // The tracked-source arm: identical fixture, one variable changed, and the package must now be REJECTED with
+      // the tracked-ness reason. Without this arm the control would pass for a planner that selects everything.
+      JSON.stringify(i20ControlTrackedSource.built) === JSON.stringify([]) &&
+      /already TRACKED/.test(i20ControlTrackedSource.skipped['@task-board/shared'] ?? ''),
+    JSON.stringify({
+      build_output_entrypoint: { built: i20ControlBuildOutput.built, roots: i20ControlBuildOutput.roots, error: i20ControlBuildOutput.error ?? null },
+      tracked_source_entrypoint: { built: i20ControlTrackedSource.built, skipped: i20ControlTrackedSource.skipped, error: i20ControlTrackedSource.error ?? null },
+      note:
+        'a-derivation-check-alone-cannot-be-red-by-under-selecting-so-the-rule-is-driven-over-a-disposable-repository ' +
+        'whose-manifest-declares-a-build-output-entrypoint-and-must-be-selected',
+    }).slice(0, 700),
   );
   // The rule is stated, versioned, and part of the reuse key: a rule change reclaims every workspace rather than
   // silently reusing one verified under the old rule. Rule version 2 is the A7 change — a BARE relative specifier in
@@ -12721,76 +12879,110 @@ check(
       `branch=${JSON.stringify(i33HelpBranch)}`,
   );
 
-  // ---- I25 (LAST): the documented totals are compared against a MEASURED run, so this check is deliberately the final
-  // check recorded — `results.length + 1` is the total it is about to become, and that arithmetic is exact only in the
-  // last position. The compatibility total is COMPUTED from that suite's own label table, never from a golden value.
-  // +1 on the assertions, because THIS check is not in `results` yet. NO +1 on the invariants: this check belongs to
-  // `I25` and `I25` is ALREADY in the set from the checks above it, so a +1 here would demand 38 for a 37-group run —
-  // wrong in the direction that looks precise. (The literals in the previous revision of this comment, '32 for a 31-group
-  // run', were correct when the run had 31 groups and were left behind by later groups; the arithmetic is unchanged, only
-  // the two numbers it is written in.)
+  // ---- I25 (LAST): this group's closing checks are deliberately the final checks recorded, and the assertion total is
+  // therefore computed WHERE IT IS EXACT — inside the monotonicity floor check, the last `check()` of the run, as
+  // `results.length + 1`. It used to be hoisted into a `const` above both closing checks, which was exact for neither:
+  // the constant is the total the FIRST of them is about to become, so the floor was really comparing `total - 1`
+  // against its own literal. That off-by-one was invisible while the floor and the total happened to differ by one, and
+  // it is what made a legitimate raise of the floor look unreachable. The compatibility total is COMPUTED from that
+  // suite's own label table, never from a golden value. No +1 on the invariants: this group is already in the set from
+  // the checks above, so counting the groups is a plain `Set` size with nothing to add.
   // ---- THE MONOTONICITY FLOOR. This is a FLOOR, not a target and not a fixed value: the measured counts are asserted
   // to be AT OR ABOVE it, and the suite's own history is representable as ordinary moves of this constant — 422 → 486
   // across the suite's life, and a cycle's deliberate deletions, are each one commented edit here rather than a rewrite
   // of the assertion set. What it PROTECTS: a reduction cannot be made silently. Lowering the floor is a diff like any
   // other, and the comment above it is the written justification the reduction then has to carry. What it does NOT
-  // catch, stated because the limit belongs next to the mechanism: a deletion made to PRESERVE a documented number by
-  // editing the prose instead — that is a reviewer's judgement, not a gate's. Raising the floor after a cycle that
-  // added assertions is the encouraged move; it is what makes the next reduction unrepeatable by accident.
-  const ASSERTION_FLOOR = { assertions: 491, invariants: 40, compatibility: 224 };
+  // catch, stated because the limit belongs next to the mechanism: a deletion carried in the SAME diff as the floor move
+  // that absorbs it — that is a reviewer's judgement, not a gate's. Raising the floor after a cycle that added assertions
+  // is the encouraged move; it is what makes the next reduction unrepeatable by accident.
+  // 492 → 493: the totals check was split in two. The documented-figures clause became a NEGATIVE claim (the manual must
+  // carry no totals literal) with the invariant-identifier cross-check beside it, and the floor moved with them so a later
+  // cycle cannot delete one half and land back on the old total unnoticed. A RAISE, in the encouraged direction; it is
+  // only reachable because the total it compares is now computed at the last position rather than one check earlier.
+  const ASSERTION_FLOOR = { assertions: 493, invariants: 40, compatibility: 224 };
 
-  const expectedAssertions = results.length + 1;
-  const expectedInvariants = new Set(results.map((entry) => entry.invariant)).size;
-  const readmeSelfTest = /currently \*\*(\d+) assertions\*\* across (\d+) invariant groups/.exec(readmeDoc);
-  const readmeCompatibility = /currently \*\*(\d+) cases\*\*/.exec(readmeDoc);
+  // A PARTIAL count, used only for the detail of the check below, and named as such: this many assertions are recorded
+  // plus the one being recorded, which is NOT yet the run's total because the floor check follows it.
+  const assertionsRecordedPlusThisOne = results.length + 1;
+  const measuredInvariantIds = new Set(results.map((entry) => entry.invariant));
 
-  // THE DOCUMENTED TOTALS, CHECKED WHERE THEY LIVE. This used to require the same two figures in BOTH `AGENTS.md` and
-  // `.harness/README.md`. The `AGENTS.md` conjunct is GONE, and the removal is the point rather than a loss of coverage:
-  // the two documents are not the same kind of surface. `.harness/README.md` is the operator manual — a specialist opens
-  // it deliberately, to run the gate it documents — so a number in it is a maintenance cost paid by whoever owns the
-  // number. `AGENTS.md` is injected into EVERY session in EVERY mode to answer "what is this repo and how do I verify
-  // it", and a self-test assertion count is not that. Keeping one there bought nothing and cost a re-baselining on every
-  // cycle; the run's own summary line already prints both figures to whoever actually ran it.
+  // THE TOTALS ARE NOT IN THE MANUAL, AND THAT IS NOW THE ASSERTED SHAPE. This check used to REQUIRE two numeric
+  // literals in `.harness/README.md` — the self-test's assertion and group counts, the compatibility case count — and
+  // compare them with this run. The coupling was the defect: a figure that moves on almost every cycle rots the first
+  // time an assertion is added, and re-baselining it is pure maintenance for a claim the gate already prints on its own
+  // summary line. So the direction is INVERTED, on the same reasoning `I31` already applies to the always-loaded layer-0
+  // set: the manual is scanned for the numeric shapes it used to carry, and putting one back turns this gate RED instead
+  // of being believed. The drift the old check caught — a stale figure — is now prevented rather than detected, which is
+  // the only form of this invariant that survives a change to the suite.
   //
-  // WHAT SURVIVES, and it is the whole of the original purpose: CONSISTENCY between a documented figure and a measurement.
-  // The compatibility total is still counted from the compatibility suite's OWN case bodies rather than trusted, the manual
-  // is still required to carry both figures, and a figure that rots there still turns this gate red. The only thing dropped
-  // is the second, redundant copy of the same claim in a document that should never have carried it.
+  // THE SHAPES ARE ENUMERATED, NOT PARSED-FOR-TRUTH. The first two are the two sentences that were there; the three
+  // after them are the same claim re-worded, because a check that recognises one phrasing is satisfied by the next
+  // synonym and guards nothing from the second attempt onward. Every shape is searched even though the manual is
+  // expected to match none, and the hits are printed, so a pattern that stopped matching for an unrelated reason shows
+  // up in the detail instead of passing silently.
+  const I25_README_TOTALS_PATTERNS = [
+    { shape: 'self-test-assertions-total', pattern: /currently \*\*\d+ assertions\*\* across \d+ invariant groups/ },
+    { shape: 'compatibility-cases-total', pattern: /currently \*\*\d+ cases\*\*/ },
+    { shape: 'bold-assertions-count', pattern: /\*\*\d+ assertions\*\*/ },
+    { shape: 'cases-count', pattern: /\b\d+ (?:compatibility )?cases\b/ },
+    { shape: 'spelled-out-group-count', pattern: /\b\d+ invariant groups\b/ },
+  ];
+  const i25ReadmeTotals = I25_README_TOTALS_PATTERNS.filter(({ pattern }) => pattern.test(readmeDoc)).map(
+    ({ shape, pattern }) => ({ shape, matched: pattern.exec(readmeDoc)?.[0] ?? null }),
+  );
   //
-  // The `read the numbers off the run` sentence moves with the numbers: it is a rule ABOUT a documented figure, so it
-  // lives where the figure lives. It is still required — verbatim — of the manual, and the I31 assertion above requires
-  // that it NOT appear in the always-loaded set, so the two documents cannot each grow their own copy of the rule.
+  // WHAT IS STILL COMPARED BETWEEN THE MANUAL AND THE RUN, and it is the half that can still drift: the invariant group
+  // IDENTIFIERS the manual names. A name like `I26` is an address into the suite; a count is a moving target, and only one
+  // of the two can be checked against the run without a re-baseline. If a group is renamed or dropped, the manual is
+  // citing a group that no longer runs, and that is a real defect in a document an operator reads to run the gate.
+  //
+  // The direction is ONE-WAY, and deliberately so. The manual is not required to name any group — a rewrite that drops
+  // every cross-reference is not a defect — so the condition is `every named id exists`, never `the two sets are equal`.
+  // Equality would demand of the prose a completeness the document never promised: the manual is not a manifest of the
+  // assertion set, and I25 must not turn it into one. How many identifiers were named is printed, so a drop to zero is
+  // visible in the report rather than being a silent no-op.
+  const i25ManualInvariantIds = [...new Set([...readmeDoc.matchAll(/\bI\d+(?:-E\d+)?\b/g)].map((match) => match[0]))];
+  const i25UnknownManualIds = i25ManualInvariantIds.filter((id) => !measuredInvariantIds.has(id));
   check(
     'I25',
-    'the-documented-self-test-and-compatibility-totals-match-a-measured-run-in-the-operator-manual-that-owns-them',
-    readmeSelfTest !== null &&
-      readmeCompatibility !== null &&
-      Number(readmeSelfTest[1]) === expectedAssertions &&
-      Number(readmeSelfTest[2]) === expectedInvariants &&
-      Number(readmeCompatibility[1]) === compatibilityTotal &&
-      // The rule itself, verbatim, where the numbers are: the figures are read off the run.
-      /Both counts are computed, never asserted against a fixed value/.test(readmeDoc) &&
-      // And the compatibility figure is a COUNT of the compatibility suite's own case bodies, never a golden value.
+    'the-operator-manual-carries-NO-self-test-or-compatibility-totals-literal-AND-every-invariant-group-id-it-NAMES-exists-in-this-run',
+    i25ReadmeTotals.length === 0 &&
+      I25_README_TOTALS_PATTERNS.length === 5 &&
+      i25UnknownManualIds.length === 0 &&
+      // The manual is still the manual: a positive conjunct, because the scan above is a NEGATIVE claim and would also
+      // pass on a section that had been deleted outright along with the numbers.
+      readmeDoc.includes('## Gate and tests') &&
+      readmeDoc.includes('node .harness/runtime/harness.mjs self-test') &&
+      readmeDoc.includes('node .harness/tests/compatibility.mjs') &&
+      // The case count is still COMPUTED from the compatibility suite's own labels rather than trusted — it is printed by
+      // that suite now, instead of being asserted against prose, and this conjunct keeps the count itself non-zero.
       compatibilityTotal > 0,
-    `expected assertions=${expectedAssertions} invariants=${expectedInvariants} compatibility=${compatibilityTotal}; ` +
-      `README=${JSON.stringify(readmeSelfTest?.slice(1))} compat=${readmeCompatibility?.[1]}; ` +
-      'note=the-AGENTS.md-copy-of-these-figures-was-removed-it-is-a-number-in-a-document-every-session-reads-maintained-by-hand-for-a-claim-the-gate-already-prints ' +
-      'note=the-manual-owns-the-figures-still-and-a-stale-one-there-still-turns-this-gate-red',
+    `totals_hits=${JSON.stringify(i25ReadmeTotals)} shapes_searched=${JSON.stringify(I25_README_TOTALS_PATTERNS.map(({ shape }) => shape))} ` +
+      `manual_group_ids=${JSON.stringify(i25ManualInvariantIds)} unknown_group_ids=${JSON.stringify(i25UnknownManualIds)} ` +
+      `measured_groups=${measuredInvariantIds.size} assertions_recorded_plus_this_one=${assertionsRecordedPlusThisOne} ` +
+      `compatibility_cases=${compatibilityTotal}; ` +
+      'note=the-direction-is-inverted-a-documented-count-used-to-be-COMPARED-with-this-run-and-a-stale-one-turned-the-gate-red-it-now-turns-it-red-when-such-a-count-appears-at-all ' +
+      'note2=the-cross-check-is-on-IDENTIFIERS-not-counters-because-a-name-is-an-address-and-a-count-is-a-moving-target ' +
+      'note3=what-is-not-guarded-here-a-manual-naming-no-group-would-leave-that-conjunct-vacuous-which-is-why-the-named-count-is-printed',
   );
 
-  // The SEPARATE, WEAKER property, enforced here because the totals check above is a consistency check and cannot be a
-  // monotonicity check: it compares the documents to the run, so a suite that SHRANK and a document edited to match
-  // would both be green together. This conjunct is the one that says a reduction needs a deliberate, commented move of
-  // the floor.
+  // The SEPARATE, WEAKER property, and it is the only place a count is compared with a count. It lives here rather than
+  // in the check above because that one no longer holds any figure to rot: a suite that SHRANK used to be able to go green
+  // by editing the document to match, and the document no longer carries the figure that could be edited. The floor is
+  // where a reduction now has to show itself, as a deliberate commented move of one constant.
+  //
+  // The assertion total is recomputed HERE, at the last check of the run, so `+1` is the total this check is about to
+  // become and the comparison is total-against-floor rather than one-short-against-floor.
+  const assertionsAtFinalPosition = results.length + 1;
   check(
     'I25',
     'the-measured-totals-are-AT-OR-ABOVE-the-recorded-monotonicity-floor-in-every-count',
-    expectedAssertions >= ASSERTION_FLOOR.assertions &&
-      expectedInvariants >= ASSERTION_FLOOR.invariants &&
+    assertionsAtFinalPosition >= ASSERTION_FLOOR.assertions &&
+      measuredInvariantIds.size >= ASSERTION_FLOOR.invariants &&
       compatibilityTotal >= ASSERTION_FLOOR.compatibility,
-    `floor=${JSON.stringify(ASSERTION_FLOOR)} measured=${JSON.stringify({ assertions: expectedAssertions, invariants: expectedInvariants, compatibility: compatibilityTotal })} ` +
+    `floor=${JSON.stringify(ASSERTION_FLOOR)} measured=${JSON.stringify({ assertions: assertionsAtFinalPosition, invariants: measuredInvariantIds.size, compatibility: compatibilityTotal })} ` +
       'note=a-reduction-below-the-floor-goes-red-here-and-can-only-be-made-green-by-a-deliberate-commented-move-of-ASSERTION_FLOOR ' +
-      'note2=this-cannot-catch-a-deletion-made-to-PRESERVE-a-documented-number-by-editing-the-prose',
+      'note2=this-is-the-only-count-vs-count-comparison-left-a-figure-in-prose-would-be-a-second-one-and-is-precisely-what-was-removed',
   );
 
   // ---- report

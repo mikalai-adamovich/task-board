@@ -330,8 +330,13 @@ workspace package is built when **all four** hold, every input read from the jud
 4. some other manifest at that commit depends on it by a **local** spec (`workspace:`, `file:`, `*`, or a range equal to
    the local version).
 
-On this repository's HEAD that selects exactly `@task-board/shared` (`build: tsc`, output root `shared/dist`), and
-records `ui` and `server` as **skipped** with the reason each was not selected. The order is deterministic: a dependency
+On this repository's HEAD the plan is **EMPTY**, and that is the correct derived answer rather than a broken one:
+`shared/package.json` declares `main`/`types`/`exports` as `./src/index.ts`, a file that IS tracked at the commit, so
+condition (3) fails and no package is resolved through a build output. `tsc --traceResolution` in `server/` agrees —
+it resolves `@task-board/shared` to `shared/src/index.ts`. All three workspace packages are recorded as **skipped** with
+the reason each was not selected, so "why was nothing built" is answerable from the record. The plan is a DERIVATION and
+the rule is what is asserted, not this answer: a manifest that declares a build-output entrypoint is still selected, and
+the self-test drives the real planner over a disposable repository to prove it. The order is deterministic: a dependency
 before its dependents, name as the tie-break, a cycle broken by name. The **root** package is never a build target — its
 `build` orchestrates workspaces rather than producing an entrypoint — and its value is recorded, not run.
 

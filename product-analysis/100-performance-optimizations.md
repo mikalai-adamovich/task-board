@@ -54,20 +54,22 @@ MongoDB Atlas M0 (replica set, eu-central-1). Typical warm API request ~70-90ms;
 - **Symptom:** periodic 200-700ms spikes on any Mongo endpoint, at any cadence (250ms/1s/5s/10s), no correlation with
   query/sort/data size.
 - **Earlier explanation, now WITHDRAWN.** This section previously claimed a root cause: that a non-default
-  `connectTimeoutMS: 5000` acted as an **idle-socket** timeout, that it killed idle pooled connections with
-  `reason='error'` at ~5s, and that removing it (leaving the driver default of 30 000) fixed the spikes. That mechanism
-  does not exist in the driver this application ships. In `mongodb@7.6.0`, `lib/cmap/connect.js:303` applies
-  `socket.setTimeout(connectTimeoutMS)` only while a connection is being **established**, and `:337` clears it with
-  `socket.setTimeout(0)` in the `finally` — so the timeout is removed the moment the connection is up and cannot kill an
-  already-established pooled connection. The A/B series quoted below (threshold "moving exactly with the setting") is
-  therefore not evidence of the claimed mechanism; it is not re-published here as a cause.
+  `connectTimeoutMS: 5000` acted as an **idle-socket** timeout, that it killed idle pooled connections, and that
+  removing it (leaving the driver default of 30 000) fixed the spikes. That mechanism does not exist in the driver this
+  application ships. In `mongodb@7.6.0`, `lib/cmap/connect.js:303` applies `socket.setTimeout(connectTimeoutMS)` only
+  while a connection is being **established**, and `:337` clears it with `socket.setTimeout(0)` in the `finally` — so
+  the timeout is removed the moment the connection is up and cannot kill an already-established pooled connection. The
+  A/B series that reported the closure threshold "moving exactly with the setting" is therefore not evidence of the
+  claimed mechanism; it is not re-published here as a cause.
 - **What is actually true:** the spikes are real and their cause is **unexplained**. `connectTimeoutMS` is left at the
-  driver default — not as a fix, but because there is no demonstrated effect to remove. The A/B numbers from the
-  original investigation are kept in the git history of this file; the honest state is "not root-caused".
+  driver default — the rule is to leave it alone because a custom value only bounds how long a _failing_ connection
+  attempt may hang, never the lifetime of a pooled connection, so there is nothing for it to buy here. It is kept as a
+  no-op, **not** as a fix. The A/B numbers from the original investigation are kept in the git history of this file; the
+  honest state is "not root-caused".
 - **Settings that are NOT the cause** (all experimentally excluded): maxIdleTimeMS=30s, readPreference, replica-set
   member, query/sort/data size, app CPU, Cloudflare edge (ping clean), per-request client (worse), Atlas-side reap.
 - **Where the current position is written down:** the comment above the client construction in
-  [`server/src/db/mongo.ts`](../server/src/db/mongo.ts) (which also states the refuted mechanism explicitly) and
+  [`server/src/db/mongo.ts`](../server/src/db/mongo.ts) (which also states why the refuted mechanism does not apply) and
   `AGENTS.md` §Performance forensics. `maxIdleTimeMS: 30_000` is retained on its own merits and is uncredited.
 
 ### 2.8 Audit #2/#4: project_members lookup skipped for read-only requests (F3)
@@ -352,17 +354,20 @@ MongoDB Atlas M0 (replica set, eu-central-1). Typical warm API request ~70-90ms;
   reconnect path.
 - **connectTimeoutMS — semantics, and the refuted correlation:** the MongoDB documentation defines `connectTimeoutMS` as
   the timeout for establishing a connection (and `socketTimeoutMS` as a separate socket-related option). For the
-  installed **mongodb@7.6.0**, the connection path applies it to the socket via `socket.setTimeout(...)`
-  ([cmap/connect.js:303](../node_modules/mongodb/lib/cmap/connect.js)) while ESTABLISHING and clears it with
-  `socket.setTimeout(0)` in the `finally` (:337) — so it cannot act on an established pooled connection. An earlier
-  version of this file used that detail to claim a correlation with the ~30 s idle socket closure seen as
-  `connectionClosed(reason=error)`; that correlation is WITHDRAWN as refuted (see 2.7) and the ~30 s closure remains
-  unexplained. Changing `connectTimeoutMS` was never investigated as an optimization and is not recommended here (it
-  governs connection establishment).
+  installed **mongodb@7.6.0**, the connection path applies it to the socket via `socket.setTimeout(...)` — in the
+  driver's own source, `lib/cmap/connect.js` at line 303 of the published `mongodb@7.6.0` package — while ESTABLISHING,
+  and clears it with `socket.setTimeout(0)` in the `finally` (line 337 of the same file) — so it cannot act on an
+  established pooled connection. The cited lines are inside an installed dependency and are deliberately not linked: a
+  link into `node_modules` resolves only on a machine that has run `npm install`, so it is dead in every checkout that
+  has not. An earlier version of this file used that detail to claim a correlation with the ~30 s idle socket closure
+  seen as `connectionClosed(reason=error)`; that correlation is WITHDRAWN as refuted (see 2.7) and the ~30 s closure
+  remains unexplained. Changing `connectTimeoutMS` was never investigated as an optimization and is not recommended here
+  (it governs connection establishment).
 - **Verdict: NO ACTION** — the ~100-150 ms cost occurs only once per idle gap >~30 s (warm request ~90 ms);
   `maxIdleTimeMS 30 s → 300 s` did not reduce the penalty; for this personal-scale product the measured benefit does not
-  justify changing timeout semantics. A `connectTimeoutMS`-based mitigation remains a possible future hypothesis ONLY if
-  the workload changes and idle reconnects become materially significant.
+  justify changing timeout semantics. `connectTimeoutMS` is not a candidate lever for this path at all: it bounds
+  connection ESTABLISHMENT and the driver clears it once the connection is up, so it cannot shorten an idle gap or the
+  reconnect that ends it.
 - **Operational incident (deploy vars):** the first manual `npx wrangler deploy` during this audit was run WITHOUT the
   CD `--var` flags; because wrangler vars are deployment-scoped configuration and are not inherited, production
   temporarily lost `DB_CLIENT_MODE=durable` (requests fell back to per-request mode — visible in tail as stateless-only
