@@ -15,7 +15,7 @@ export const MIN_MEASURED_ROW_HEIGHT_PX = 24;
 const ROW_BORDER_PX = 1;
 
 /**
- * Shared ResizeObserver measurement for Auto page-size (R3-P3 / Q2).
+ * Shared ResizeObserver measurement for Auto page-size.
  *
  * Observes a table-wrapper element and exposes the height available for table
  * ROWS (wrapper height minus the optional header element) plus the row height.

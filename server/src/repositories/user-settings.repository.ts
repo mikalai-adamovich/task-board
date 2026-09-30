@@ -1,6 +1,10 @@
 import type { Collection, ObjectId } from 'mongodb';
 import type { DateFormatPreference, ThemeMode, TimeFormatPreference } from '@task-board/shared';
 
+// guardrail:no-base-repository 2026-09-29 — settings are keyed by `userId` and
+// the document has no `id` at all, so there is nothing for an `id`-keyed base to
+// address. See `rules/guardrails.guardrail.test.ts` (P-03).
+
 // ─── MongoDB Document Shape ──────────────────────────────────────────────────
 
 export interface UserSettingsDocument {
@@ -17,9 +21,9 @@ export interface UserSettingsDocument {
   darkTheme?: string | null;
   language: string;
   pageSize: number;
-  /** R3-P8: preferred date display format (null = not set). */
+  /** Preferred date display format (null = not set). */
   dateFormat: DateFormatPreference | null;
-  /** R3-P8: preferred time display format (null = not set). */
+  /** Preferred time display format (null = not set). */
   timeFormat: TimeFormatPreference | null;
   updatedAt: Date;
 }
@@ -39,23 +43,29 @@ export interface UserSettings {
   darkTheme: string | null;
   language: string;
   pageSize: number;
-  /** R3-P8: preferred date display format (null = not set). */
+  /** Preferred date display format (null = not set). */
   dateFormat: DateFormatPreference | null;
-  /** R3-P8: preferred time display format (null = not set). */
+  /** Preferred time display format (null = not set). */
   timeFormat: TimeFormatPreference | null;
   updatedAt: string;
 }
 
+/**
+ * A PATCH over the settings document. `| undefined` on every field because
+ * the route forwards the parsed `UpdateUserGlobalSettingsSchema` body, whose
+ * omitted keys are explicit `undefined`s; `upsert` then applies only the fields
+ * that are actually present.
+ */
 export interface UpdateUserSettings {
-  zoom?: number;
-  theme?: string;
-  themeMode?: ThemeMode;
-  lightTheme?: string | null;
-  darkTheme?: string | null;
-  language?: string;
-  pageSize?: number;
-  dateFormat?: DateFormatPreference | null;
-  timeFormat?: TimeFormatPreference | null;
+  zoom?: number | undefined;
+  theme?: string | undefined;
+  themeMode?: ThemeMode | undefined;
+  lightTheme?: string | null | undefined;
+  darkTheme?: string | null | undefined;
+  language?: string | undefined;
+  pageSize?: number | undefined;
+  dateFormat?: DateFormatPreference | null | undefined;
+  timeFormat?: TimeFormatPreference | null | undefined;
 }
 
 const DEFAULTS = {

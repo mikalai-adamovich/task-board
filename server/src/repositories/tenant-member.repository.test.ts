@@ -23,6 +23,25 @@ function createMockCollection() {
   };
 }
 
+/**
+ * A minimal chainable cursor: `find(...).sort(...).toArray()`. `findByTenant`
+ * sorts, so the mock has to carry the chain rather than only `toArray` — and
+ * the recorded `sort` argument is what the ordering test asserts on.
+ */
+function cursor(docs: TenantMemberDocument[]): {
+  sort: ReturnType<typeof vi.fn>;
+  toArray: ReturnType<typeof vi.fn>;
+} {
+  const cursor = {
+    sort: vi.fn(),
+    toArray: vi.fn().mockResolvedValue(docs),
+  };
+
+  cursor.sort.mockReturnValue(cursor);
+
+  return cursor;
+}
+
 function makeDoc(overrides: Partial<TenantMemberDocument> = {}): TenantMemberDocument {
   return {
     id: 'member-123',
@@ -88,16 +107,89 @@ describe('TenantMemberRepository', () => {
 
   describe('findByTenant', () => {
     it('returns all members for a tenant', async () => {
-      const toArray = vi
-        .fn()
-        .mockResolvedValue([makeDoc({ userId: 'user-1' }), makeDoc({ userId: 'user-2', role: 'MEMBER' })]);
+      const chain = cursor([makeDoc({ userId: 'user-1' }), makeDoc({ userId: 'user-2', role: 'MEMBER' })]);
 
-      collection.find.mockReturnValue({ toArray });
+      collection.find.mockReturnValue(chain);
 
       const result = await repo.findByTenant('tenant-1');
 
       expect(collection.find).toHaveBeenCalledWith({ tenantId: 'tenant-1' });
       expect(result).toHaveLength(2);
+    });
+
+    // The order is a promise, not an accident of insertion. Natural
+    // collection order let two readers disagree about what row three is.
+    it('sorts by userId ascending so the order is total and testable', async () => {
+      const chain = cursor([]);
+
+      collection.find.mockReturnValue(chain);
+
+      await repo.findByTenant('tenant-1');
+
+      expect(chain.sort).toHaveBeenCalledWith({ userId: 1 });
+    });
+  });
+
+  describe('findByTenantWithUsers ordering (N-10)', () => {
+    /** Records the aggregation pipeline the repository built, so a test can
+     *  assert the ORDER of the stages — a sort placed after its `$project`
+     *  would sort on fields that no longer exist. */
+    function stubAggregate(docs: unknown[]): () => Record<string, unknown>[] {
+      const toArray = vi.fn().mockResolvedValue(docs);
+      const aggregate = vi.fn().mockReturnValue({ toArray });
+
+      collection.aggregate = aggregate as unknown as typeof collection.aggregate;
+
+      return () => (aggregate.mock.calls[0]?.[0] ?? []) as Record<string, unknown>[];
+    }
+
+    it('sorts by lower-cased display name, then e-mail, then userId', async () => {
+      const pipeline = stubAggregate([]);
+
+      await repo.findByTenantWithUsers('tenant-1');
+
+      expect(pipeline()).toEqual(
+        expect.arrayContaining([
+          { $sort: { _sortName: 1, _sortEmail: 1, userId: 1 } },
+          { $project: { _sortName: 0, _sortEmail: 0 } },
+        ]),
+      );
+    });
+
+    it('computes its sort keys case-insensitively (ada and Ada do not split by insertion)', async () => {
+      const pipeline = stubAggregate([]);
+
+      await repo.findByTenantWithUsers('tenant-1');
+
+      const addFields = pipeline().find((stage) => '$addFields' in stage) as { $addFields: Record<string, unknown> };
+
+      expect(addFields.$addFields).toEqual({
+        _sortName: { $toLower: { $ifNull: ['$user.displayName', '$$REMOVE'] } },
+        _sortEmail: { $toLower: { $ifNull: ['$user.email', '$$REMOVE'] } },
+      });
+    });
+
+    it('sorts BEFORE projecting the helper keys away, so the sort can see them', async () => {
+      const pipeline = stubAggregate([]);
+
+      await repo.findByTenantWithUsers('tenant-1');
+
+      const stages = pipeline();
+      const sortIndex = stages.findIndex((stage) => '$sort' in stage);
+      const projectIndex = stages.findIndex((stage) => '$project' in stage);
+
+      expect(sortIndex).toBeGreaterThan(-1);
+      expect(projectIndex).toBeGreaterThan(sortIndex);
+    });
+
+    it('does not leak the sort helper keys into the returned rows', async () => {
+      stubAggregate([{ ...makeDoc({ userId: 'user-1' }), user: { displayName: 'Ada', email: 'ada@x.test' } }]);
+
+      const result = await repo.findByTenantWithUsers('tenant-1');
+
+      expect(result[0]).not.toHaveProperty('_sortName');
+      expect(result[0]).not.toHaveProperty('_sortEmail');
+      expect(result[0]?.userDisplayName).toBe('Ada');
     });
   });
 
@@ -154,16 +246,8 @@ describe('TenantMemberRepository', () => {
     });
   });
 
-  describe('countActiveByTenant', () => {
-    it('returns the count of active members', async () => {
-      collection.countDocuments.mockResolvedValue(3);
-
-      const result = await repo.countActiveByTenant('tenant-1');
-
-      expect(collection.countDocuments).toHaveBeenCalledWith({ tenantId: 'tenant-1', status: 'ACTIVE' });
-      expect(result).toBe(3);
-    });
-  });
+  // The `countActiveByTenant` block moved with the method — it was dead code
+  // (no route, service or quota check reads it).
 
   describe('countOwnedTenants', () => {
     it('returns the count of owned tenants', async () => {

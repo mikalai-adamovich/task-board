@@ -1,6 +1,6 @@
 <div class="mx-auto max-w-6xl">
   <div class="mb-6 flex items-center justify-between">
-    <h2 class="text-2xl font-bold text-foreground">{{ 'labelManager.title' | transloco }}</h2>
+    <h1 class="text-2xl font-bold text-foreground">{{ 'labelManager.title' | transloco }}</h1>
     @if (canManage()) {
       <button hlmBtn (click)="showCreateDialog.set(true)">
         <ng-icon name="lucidePlus" class="mr-1" />
@@ -43,6 +43,7 @@
                 hlmInput
                 type="text"
                 class="h-7 w-32 text-sm"
+                [attr.aria-label]="'labelManager.name' | transloco"
                 [value]="editingName()"
                 (input)="editingName.set($any($event.target).value)"
                 (keydown.enter)="saveEdit(label)"
@@ -113,17 +114,22 @@
       <form id="create-label-form" [formRoot]="createForm" class="flex flex-col gap-4">
         <hlm-field>
           <label hlmFieldLabel for="label-name">{{ 'labelManager.name' | transloco }}</label>
-          <input hlmInput id="label-name" type="text" [formField]="createForm.name" placeholder="feature" />
+          <input
+            hlmInput
+            id="label-name"
+            type="text"
+            [formField]="createForm.name"
+            uiFieldControl
+            placeholder="feature"
+          />
+          @if (createForm.name().touched() && createForm.name().errors().length) {
+            <hlm-field-error class="block">{{ createForm.name().errors()[0]?.message | transloco }}</hlm-field-error>
+          }
         </hlm-field>
       </form>
       <hlm-dialog-footer>
         <button hlmBtn variant="outline" hlmDialogClose>{{ 'labelManager.cancel' | transloco }}</button>
-        <button
-          hlmBtn
-          type="submit"
-          form="create-label-form"
-          [disabled]="createForm().invalid() || createForm().submitting()"
-        >
+        <button hlmBtn type="submit" form="create-label-form" [disabled]="createForm().submitting()">
           @if (createForm().submitting()) {
             <hlm-spinner /> {{ 'labelManager.creating' | transloco }}
           } @else {

@@ -7,7 +7,7 @@
  * - priorityBadgeVariant / priorityLabel helpers
  * - Inline title edit (click → edit → confirm PATCHes, cancel/escape discards)
  * - Inline description save/cancel (keepEditViewOpenOnBlur semantics)
- * - No Edit button / edit-mode state (R3-P5)
+ * - No Edit button / edit-mode state
  * - Header layout classes (key nowrap, title clamp)
  * - Labels add/remove from detail PATCHes labelIds
  * - Viewer sees no edit affordances
@@ -264,7 +264,7 @@ describe('TaskDetail', () => {
     });
   });
 
-  // ── No edit mode (R3-P5) ───────────────────────────────
+  // ── No edit mode ───────────────────────────────────────
 
   describe('edit mode removal', () => {
     it('should not render an Edit button', async () => {
@@ -285,7 +285,7 @@ describe('TaskDetail', () => {
     });
   });
 
-  // ── Inline title edit (R3-P5) ──────────────────────────
+  // ── Inline title edit ──────────────────────────────────
 
   describe('inline title edit', () => {
     beforeEach(() => setup());
@@ -341,7 +341,7 @@ describe('TaskDetail', () => {
     });
   });
 
-  // ── Inline description edit (R3-P5) ────────────────────
+  // ── Inline description edit ────────────────────────────
 
   describe('inline description edit', () => {
     beforeEach(() => setup());
@@ -382,7 +382,7 @@ describe('TaskDetail', () => {
     });
   });
 
-  // ── Header layout (R3-P5) ──────────────────────────────
+  // ── Header layout ──────────────────────────────────────
 
   describe('header layout', () => {
     it('should render nowrap key, clamped title and own-row priority badge', async () => {
@@ -394,14 +394,14 @@ describe('TaskDetail', () => {
 
       expect(key?.classList.contains('whitespace-nowrap')).toBe(true);
 
-      const title = el.querySelector('h2');
+      const title = el.querySelector('h1');
 
       expect(title?.classList.contains('break-words')).toBe(true);
       expect(title?.classList.contains('line-clamp-2')).toBe(true);
     });
   });
 
-  // ── Labels editing (R3-P5) ─────────────────────────────
+  // ── Labels editing ─────────────────────────────────────
 
   describe('labels editing', () => {
     beforeEach(() => setup());
@@ -453,7 +453,7 @@ describe('TaskDetail', () => {
     });
   });
 
-  // ── Viewer permissions (R3-P5) ─────────────────────────
+  // ── Viewer permissions ─────────────────────────────────
 
   describe('viewer sees no edit affordances', () => {
     it('should disable editing and hide affordances for users without write access', async () => {
@@ -465,7 +465,7 @@ describe('TaskDetail', () => {
       const el: HTMLElement = fixture.nativeElement;
 
       // Title is a plain heading — no click-to-edit role
-      expect(el.querySelector('h2')?.closest('[role="button"]')).toBeNull();
+      expect(el.querySelector('h1')?.closest('[role="button"]')).toBeNull();
       // Inline editors cannot be started
       component.startTitleEdit();
       component.startDescriptionEdit();

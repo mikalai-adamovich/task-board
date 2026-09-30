@@ -4,6 +4,7 @@ import { TranslocoPipe } from '@jsverse/transloco';
 import { HttpErrorResponse } from '@angular/common/http';
 import { finalize } from 'rxjs';
 import { form, FormField, FormRoot, schema, required, minLength, maxLength } from '@angular/forms/signals';
+import { FieldControl } from '@app/shared/field-control/field-control';
 import { TenantClient } from '@services/tenant-client';
 import { AuthStore } from '@stores/auth-store';
 import { HlmCardImports } from '@spartan-ng/helm/card';
@@ -23,6 +24,7 @@ interface InvitationFormModel {
 
 @Component({
   imports: [
+    FieldControl,
     HlmAlertImports,
     RouterLink,
     TranslocoPipe,
@@ -43,9 +45,9 @@ export class AcceptInvitation implements OnInit {
   private readonly router = inject(Router);
   private readonly tenantClient = inject(TenantClient);
   private readonly authStore = inject(AuthStore);
-  protected readonly loading = signal(true);
-  protected readonly error = signal('');
-  protected readonly invitation = signal<InvitationDetails | null>(null);
+  private readonly loading = signal(true);
+  private readonly error = signal('');
+  private readonly invitation = signal<InvitationDetails | null>(null);
   private readonly token = signal('');
   private readonly model = signal<InvitationFormModel>({ displayName: '', password: '', confirmPassword: '' });
   protected readonly invitationForm = form(
@@ -91,7 +93,7 @@ export class AcceptInvitation implements OnInit {
       });
   }
 
-  protected async acceptAsNewUser(): Promise<void> {
+  private async acceptAsNewUser(): Promise<void> {
     const invitation = this.invitation();
 
     if (!invitation) return;

@@ -1,5 +1,5 @@
 /**
- * Shared Auto page-size math (R3-P3 / Q2) — used by the tasks table, the audit
+ * Shared Auto page-size math — used by the tasks table, the audit
  * log viewer and the member tables so all data tables share one implementation.
  */
 
@@ -7,11 +7,11 @@
 export const AUTO_PAGE_SIZE_SENTINEL = 0;
 /** Fixed fallback row height — the basis of Auto math and spacer rows until/unless real rows are measured. */
 export const TABLE_ROW_HEIGHT_PX = 48;
-/** Q9: fallback row height in compact density (reduced vertical cell padding). */
+/** Fallback row height in compact density (reduced vertical cell padding). */
 export const TABLE_ROW_HEIGHT_COMPACT_PX = 32;
 
 /**
- * Q9 (RQ-04 ⑤): density-aware fallback row height for the Auto page-size math and
+ * Density-aware fallback row height for the Auto page-size math and
  * spacer rows — compact tables fit more rows per available pixel, so passing the
  * smaller constant makes Auto mode react to a density toggle automatically.
  */

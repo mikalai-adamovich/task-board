@@ -38,9 +38,9 @@ export interface UserPreferences {
   language: string;
   /** Default page size for paginated tables. */
   pageSize: number;
-  /** Preferred date display format (R3-P8). Null = not set. */
+  /** Preferred date display format. Null = not set. */
   dateFormat: DateFormatPreference | null;
-  /** Preferred time display format (R3-P8). Null = not set. */
+  /** Preferred time display format. Null = not set. */
   timeFormat: TimeFormatPreference | null;
   updatedAt: string;
 }
@@ -59,9 +59,9 @@ export interface UpdateUserPreferences {
   language?: string;
   /** Default page size for paginated tables. */
   pageSize?: number;
-  /** Preferred date display format (R3-P8). */
+  /** Preferred date display format. */
   dateFormat?: DateFormatPreference | null;
-  /** Preferred time display format (R3-P8). */
+  /** Preferred time display format. */
   timeFormat?: TimeFormatPreference | null;
 }
 
@@ -86,32 +86,64 @@ export interface PaginationParams {
   sort: string;
 }
 
+/**
+ * Every error code the API can return — technical specification §14.3 plus the
+ * additive server-side conditions.
+ *
+ * This is the single list, and `ErrorCode` is DERIVED from it. A type-only
+ * union could only be consumed by the type system: a client that wanted to
+ * render a message per code had to hand-copy the members and hope the two
+ * agreed (four codes were missing and nothing said so). With a
+ * runtime list, a `Record<ErrorCode, string>` on the client is exhaustive by
+ * construction: delete a member here and the client build fails.
+ */
+export const ERROR_CODES = [
+  'UNAUTHORIZED',
+  'INVALID_CREDENTIALS',
+  'FORBIDDEN',
+  'NOT_FOUND',
+  'VALIDATION_ERROR',
+  /**
+   * The request-body cap (5 MB) refused the body: a 413. Distinct from
+   * `VALIDATION_ERROR` because the action is different — the shape is legal,
+   * the SIZE is not, so the client says "send less" rather than "check your
+   * input". Adding the member here makes the client's exhaustive
+   * `Record<ErrorCode, string>` map fail to compile until it has a message,
+   * which is how the code and the message are kept in step.
+   */
+  'PAYLOAD_TOO_LARGE',
+  'CONFLICT',
+  'TASK_VERSION_CONFLICT',
+  'DUPLICATE_PROJECT_KEY',
+  'DUPLICATE_LABEL',
+  'DUPLICATE_STATUS',
+  'INVALID_STATUS_REPLACEMENT',
+  'INVALID_SPRINT_DATES',
+  'INVITATION_EXPIRED',
+  'INVITATION_REVOKED',
+  'INVITATION_ALREADY_ACCEPTED',
+  'PROJECT_ARCHIVED',
+  'TENANT_ARCHIVED',
+  'PROJECT_KEY_IMMUTABLE',
+  'TASK_TYPE_IN_USE',
+  'STATUS_IN_USE',
+  'SLUG_TAKEN',
+  'INVALID_RESET_TOKEN',
+  'RATE_LIMITED',
+  /** A database query exceeded its `maxTimeMS` budget and was aborted server-side. */
+  'QUERY_TIMEOUT',
+  /**
+   * A task number could not be allocated within the bounded retry of the
+   * `tasks {projectId, number}` uniqueness race — a transient, retryable server
+   * condition (503), NOT a client conflict. Additive to the §14.3 list, exactly
+   * as F11 did for `QUERY_TIMEOUT`; the driver error never reaches the client.
+   */
+  'TASK_NUMBER_UNAVAILABLE',
+  'INTERNAL_ERROR',
+] as const;
+
 /** All error codes from the technical specification §14.3 */
-export type ErrorCode =
-  | 'UNAUTHORIZED'
-  | 'INVALID_CREDENTIALS'
-  | 'FORBIDDEN'
-  | 'NOT_FOUND'
-  | 'VALIDATION_ERROR'
-  | 'CONFLICT'
-  | 'TASK_VERSION_CONFLICT'
-  | 'DUPLICATE_PROJECT_KEY'
-  | 'DUPLICATE_LABEL'
-  | 'DUPLICATE_STATUS'
-  | 'INVALID_STATUS_REPLACEMENT'
-  | 'INVALID_SPRINT_DATES'
-  | 'INVITATION_EXPIRED'
-  | 'INVITATION_REVOKED'
-  | 'INVITATION_ALREADY_ACCEPTED'
-  | 'PROJECT_ARCHIVED'
-  | 'TENANT_ARCHIVED'
-  | 'PROJECT_KEY_IMMUTABLE'
-  | 'TASK_TYPE_IN_USE'
-  | 'STATUS_IN_USE'
-  | 'SLUG_TAKEN'
-  | 'INVALID_RESET_TOKEN'
-  | 'RATE_LIMITED'
-  | 'INTERNAL_ERROR';
+export type ErrorCode = (typeof ERROR_CODES)[number];
 
 /** Standard error response returned by API endpoints on failure */
 export interface ErrorResponse {

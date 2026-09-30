@@ -7,7 +7,7 @@ import { ActivatedRoute } from '@angular/router';
  * 'emptyOnly'`), so each ancestor segment must be checked individually — walking
  * to the root and reading its paramMap would return nothing.
  *
- * All tenant-scoped routes live under `/w/:tenantSlug` (DEC-032).
+ * All tenant-scoped routes live under `/w/:tenantSlug`.
  */
 export function getTenantSlug(route: ActivatedRoute): string {
   let current: ActivatedRoute | null = route;

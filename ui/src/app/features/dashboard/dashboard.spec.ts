@@ -1,5 +1,5 @@
 /**
- * Tests for the root Dashboard entry component (DEC-033).
+ * Tests for the root Dashboard entry component.
  *
  * Covers:
  * - dashboardState computed signal (visitor / new-user / pending-invitations / redirecting)

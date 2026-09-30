@@ -14,6 +14,7 @@ import { HlmTextareaImports } from '@spartan-ng/helm/textarea';
 import { HlmCardImports } from '@spartan-ng/helm/card';
 import { HlmAlertImports } from '@spartan-ng/helm/alert';
 import { form, FormField, FormRoot, schema, required, maxLength } from '@angular/forms/signals';
+import { FieldControl } from '@app/shared/field-control/field-control';
 import { canManageProject } from '@app/shared/utils/role-utils';
 import { injectToasts } from '@app/shared/utils/toast-utils';
 import { getErrorMessage } from '@app/shared/utils/error-utils';
@@ -25,12 +26,13 @@ interface GeneralFormModel {
 
 /**
  * Project settings — General page (spec S15, DEC-035).
- * Edits name/description. The key is immutable server-side (BR-022); the field
+ * Edits name/description. The key is immutable server-side; the field
  * is rendered locked with an explanatory hint.
  */
 @Component({
   selector: 'ui-project-settings-general',
   imports: [
+    FieldControl,
     RouterLink,
     TranslocoPipe,
     NgIcon,
@@ -51,11 +53,11 @@ export class ProjectSettingsGeneral {
   private readonly notify = injectToasts();
   private readonly projectClient = inject(ProjectClient);
   private readonly authStore = inject(AuthStore);
-  protected readonly projectStore = inject(ProjectStore);
+  private readonly projectStore = inject(ProjectStore);
   /** Bound via withComponentInputBinding() — receives project key from route */
   readonly projectKey = input.required<string>();
   /** Resolved project UUID from the store */
-  protected readonly projectId = computed(() => this.projectStore.activeProject()?.id ?? '');
+  private readonly projectId = computed(() => this.projectStore.activeProject()?.id ?? '');
   /**
    * Whether the current user can manage project settings (PROJECT_ADMIN+).
    * Tenant OWNER/ADMIN bypass project role checks.
@@ -67,7 +69,7 @@ export class ProjectSettingsGeneral {
   protected readonly error = computed(() => this.actionError());
   /** Seed the form from the project context loaded by projectGuard */
   private readonly initialProject = this.projectStore.activeProject();
-  protected readonly model = signal<GeneralFormModel>({
+  private readonly model = signal<GeneralFormModel>({
     name: this.initialProject?.name ?? '',
     description: this.initialProject?.description ?? '',
   });
@@ -89,7 +91,7 @@ export class ProjectSettingsGeneral {
               next: (updated) => {
                 this.projectStore.activeProject.update((p) => (p ? { ...p, ...updated } : p));
 
-                // F4: keep the shared tenant project-list cache in sync
+                // Keep the shared tenant project-list cache in sync
                 const merged = this.projectStore.activeProject();
 
                 if (merged) this.projectStore.upsertProject(merged);

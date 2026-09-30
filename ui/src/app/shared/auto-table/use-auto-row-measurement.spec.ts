@@ -1,5 +1,5 @@
 /**
- * Tests for the shared Auto page-size measurement hook (R3-P3 / Q2).
+ * Tests for the shared Auto page-size measurement hook.
  *
  * Covers:
  * - availableRowsHeight = wrapper height − header height

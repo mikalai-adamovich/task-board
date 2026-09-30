@@ -1,7 +1,12 @@
 import { ProjectStatus, SprintStatus } from '@task-board/shared';
 import type { Sprint, CreateSprint, UpdateSprint } from '@task-board/shared';
 import { AppError, ForbiddenError, NotFoundError } from '../errors/app-error.js';
-import { assertTenantEntity } from './tenant-assert.js';
+import {
+  assertProjectInTenant,
+  assertProjectWritableInTenant,
+  requireCallerContext,
+  type CallerContext,
+} from './tenant-assert.js';
 import { SprintRepository } from '../repositories/sprint.repository.js';
 import { ProjectRepository } from '../repositories/project.repository.js';
 import { ensurePermission } from './rbac.service.js';
@@ -11,7 +16,7 @@ import type { AuditService } from './audit.service.js';
 
 export interface SprintServiceTaskRepo {
   clearSprintFromTasks(projectId: string, sprintId: string): Promise<void>;
-  /** TOP-2: propagate a sprint rename to the denormalized task.sprintName */
+  /** Propagate a sprint rename to the denormalized task.sprintName */
   setSprintNameForTasks(projectId: string, sprintId: string, sprintName: string): Promise<void>;
 }
 
@@ -32,20 +37,37 @@ export class SprintService {
   ) {}
 
   /**
-   * V2-4: gate sprint mutations behind the RBAC matrix (create_sprint /
-   * change_sprint_status — PROJECT_ADMIN only; tenant Owner/Admin bypass
-   * inside the matrix). Routes with `:projectId` in the path are additionally
-   * gated by requirePermission — this is the id-based-route layer.
+   * (read path): the project must belong to the caller's
+   * tenant, otherwise 404 — never 403, so a foreign project id looks exactly
+   * like a nonexistent one. The caller context is REQUIRED; a missing one
+   * throws instead of silently skipping the check (fail closed).
    */
-  private async ensureSprintPermission(
+  private async assertProjectScope(projectId: string, context: CallerContext): Promise<{ tenantId: string }> {
+    const { tenantId } = requireCallerContext(context);
+
+    return assertProjectInTenant(this.projectRepo, projectId, tenantId);
+  }
+
+  /**
+   * (write path): tenant scope FIRST (404 on a foreign
+   * project), then the RBAC matrix (`create_sprint` / `change_sprint_status` —
+   * PROJECT_ADMIN only; tenant Owner/Admin bypass inside the matrix) via
+   * {@link ensurePermission}. Routes with `:projectId` in the path are
+   * additionally gated by requirePermission — this is the id-based-route
+   * layer, and it no longer fails open when the context is missing.
+   *
+   * @returns the resolved project so callers can audit-log without a second lookup.
+   */
+  private async assertSprintPermission(
     action: 'create_sprint' | 'change_sprint_status',
     projectId: string,
-    userId?: string,
-    userRole?: string,
-  ): Promise<void> {
-    if (!userId || !userRole) {
-      return; // no caller context → nothing to enforce against (legacy/test callers)
-    }
+    context: CallerContext,
+  ): Promise<{ tenantId: string }> {
+    const { tenantId, userId, userRole } = requireCallerContext(context);
+    // The WRITABLE seam — tenant scope first, then the single server-owned
+    // rule that a project scheduled for deletion is read-only. This also
+    // subsumes the ad-hoc ACTIVE check `createSprint` used to repeat.
+    const project = await assertProjectWritableInTenant(this.projectRepo, projectId, tenantId);
 
     if (!this.projectMemberRepo) {
       throw new ForbiddenError('Project membership lookup is unavailable');
@@ -54,36 +76,39 @@ export class SprintService {
     const membership = await this.projectMemberRepo.findByUserAndProject(userId, projectId);
 
     ensurePermission(action, userRole, membership?.role ?? null);
+
+    return project;
   }
 
-  async getSprintsByProject(projectId: string): Promise<Sprint[]> {
+  async getSprintsByProject(projectId: string, context: CallerContext): Promise<Sprint[]> {
+    await this.assertProjectScope(projectId, context);
+
     return this.sprintRepo.findByProject(projectId);
   }
 
-  async getSprint(id: string, tenantId: string): Promise<Sprint> {
+  async getSprint(id: string, context: CallerContext): Promise<Sprint> {
     const sprint = await this.sprintRepo.findById(id);
 
     if (!sprint) {
       throw new NotFoundError('Sprint not found');
     }
 
-    // M-02: a bare sprint id must never cross tenant boundaries (404, not 403)
-    await assertTenantEntity(this.projectRepo, sprint.projectId, tenantId, 'Sprint');
+    // A bare sprint id must never cross tenant boundaries (404, not 403)
+    await this.assertProjectScope(sprint.projectId, context);
 
     return sprint;
   }
 
-  async createSprint(projectId: string, input: CreateSprint, userId?: string, userRole?: string): Promise<Sprint> {
-    await this.ensureSprintPermission('create_sprint', projectId, userId, userRole);
-
+  async createSprint(projectId: string, input: CreateSprint, context: CallerContext): Promise<Sprint> {
+    const project = await this.assertSprintPermission('create_sprint', projectId, context);
     // Validate project exists and is ACTIVE
-    const project = await this.projectRepo.findById(projectId);
+    const fullProject = await this.projectRepo.findById(projectId);
 
-    if (!project) {
+    if (!fullProject) {
       throw new NotFoundError('Project not found');
     }
 
-    if (project.status !== ProjectStatus.ACTIVE) {
+    if (fullProject.status !== ProjectStatus.ACTIVE) {
       throw new AppError(400, 'PROJECT_ARCHIVED', 'Cannot create sprints in an archived project');
     }
 
@@ -99,31 +124,28 @@ export class SprintService {
     });
 
     // Audit side effect
-    if (this.auditService && userId) {
-      const project = await this.projectRepo.findById(projectId);
-
+    if (this.auditService) {
       await this.auditService.log({
-        tenantId: project?.tenantId ?? '',
+        tenantId: project.tenantId,
         projectId,
         entityType: 'SPRINT',
         entityId: sprint.id,
         action: 'CREATED',
-        actorId: userId,
+        actorId: context.userId,
       });
     }
 
     return sprint;
   }
 
-  async updateSprint(id: string, input: UpdateSprint, userId?: string, userRole?: string): Promise<Sprint> {
+  async updateSprint(id: string, input: UpdateSprint, context: CallerContext): Promise<Sprint> {
     const sprint = await this.sprintRepo.findById(id);
 
     if (!sprint) {
       throw new NotFoundError('Sprint not found');
     }
 
-    await this.ensureSprintPermission('change_sprint_status', sprint.projectId, userId, userRole);
-
+    const project = await this.assertSprintPermission('change_sprint_status', sprint.projectId, context);
     // Handle status transitions with date side effects
     const updates: {
       name?: string;
@@ -173,14 +195,13 @@ export class SprintService {
       throw new NotFoundError('Sprint not found');
     }
 
-    // TOP-2: propagate a rename to the denormalized task.sprintName (sort-only)
+    // Propagate a rename to the denormalized task.sprintName (sort-only)
     if (input.name !== undefined && input.name !== sprint.name) {
       await this.taskRepo.setSprintNameForTasks(sprint.projectId, id, input.name);
     }
 
     // Audit side effect
-    if (this.auditService && userId) {
-      const project = await this.projectRepo.findById(updated.projectId);
+    if (this.auditService) {
       const changes: { field: string; oldValue: unknown; newValue: unknown }[] = [];
 
       if (input.name !== undefined) changes.push({ field: 'name', oldValue: sprint.name, newValue: input.name });
@@ -191,12 +212,12 @@ export class SprintService {
       if (input.endDate !== undefined)
         changes.push({ field: 'endDate', oldValue: sprint.endDate, newValue: input.endDate });
       await this.auditService.log({
-        tenantId: project?.tenantId ?? '',
+        tenantId: project.tenantId,
         projectId: updated.projectId,
         entityType: 'SPRINT',
         entityId: updated.id,
         action: 'UPDATED',
-        actorId: userId,
+        actorId: context.userId,
         changes,
       });
     }
@@ -204,29 +225,27 @@ export class SprintService {
     return updated;
   }
 
-  async deleteSprint(id: string, userId?: string, userRole?: string): Promise<void> {
+  async deleteSprint(id: string, context: CallerContext): Promise<void> {
     const sprint = await this.sprintRepo.findById(id);
 
     if (!sprint) {
       throw new NotFoundError('Sprint not found');
     }
 
-    await this.ensureSprintPermission('change_sprint_status', sprint.projectId, userId, userRole);
+    const project = await this.assertSprintPermission('change_sprint_status', sprint.projectId, context);
 
     // Set sprintId = null on all affected tasks
     await this.taskRepo.clearSprintFromTasks(sprint.projectId, id);
 
     // Audit side effect (before hard delete)
-    if (this.auditService && userId) {
-      const project = await this.projectRepo.findById(sprint.projectId);
-
+    if (this.auditService) {
       await this.auditService.log({
-        tenantId: project?.tenantId ?? '',
+        tenantId: project.tenantId,
         projectId: sprint.projectId,
         entityType: 'SPRINT',
         entityId: sprint.id,
         action: 'DELETED',
-        actorId: userId,
+        actorId: context.userId,
       });
     }
 

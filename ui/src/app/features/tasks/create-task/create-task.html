@@ -1,18 +1,12 @@
 <div class="mx-auto max-w-6xl py-8">
   <!-- Header -->
   <div class="mb-6 flex items-center justify-between">
-    <h2 class="text-xl font-bold text-foreground">{{ 'taskCreate.title' | transloco }}</h2>
+    <h1 class="text-xl font-bold text-foreground">{{ 'taskCreate.title' | transloco }}</h1>
     <div class="flex gap-2">
       <button hlmBtn variant="outline" size="sm" (click)="cancel()">
         {{ 'taskCreate.cancel' | transloco }}
       </button>
-      <button
-        hlmBtn
-        size="sm"
-        type="submit"
-        form="create-task-form"
-        [disabled]="createForm().invalid() || createForm().submitting()"
-      >
+      <button hlmBtn size="sm" type="submit" form="create-task-form" [disabled]="createForm().submitting()">
         @if (createForm().submitting()) {
           <hlm-spinner /> {{ 'taskCreate.creating' | transloco }}
         } @else {
@@ -42,20 +36,10 @@
           class="text-lg"
           [placeholder]="'taskCreate.titlePlaceholder' | transloco"
           [formField]="createForm.title"
+          uiFieldControl
         />
-        @if (createForm.title().touched() && createForm.title().invalid()) {
-          <p class="text-sm text-destructive" role="alert">
-            @if (
-              createForm
-                .title()
-                .errors()
-                .some((e) => e.kind === 'maxLength')
-            ) {
-              {{ 'validation.titleMaxLength' | transloco }}
-            } @else {
-              {{ 'validation.titleRequired' | transloco }}
-            }
-          </p>
+        @if (createForm.title().touched() && createForm.title().errors().length) {
+          <hlm-field-error class="block">{{ createForm.title().errors()[0]?.message | transloco }}</hlm-field-error>
         }
       </hlm-field>
 
@@ -72,12 +56,24 @@
           <!-- Status -->
           <hlm-field>
             <label hlmFieldLabel for="create-status">{{ 'taskCreate.status' | transloco }}</label>
-            <hlm-select
-              [value]="model().statusId"
-              (valueChange)="onFieldChange('statusId', $any($event))"
-              [itemToString]="statusItemToString"
-            >
-              <hlm-select-trigger id="create-status" class="w-full" size="sm">
+            <!--
+              status is a REQUIRED signal-form field, so the control is
+              bound with `[formField]` — the two-way write goes through the BrnSelect
+              control-value accessor. Before this the select was driven by hand
+              (`[value]` + `(valueChange)`), which is not a form control: the submit
+              never marked it touched, the schema error was never rendered and the
+              submit button silently did nothing.
+
+              No `uiFieldControl` here on purpose: `<hlm-select>` composes
+              `BrnFieldControl` (so Spartan's state tracker and `spartanInvalid`
+              exist) and `hlm-select-trigger`'s inner `<button>` already renders
+              `brnFieldControlDescribedBy`, so `aria-invalid` and the merged
+              `aria-describedby` land on the real control, not on this wrapper.
+              `buttonId` is what puts the id on that button, so the `<label for>`
+              above names the control the user actually focuses.
+            -->
+            <hlm-select [formField]="createForm.statusId" [itemToString]="statusItemToString">
+              <hlm-select-trigger [buttonId]="'create-status'" class="w-full" size="sm">
                 <hlm-select-value [placeholder]="'taskCreate.selectStatus' | transloco" />
               </hlm-select-trigger>
               <hlm-select-content *hlmSelectPortal>
@@ -88,13 +84,19 @@
                 </hlm-select-group>
               </hlm-select-content>
             </hlm-select>
+            @if (createForm.statusId().touched() && createForm.statusId().errors().length) {
+              <hlm-field-error class="block">{{
+                createForm.statusId().errors()[0]?.message | transloco
+              }}</hlm-field-error>
+            }
           </hlm-field>
 
           <!-- Priority -->
           <hlm-field>
             <label hlmFieldLabel for="create-priority">{{ 'taskCreate.priority' | transloco }}</label>
-            <hlm-select [value]="model().priorityLevel" (valueChange)="onPriorityLevelChange($any($event))">
-              <hlm-select-trigger id="create-priority" class="w-full" size="sm">
+            <!-- Required field, bound and wired like the status above. -->
+            <hlm-select [formField]="createForm.priorityLevel">
+              <hlm-select-trigger [buttonId]="'create-priority'" class="w-full" size="sm">
                 <hlm-select-value />
               </hlm-select-trigger>
               <hlm-select-content *hlmSelectPortal>
@@ -105,17 +107,19 @@
                 </hlm-select-group>
               </hlm-select-content>
             </hlm-select>
+            @if (createForm.priorityLevel().touched() && createForm.priorityLevel().errors().length) {
+              <hlm-field-error class="block">{{
+                createForm.priorityLevel().errors()[0]?.message | transloco
+              }}</hlm-field-error>
+            }
           </hlm-field>
 
           <!-- Type -->
           <hlm-field>
             <label hlmFieldLabel for="create-type">{{ 'taskCreate.type' | transloco }}</label>
-            <hlm-select
-              [value]="model().typeId"
-              (valueChange)="onFieldChange('typeId', $any($event))"
-              [itemToString]="typeItemToString"
-            >
-              <hlm-select-trigger id="create-type" class="w-full" size="sm">
+            <!-- Required field, bound and wired like the status above. -->
+            <hlm-select [formField]="createForm.typeId" [itemToString]="typeItemToString">
+              <hlm-select-trigger [buttonId]="'create-type'" class="w-full" size="sm">
                 <hlm-select-value [placeholder]="'taskCreate.selectType' | transloco" />
               </hlm-select-trigger>
               <hlm-select-content *hlmSelectPortal>
@@ -126,6 +130,11 @@
                 </hlm-select-group>
               </hlm-select-content>
             </hlm-select>
+            @if (createForm.typeId().touched() && createForm.typeId().errors().length) {
+              <hlm-field-error class="block">{{
+                createForm.typeId().errors()[0]?.message | transloco
+              }}</hlm-field-error>
+            }
           </hlm-field>
 
           <!-- Assignee -->
@@ -171,7 +180,7 @@
             </hlm-select>
           </hlm-field>
 
-          <!-- Labels (case-insensitive autocomplete, BR-019) -->
+          <!-- Labels (case-insensitive autocomplete) -->
           <hlm-field>
             <label hlmFieldLabel for="create-labels">{{ 'taskCreate.labels' | transloco }}</label>
             @if (selectedLabels().length > 0) {

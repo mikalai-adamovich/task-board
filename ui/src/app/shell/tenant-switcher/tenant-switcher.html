@@ -16,6 +16,7 @@
         (hlmDropdownMenuOpened)="onMenuOpened()"
         (hlmDropdownMenuClosed)="onMenuClosed()"
         [tooltip]="collapsedTooltip() ?? ('tenantSwitcher.selectWorkspace' | transloco)"
+        [attr.aria-label]="collapsedTooltip() ?? ('tenantSwitcher.selectWorkspace' | transloco)"
       >
         <ng-icon name="lucideBuilding2" />
       </button>

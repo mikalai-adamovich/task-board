@@ -1,142 +1,71 @@
 /**
- * E2E tests for task CRUD on the task table.
+ * E2E for the task table and the create-task form.
  *
- * Two suites:
- * - "Task CRUD (self-contained)" builds its own user → workspace → project
- *   chain, so it works against any database.
- * - "Task CRUD (seeded)" runs against a seeded project configured via the
- *   E2E_TENANT_SLUG and E2E_PROJECT_KEY environment variables and is skipped
- *   when they are not set.
- *
- * Requires: Angular dev server (port 4200) + backend API (port 8787).
+ * The create form (F8) is asserted through the behaviour a user sees: a blocked
+ * submission with the inline field error, and a successful submission that lands
+ * on the task detail page. The "New task" CTA is located structurally — it is the
+ * last button of the task-table toolbar, next to the `data-task-table-search` box.
  */
-import { test, expect, type Page } from '@playwright/test';
-import { registerUser, uniqueEmail } from './helpers';
+import { test, expect, taskTable } from './fixtures/test';
+import { apiCreateTask, main, newTaskButton, pageHeading } from './helpers';
 
-/** process.env without @types/node — the e2e tsconfig has no node types. */
-const env = ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {}) as Record<
-  string,
-  string | undefined
->;
-const SEEDED_TENANT_SLUG = env['E2E_TENANT_SLUG'];
-const SEEDED_PROJECT_KEY = env['E2E_PROJECT_KEY'];
+test.describe('Task table', () => {
+  test('lists an existing task of the project', async ({ page, request, owner }) => {
+    const title = `E2E Listed ${Date.now().toString(36)}`;
 
-/** Register → create workspace → create project → open the task table. */
-async function setupProjectAndOpenTaskTable(page: Page): Promise<{ slug: string; projectKey: string }> {
-  await registerUser(page, uniqueEmail('task'));
-  await page.goto('/workspace/create');
+    await apiCreateTask(request, owner, owner.project, title);
 
-  await page.getByPlaceholder('My Workspace').fill(`E2E Tasks WS ${Date.now()}`);
-  await page.locator('button[type="submit"]').click();
-  await expect(page).toHaveURL(/\/w\//, { timeout: 10_000 });
+    await page.goto(taskTable(owner.tenantSlug, owner.project.key));
 
-  const slug = page.url().split('/w/')[1].split('/')[0];
-
-  await page
-    .getByRole('button', { name: /Create Project/i })
-    .first()
-    .click();
-
-  const dialog = page.getByRole('dialog');
-
-  await dialog.locator('input[type="text"]').first().fill(`E2E Task Project ${Date.now()}`);
-  await dialog.getByRole('button', { name: /Create/i }).click();
-  await expect(page).toHaveURL(/\/projects\//, { timeout: 10_000 });
-
-  const projectKey = page.url().split('/projects/')[1].split('/')[0];
-
-  await page.goto(`/w/${slug}/projects/${projectKey}/tasks`);
-
-  return { slug, projectKey };
-}
-
-/** Create a task through the /tasks/new form and submit it. */
-async function createTask(page: Page, title: string): Promise<void> {
-  await page.getByRole('button', { name: /New Task/i }).click();
-  await expect(page).toHaveURL(/\/tasks\/new/, { timeout: 10_000 });
-
-  await page.getByPlaceholder('Short, descriptive summary').fill(title);
-  await page.locator('button[type="submit"]').click();
-
-  // Successful creation navigates away from the form (task detail or table)
-  await expect(page).not.toHaveURL(/\/tasks\/new/, { timeout: 10_000 });
-}
-
-test.describe('Task CRUD (self-contained)', () => {
-  test('task table shows the New Task button for users who can create tasks', async ({ page }) => {
-    await setupProjectAndOpenTaskTable(page);
-
-    await expect(page.getByRole('button', { name: /New Task/i })).toBeVisible();
+    await expect(main(page).getByText(title).first()).toBeVisible();
   });
 
-  test('creates a task and it appears in the task table', async ({ page }) => {
-    await setupProjectAndOpenTaskTable(page);
+  test('offers the New task action to a user who can create tasks', async ({ page, owner }) => {
+    await page.goto(taskTable(owner.tenantSlug, owner.project.key));
 
-    const title = `E2E Task ${Date.now()}`;
-
-    await createTask(page, title);
-
-    // Back on the table, the new task is listed
-    await page.goto(page.url().split('/tasks/')[0] + '/tasks');
-    await expect(page.getByText(title).first()).toBeVisible({ timeout: 10_000 });
-  });
-
-  test('task creation form requires a title', async ({ page }) => {
-    await setupProjectAndOpenTaskTable(page);
-
-    await page.getByRole('button', { name: /New Task/i }).click();
-    await expect(page).toHaveURL(/\/tasks\/new/);
-
-    // Submitting without a title keeps the user on the form (validation)
-    await page.locator('button[type="submit"]').click();
-    await expect(page).toHaveURL(/\/tasks\/new/);
-  });
-
-  test('created task opens in the task detail view', async ({ page }) => {
-    await setupProjectAndOpenTaskTable(page);
-
-    const title = `E2E Detail ${Date.now()}`;
-
-    await createTask(page, title);
-
-    // After creation we land on the task detail page showing the title
-    await expect(page.getByText(title).first()).toBeVisible({ timeout: 10_000 });
+    await expect(newTaskButton(page)).toBeVisible();
   });
 });
 
-test.describe('Task CRUD (seeded)', () => {
-  test.skip(
-    !SEEDED_TENANT_SLUG || !SEEDED_PROJECT_KEY,
-    'Set E2E_TENANT_SLUG and E2E_PROJECT_KEY to run against a seeded DB',
-  );
+test.describe('Create task', () => {
+  test('blocks an empty title with the inline field error', async ({ page, owner }) => {
+    await page.goto(`${taskTable(owner.tenantSlug, owner.project.key)}/new`);
 
-  test('task table loads for the seeded project', async ({ page }) => {
-    await page.goto(`/w/${SEEDED_TENANT_SLUG}/projects/${SEEDED_PROJECT_KEY}/tasks`);
+    await page.locator('button[type="submit"][form="create-task-form"]').click();
 
-    await expect(page.getByRole('button', { name: /New Task/i })).toBeVisible({ timeout: 10_000 });
+    // F8: the form validates instead of silently navigating away.
+    await expect(page.locator('hlm-field-error').first()).toBeVisible();
+    await expect(page).toHaveURL(/\/tasks\/new$/);
   });
 
-  test('creates and lists a task in the seeded project', async ({ page }) => {
-    // Seeded DB: sign in as the seeded owner (credentials provided via env)
-    const email = env['E2E_USER_EMAIL'];
-    const password = env['E2E_USER_PASSWORD'];
+  test('creates a task and opens its detail page', async ({ page, owner }) => {
+    const title = `E2E Task ${Date.now().toString(36)}`;
 
-    test.skip(!email || !password, 'Set E2E_USER_EMAIL and E2E_USER_PASSWORD for authenticated seeded tests');
-    if (!email || !password) return; // narrows for TS after test.skip
+    await page.goto(taskTable(owner.tenantSlug, owner.project.key));
+    await newTaskButton(page).click();
+    await expect(page).toHaveURL(/\/tasks\/new$/);
 
-    await page.goto('/auth/login');
-    await page.getByPlaceholder('you@example.com').fill(email);
-    await page.locator('input[type="password"]').fill(password);
-    await page.locator('button[type="submit"]').click();
-    await expect(page).not.toHaveURL(/\/auth\/login/, { timeout: 10_000 });
+    await page.locator('#create-title').fill(title);
+    await page.locator('button[type="submit"][form="create-task-form"]').click();
 
-    await page.goto(`/w/${SEEDED_TENANT_SLUG}/projects/${SEEDED_PROJECT_KEY}/tasks`);
+    // The detail route is KEY-NUMBER, so the URL carries the new task identity.
+    await expect(page).toHaveURL(new RegExp(`/projects/${owner.project.key}/tasks/${owner.project.key}-\\d+$`));
+    // The task title is the detail page's own heading. Addressed by the unique
+    // run-scoped title this test just typed, NOT by heading level: level 2 inside
+    // `<main>` is the "Description" card heading (F26).
+    await expect(pageHeading(page, title)).toHaveText(title);
+  });
 
-    const title = `E2E Seeded Task ${Date.now()}`;
+  test('a task created in the UI is listed in the table', async ({ page, owner }) => {
+    const title = `E2E Roundtrip ${Date.now().toString(36)}`;
 
-    await createTask(page, title);
+    await page.goto(`${taskTable(owner.tenantSlug, owner.project.key)}/new`);
+    await page.locator('#create-title').fill(title);
+    await page.locator('button[type="submit"][form="create-task-form"]').click();
+    await expect(page).not.toHaveURL(/\/tasks\/new$/);
 
-    await page.goto(page.url().split('/tasks/')[0] + '/tasks');
-    await expect(page.getByText(title).first()).toBeVisible({ timeout: 10_000 });
+    await page.goto(taskTable(owner.tenantSlug, owner.project.key));
+
+    await expect(main(page).getByText(title).first()).toBeVisible();
   });
 });

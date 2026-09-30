@@ -193,9 +193,16 @@ export default [
       // The harness-evaluator capability file loads for the harness-evaluator mode alone, and is the same layer.
       '.roo/rules-harness-evaluator/**/*.md',
       // Agent scratch is throwaway and disposable: linting it wastes wall clock on every run and can hang on a
-      // generated file, for content nobody will ever commit.
+      // generated file, for content nobody will ever commit. It is also the home of Playwright's HTML report, where the
+      // only rule that would run is `prettier/prettier`, which costs seconds per `npm run lint` and tells us nothing
+      // about the code. Authored markdown (README, AGENTS) stays covered.
       '.agent-scratch/',
       'docs/',
+      // Playwright build artifacts (gitignored). `playwright-report/index.html`
+      // is a single ~550 kB minified bundle of the whole trace-viewer app; feeding
+      // it to the Angular template parser takes minutes and reports nothing.
+      '**/playwright-report/',
+      '**/test-results/',
       '**/*.mjs',
       '**/*.cjs',
       '**/libs/**/*.ts',

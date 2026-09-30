@@ -1,6 +1,7 @@
 import { Component, signal, inject } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { form, FormRoot, FormField, schema, required, email, maxLength } from '@angular/forms/signals';
+import { FieldControl } from '@app/shared/field-control/field-control';
 import { HlmFieldImports } from '@spartan-ng/helm/field';
 import { HlmInputImports } from '@spartan-ng/helm/input';
 import { HlmTextareaImports } from '@spartan-ng/helm/textarea';
@@ -19,6 +20,7 @@ interface SupportModel {
 @Component({
   selector: 'ui-support',
   imports: [
+    FieldControl,
     HlmAlertImports,
     TranslocoPipe,
     FormRoot,
@@ -33,8 +35,8 @@ interface SupportModel {
 })
 export class Support {
   private readonly supportClient = inject(SupportClient);
-  protected readonly error = signal('');
-  protected readonly success = signal(false);
+  private readonly error = signal('');
+  private readonly success = signal(false);
   private readonly model = signal<SupportModel>({ name: '', email: '', message: '' });
   private readonly createdAt = signal(Date.now());
   protected readonly supportForm = form(

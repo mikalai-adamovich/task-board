@@ -25,12 +25,12 @@ import { KeyboardShortcuts } from '../../shared/keyboard-shortcuts/keyboard-shor
   templateUrl: './tenant-switcher.html',
 })
 export class TenantSwitcher {
-  protected readonly tenantStore = inject(TenantStore);
-  protected readonly authStore = inject(AuthStore);
+  private readonly tenantStore = inject(TenantStore);
+  private readonly authStore = inject(AuthStore);
   private readonly projectStore = inject(ProjectStore);
   private readonly router = inject(Router);
   private readonly sidebarService = inject(HlmSidebarService);
-  /** P13 (item 31b): `w` hotkey coordination — see the effect below. */
+  /** `w` hotkey coordination — see the effect below. */
   private readonly shortcuts = inject(KeyboardShortcuts);
   private readonly menuTrigger = viewChild(HlmDropdownMenuTrigger);
   /** Collapsed-icon mode (desktop only) — render as icon button with tooltip */
@@ -41,7 +41,7 @@ export class TenantSwitcher {
   protected readonly collapsedTooltip = computed(() => this.tenantStore.activeTenant()?.name ?? null);
 
   constructor() {
-    // P13 (item 31b) / P13b: the global `w` hotkey bumps `workspaceMenuToggle`.
+    // The global `w` hotkey bumps `workspaceMenuToggle`.
     // React STATE-AWARE: read the trigger's actual `isOpen()` and call
     // `openFocused()`/`close()` explicitly — a blind `toggle()` double-fired
     // (open+close) left the menu stuck, and programmatic open never focused
@@ -66,15 +66,15 @@ export class TenantSwitcher {
     });
   }
 
-  /** P13b: counter value already consumed — guards against double effect runs. */
+  /** Counter value already consumed — guards against double effect runs. */
   private lastHandledToggle = 0;
 
-  /** P13b: report open state to KeyboardShortcuts (wired in the template). */
+  /** Report open state to KeyboardShortcuts (wired in the template). */
   protected onMenuOpened(): void {
     this.shortcuts.workspaceMenuOpen.set(true);
   }
 
-  /** P13b: report closed state to KeyboardShortcuts (wired in the template). */
+  /** Report closed state to KeyboardShortcuts (wired in the template). */
   protected onMenuClosed(): void {
     this.shortcuts.workspaceMenuOpen.set(false);
   }

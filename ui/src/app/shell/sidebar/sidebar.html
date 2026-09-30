@@ -1,5 +1,12 @@
 <div hlmSidebarWrapper class="min-h-[calc(100dvh-var(--header-height))]!">
-  <hlm-sidebar collapsible="icon" class="bg-card">
+  <!--
+    The primary navigation is a labelled navigation region. A landmark
+    lets assistive technology jump to it. It is the app's ONLY `navigation`
+    landmark, so it needs no distinguishing accessible name — naming it would
+    require a new transloco key, and the i18n gate requires every key to exist in
+    all 11 locales (a cross-locale change outside this package).
+  -->
+  <hlm-sidebar collapsible="icon" class="bg-card" role="navigation">
     <!-- mt only on desktop (header overlays the fixed sidebar); flex-1 keeps the
          footer (collapse toggle) visible at the bottom of the h-svh column -->
     <div hlmSidebarContent class="flex-1 md:mt-(--header-height)">
@@ -10,7 +17,7 @@
               <li hlmSidebarMenuItem>
                 <ui-tenant-switcher />
               </li>
-              <!-- F-10: Overview links to the tenant home (projects grid lives there) -->
+              <!-- Overview links to the tenant home (projects grid lives there) -->
               <li hlmSidebarMenuItem>
                 <a
                   hlmSidebarMenuButton
@@ -62,7 +69,7 @@
           </div>
         </div>
 
-        <!-- Project group headed by the project switcher (F-10 / D-47) -->
+        <!-- Project group headed by the project switcher -->
         <div hlmSidebarSeparator class="mx-2 my-1"></div>
         <div hlmSidebarGroup>
           <ul hlmSidebarMenu>
@@ -183,13 +190,13 @@
       }
     </div>
 
-    <!-- P13b: the vendored HlmSidebarFooter directive sets `flex flex-col`, so
+    <!-- The vendored HlmSidebarFooter directive sets `flex flex-col`, so
          `justify-end` aligned on the MAIN (vertical) axis — the button sat at
          the bottom-LEFT. `items-end` aligns on the cross (horizontal) axis,
          pinning the square toggle to the bottom-RIGHT in expanded AND
          collapsed states. -->
     <div hlmSidebarFooter class="flex items-end">
-      <!-- D-47: discoverable collapse toggle (rail remains as drag/hover affordance).
+      <!-- Discoverable collapse toggle (rail remains as drag/hover affordance).
            Square icon button pinned to the right edge; the tooltip is ALWAYS active
            (expanded AND collapsed) because the button has no visible text. The
            size="icon" variant renders the ng-icon at 16×16 like the nav icons. -->

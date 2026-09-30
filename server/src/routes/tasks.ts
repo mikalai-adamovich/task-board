@@ -1,8 +1,9 @@
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { decodeBoardCursor, InvalidBoardCursorError } from '@task-board/shared';
 import type { BoardPageCursor } from '@task-board/shared';
 import type { AppEnv } from '../types/context.js';
-import { validateBody, validateQuery } from '../middleware/validation.js';
+import { param, pathParamValidation, validateBody, validateQuery } from '../middleware/validation.js';
 import { requirePermission } from '../middleware/rbac.js';
 import { ValidationError } from '../errors/app-error.js';
 import { uuid } from '../validators/common.js';
@@ -14,14 +15,29 @@ import {
   TaskQuerySchema,
   UpdateTaskSchema,
 } from '../schemas/task.js';
+import type { CallerContext } from '../services/tenant-assert.js';
 
 /** Prefix for per-column resume cursors (`cursor.<columnId>=<opaque>`). */
 const BOARD_CURSOR_PREFIX = 'cursor.';
+
+/**
+ * The caller context is ALWAYS forwarded to the service
+ * layer. It is taken from the request context set by the auth /
+ * tenant-context middleware — never from the path or the body — and the
+ * service treats it as required (missing → 401, foreign tenant → 404).
+ */
+function callerContext(c: Context<AppEnv>): CallerContext {
+  return { tenantId: c.get('tenantId'), userId: c.get('userId'), userRole: c.get('tenantRole') };
+}
 
 // ─── Task Routes ─────────────────────────────────────────────────────────────
 
 export function createTaskRoutes(): Hono<AppEnv> {
   const router = new Hono<AppEnv>();
+
+  // Every path parameter of every route below is parsed with Zod before its
+  // handler runs (see middleware/validation.ts + validators/path-params.ts).
+  router.use('*', pathParamValidation());
 
   /**
    * GET /projects/:projectId/tasks — List tasks with filters, pagination, sort.
@@ -29,13 +45,13 @@ export function createTaskRoutes(): Hono<AppEnv> {
    * ISO date ranges) — invalid input → 400 instead of NaN reaching MongoDB.
    */
   router.get('/projects/:projectId/tasks', validateQuery(TaskQuerySchema), async (c) => {
-    const projectId = c.req.param('projectId');
+    const projectId = param(c, 'projectId');
     const q = c.req.valid('query');
     const [sortField, sortDirection] = q.sort ? q.sort.split(':') : [];
     const options: TaskQueryOptions = {
       page: q.page,
       limit: q.limit,
-      // F5: tables/widgets omit the (potentially large) markdown description
+      // Tables/widgets omit the (potentially large) markdown description
       excludeDescription: q.excludeDescription,
       view: q.view,
       search: q.search,
@@ -45,6 +61,8 @@ export function createTaskRoutes(): Hono<AppEnv> {
       assigneeId: q.assigneeId,
       reporterId: q.reporterId,
       sprintId: q.sprintId,
+      // Tri-state "has a sprint" filter (`hasSprint=false` = the backlog)
+      hasSprint: q.hasSprint,
       labelId: q.labelId,
       createdFrom: q.createdFrom,
       createdTo: q.createdTo,
@@ -56,21 +74,21 @@ export function createTaskRoutes(): Hono<AppEnv> {
     // reporter/timestamp fields) — the generic list contract is untouched.
     const result =
       q.view === 'board'
-        ? await c.get('svc').tasks.getBoardTasks(projectId, options)
-        : await c.get('svc').tasks.getTasksByProject(projectId, options);
+        ? await c.get('svc').tasks.getBoardTasks(projectId, options, callerContext(c))
+        : await c.get('svc').tasks.getTasksByProject(projectId, options, callerContext(c));
 
     return c.json({ data: result.data, pagination: result.pagination });
   });
 
   /**
-   * S-05: GET /projects/:projectId/tasks/status-summary — per-status task
+   * GET /projects/:projectId/tasks/status-summary — per-status task
    * counts in one server-side aggregation (the project overview previously
    * issued one list request per status). Same read pattern as the list route:
    * tenant context resolves the project role, no coarse route gate.
    */
   router.get('/projects/:projectId/tasks/status-summary', async (c) => {
-    const projectId = c.req.param('projectId');
-    const summary = await c.get('svc').tasks.getStatusSummary(projectId);
+    const projectId = param(c, 'projectId');
+    const summary = await c.get('svc').tasks.getStatusSummary(projectId, callerContext(c));
 
     return c.json({ data: summary });
   });
@@ -87,7 +105,7 @@ export function createTaskRoutes(): Hono<AppEnv> {
    * role, no coarse route gate.
    */
   router.get('/projects/:projectId/tasks/board', validateQuery(BoardPageQuerySchema), async (c) => {
-    const projectId = c.req.param('projectId');
+    const projectId = param(c, 'projectId');
     const q = c.req.valid('query');
     const cursors: Record<string, BoardPageCursor> = {};
 
@@ -111,12 +129,16 @@ export function createTaskRoutes(): Hono<AppEnv> {
       }
     }
 
-    const page = await c.get('svc').tasks.getBoardPages(projectId, {
-      cursors,
-      sprintId: q.sprintId,
-      assigneeId: q.assigneeId,
-      priorityLevel: q.priorityLevel,
-    });
+    const page = await c.get('svc').tasks.getBoardPages(
+      projectId,
+      {
+        cursors,
+        sprintId: q.sprintId,
+        assigneeId: q.assigneeId,
+        priorityLevel: q.priorityLevel,
+      },
+      callerContext(c),
+    );
 
     return c.json({ data: page });
   });
@@ -131,12 +153,9 @@ export function createTaskRoutes(): Hono<AppEnv> {
     requirePermission('create_task', true),
     validateBody(CreateTaskSchema),
     async (c) => {
-      const projectId = c.req.param('projectId');
-      const userId = c.get('userId');
-      const tenantRole = c.get('tenantRole');
-      const projectRole = c.get('projectRole');
+      const projectId = param(c, 'projectId');
       const body = c.req.valid('json');
-      const task = await c.get('svc').tasks.createTask(projectId, userId, tenantRole, projectRole, body);
+      const task = await c.get('svc').tasks.createTask(projectId, body, callerContext(c));
 
       return c.json({ data: task }, 201);
     },
@@ -146,22 +165,21 @@ export function createTaskRoutes(): Hono<AppEnv> {
    * GET /tasks/:taskId — Get a single task by UUID or KEY-NUMBER (e.g. PRO-1).
    */
   router.get('/tasks/:taskId', async (c) => {
-    const taskId = c.req.param('taskId');
-    const tenantId = c.get('tenantId');
+    const taskId = param(c, 'taskId');
     // Support KEY-NUMBER format (e.g. PRO-1)
     const keyMatch = taskId.match(/^([A-Z][A-Z0-9]*)-(\d+)$/);
     const projectKey = keyMatch?.[1];
     const taskNumber = keyMatch?.[2];
 
     if (projectKey && taskNumber) {
-      // S-04: the key is resolved within the caller's tenant only
-      const task = await c.get('svc').tasks.getTaskByKey(tenantId, projectKey, parseInt(taskNumber, 10));
+      // The key is resolved within the caller's tenant only
+      const task = await c.get('svc').tasks.getTaskByKey(callerContext(c), projectKey, parseInt(taskNumber, 10));
 
       return c.json({ data: task });
     }
 
-    // M-02: bare task ids are tenant-asserted inside the service
-    const task = await c.get('svc').tasks.getTask(taskId, tenantId);
+    // Bare task ids are tenant-asserted inside the service
+    const task = await c.get('svc').tasks.getTask(taskId, callerContext(c));
 
     return c.json({ data: task });
   });
@@ -170,30 +188,27 @@ export function createTaskRoutes(): Hono<AppEnv> {
    * PATCH /tasks/:taskId — Update task (with optimistic concurrency).
    */
   router.patch('/tasks/:taskId', validateBody(UpdateTaskSchema), async (c) => {
-    const taskId = c.req.param('taskId');
-    const userId = c.get('userId');
-    const tenantRole = c.get('tenantRole');
+    const taskId = param(c, 'taskId');
     const body = c.req.valid('json');
     // Authorization (edit_task) is enforced inside the service after the task's
-    // project is resolved — the route path carries no projectId.
-    const task = await c.get('svc').tasks.updateTask(taskId, body, userId, tenantRole);
+    // project is resolved — the route path carries no projectId. The service
+    // tenant-asserts that project first (404 on a foreign task).
+    const task = await c.get('svc').tasks.updateTask(taskId, body, callerContext(c));
 
     return c.json({ data: task });
   });
 
   /**
-   * Q10 (RQ-04 ③): PATCH /projects/:projectId/tasks/bulk — bulk status/assignee/sprint update.
+   * PATCH /projects/:projectId/tasks/bulk — bulk status/assignee/sprint update.
    * Body contract (exactly one `data` field) is enforced by Zod; per-task
    * failures (unknown id, wrong project, version conflict) are reported in the
    * response instead of failing the whole request. Authorization (`edit_task`)
    * is enforced inside the service, same as single-task update.
    */
   router.patch('/projects/:projectId/tasks/bulk', validateBody(BulkUpdateTasksSchema), async (c) => {
-    const projectId = c.req.param('projectId');
-    const userId = c.get('userId');
-    const tenantRole = c.get('tenantRole');
+    const projectId = param(c, 'projectId');
     const body = c.req.valid('json');
-    const result = await c.get('svc').tasks.bulkUpdateTasks(projectId, body.taskIds, body.data, userId, tenantRole);
+    const result = await c.get('svc').tasks.bulkUpdateTasks(projectId, body.taskIds, body.data, callerContext(c));
 
     return c.json({ data: result });
   });
@@ -202,11 +217,9 @@ export function createTaskRoutes(): Hono<AppEnv> {
    * DELETE /tasks/:taskId — Delete task (cascade).
    */
   router.delete('/tasks/:taskId', async (c) => {
-    const taskId = c.req.param('taskId');
-    const userId = c.get('userId');
-    const tenantRole = c.get('tenantRole');
+    const taskId = param(c, 'taskId');
 
-    await c.get('svc').tasks.deleteTask(taskId, userId, tenantRole);
+    await c.get('svc').tasks.deleteTask(taskId, callerContext(c));
 
     return c.json({ data: { success: true } });
   });
@@ -223,12 +236,22 @@ export function createTaskRoutes(): Hono<AppEnv> {
 export function createCrossTenantTaskRoutes(): Hono<AppEnv> {
   const router = new Hono<AppEnv>();
 
+  // Every path parameter of every route below is parsed with Zod before its
+  // handler runs (see middleware/validation.ts + validators/path-params.ts).
+  router.use('*', pathParamValidation());
+
   /**
-   * GET /tasks/my — Tasks assigned to the current user across all tenants.
+   * GET /tasks/my — Tasks assigned to the current user, in the workspaces they
+   * may currently read.
+   *
+   * This route is mounted OUTSIDE the tenant-scoped sub-app, so it takes
+   * no tenant from the request; the scope is resolved by the service from the
+   * caller's own ACTIVE, unexpired memberships. Forwarding the caller OBJECT
+   * (not a bare id) keeps the "missing identity fails closed" rule on the
+   * service boundary.
    */
   router.get('/tasks/my', async (c) => {
-    const userId = c.get('userId');
-    const tasks = await c.get('svc').tasks.getMyTasks(userId);
+    const tasks = await c.get('svc').tasks.getMyTasks({ userId: c.get('userId') });
 
     return c.json({ data: tasks });
   });

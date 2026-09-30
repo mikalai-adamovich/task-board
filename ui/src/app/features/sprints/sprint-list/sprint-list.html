@@ -1,6 +1,6 @@
 <div class="mx-auto max-w-6xl">
   <div class="mb-6 flex items-center justify-between">
-    <h2 class="text-2xl font-bold text-foreground">{{ 'sprints.title' | transloco }}</h2>
+    <h1 class="text-2xl font-bold text-foreground">{{ 'sprints.title' | transloco }}</h1>
     @if (canCreate()) {
       <button hlmBtn (click)="showCreateModal.set(true)">
         <ng-icon name="lucidePlus" class="mr-1" />
@@ -27,13 +27,13 @@
     </hlm-empty>
   } @else {
     <div class="flex flex-col gap-6">
-      <!-- Backlog group (DEC-039): unassigned tasks — find them via the tasks-table sprint filter -->
+      <!-- Backlog group: unassigned tasks — find them via the tasks-table sprint filter -->
       <div class="flex items-center justify-between rounded-lg border border-border bg-muted/40 px-4 py-3">
         <div class="flex items-center gap-3">
           <ng-icon name="lucideInbox" class="size-5 text-muted-foreground" />
-          <h3 class="text-lg font-semibold text-foreground">
+          <h2 class="text-lg font-semibold text-foreground">
             {{ 'sprints.backlog' | transloco }}
-          </h3>
+          </h2>
           <span hlmBadge variant="secondary">{{ 'sprints.tasks' | transloco: { count: backlogCount() } }}</span>
         </div>
       </div>
@@ -43,7 +43,7 @@
         <hlm-collapsible [expanded]="isGroupExpanded(group.label)" (expandedChange)="toggleGroup(group.label)">
           <div class="flex items-center justify-between rounded-t-lg border border-border bg-muted/40 px-4 py-3">
             <div class="flex items-center gap-3">
-              <h3 class="text-lg font-semibold text-foreground">{{ group.labelKey | transloco }}</h3>
+              <h2 class="text-lg font-semibold text-foreground">{{ group.labelKey | transloco }}</h2>
               <span hlmBadge variant="secondary">{{
                 'sprints.sprintsCount' | transloco: { count: group.sprints.length }
               }}</span>
@@ -109,27 +109,32 @@
       <form id="create-sprint-form" [formRoot]="newSprintForm" class="flex flex-col gap-4">
         <hlm-field>
           <label hlmFieldLabel for="sprint-name">{{ 'sprints.name' | transloco }}</label>
-          <input hlmInput id="sprint-name" type="text" [formField]="newSprintForm.name" placeholder="Sprint 1" />
+          <input
+            hlmInput
+            id="sprint-name"
+            type="text"
+            [formField]="newSprintForm.name"
+            uiFieldControl
+            placeholder="Sprint 1"
+          />
+          @if (newSprintForm.name().touched() && newSprintForm.name().errors().length) {
+            <hlm-field-error class="block">{{ newSprintForm.name().errors()[0]?.message | transloco }}</hlm-field-error>
+          }
         </hlm-field>
         <div class="grid grid-cols-2 gap-4">
           <hlm-field>
             <label hlmFieldLabel for="sprint-start">{{ 'sprints.startDate' | transloco }}</label>
-            <input hlmInput id="sprint-start" type="date" [formField]="newSprintForm.startDate" />
+            <input hlmInput id="sprint-start" type="date" [formField]="newSprintForm.startDate" uiFieldControl />
           </hlm-field>
           <hlm-field>
             <label hlmFieldLabel for="sprint-end">{{ 'sprints.endDate' | transloco }}</label>
-            <input hlmInput id="sprint-end" type="date" [formField]="newSprintForm.endDate" />
+            <input hlmInput id="sprint-end" type="date" [formField]="newSprintForm.endDate" uiFieldControl />
           </hlm-field>
         </div>
       </form>
       <hlm-dialog-footer>
         <button hlmBtn variant="outline" hlmDialogClose>{{ 'sprints.cancel' | transloco }}</button>
-        <button
-          hlmBtn
-          type="submit"
-          form="create-sprint-form"
-          [disabled]="newSprintForm().invalid() || newSprintForm().submitting()"
-        >
+        <button hlmBtn type="submit" form="create-sprint-form" [disabled]="newSprintForm().submitting()">
           @if (newSprintForm().submitting()) {
             <hlm-spinner /> {{ 'sprints.creating' | transloco }}
           } @else {

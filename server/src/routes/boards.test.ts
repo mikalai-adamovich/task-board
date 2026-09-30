@@ -35,7 +35,7 @@ const PROJECT_ID = '550e8400-e29b-41d4-a716-446655440010';
 const USER_ID = '550e8400-e29b-41d4-a716-446655440002';
 const mockBoard = {
   projectId: PROJECT_ID,
-  columns: [{ id: 'col-1', statusIds: ['status-1'], position: 0 }],
+  columns: [{ id: 'col-1', statusIds: ['bbbbbbbb-0000-4000-8000-000000000001'], position: 0 }],
   createdAt: '2025-01-01T00:00:00.000Z',
   updatedAt: '2025-01-01T00:00:00.000Z',
 };
@@ -45,7 +45,7 @@ vi.mock('../services/board.service.js', () => ({
     getBoardByProject: vi
       .fn()
       .mockImplementation((projectId: string) =>
-        projectId === 'missing-project'
+        projectId === '88888888-0000-4000-8000-0000000000ff'
           ? Promise.reject(new NotFoundError('Board not found'))
           : Promise.resolve(mockBoard),
       ),
@@ -58,19 +58,26 @@ vi.mock('../services/board.service.js', () => ({
 const TEST_ENV = { JWT_SECRET: 'test-secret', MONGODB_URI: '', ALLOWED_ORIGINS: '*' };
 const VALID_UUID = USER_ID;
 
-function createTestApp(tenantRole = 'OWNER', projectRole: string | null = null) {
+interface MockBoardService {
+  getBoardByProject: ReturnType<typeof vi.fn>;
+  updateColumns: ReturnType<typeof vi.fn>;
+}
+
+function createTestApp(tenantRole = 'OWNER', projectRole: string | null = null, sink: { svc?: MockBoardService } = {}) {
   const app = new Hono<AppEnv>();
 
   app.onError(errorHandler);
 
   app.use('/api/*', async (c, next) => {
-    const MockBoards = BoardService as unknown as new () => InstanceType<typeof BoardService>;
+    const MockBoards = BoardService as unknown as new () => MockBoardService;
+    const svc = new MockBoards();
 
+    sink.svc = svc;
     c.set('userId', VALID_UUID);
     c.set('tenantId', TENANT_ID);
     c.set('tenantRole', tenantRole as 'OWNER');
     c.set('projectRole', projectRole as never);
-    c.set('svc', { boards: new MockBoards() } as never);
+    c.set('svc', { boards: svc } as never);
     await next();
   });
 
@@ -136,7 +143,7 @@ describe('GET /api/projects/:projectId/board', () => {
   });
 
   it('returns 404 when the board does not exist', async () => {
-    const res = await getJson(app, '/api/projects/missing-project/board');
+    const res = await getJson(app, '/api/projects/88888888-0000-4000-8000-0000000000ff/board');
 
     expect(res.status).toBe(404);
 
@@ -160,6 +167,7 @@ describe('PATCH /api/projects/:projectId/board', () => {
     const app = createTestApp();
     const res = await patchJson(app, `/api/projects/${PROJECT_ID}/board`, {
       columns: [{ statusIds: [VALID_UUID], position: 0 }],
+      version: 1,
     });
 
     expect(res.status).toBe(200);
@@ -171,7 +179,7 @@ describe('PATCH /api/projects/:projectId/board', () => {
 
   it('returns 400 for an empty columns array', async () => {
     const app = createTestApp();
-    const res = await patchJson(app, `/api/projects/${PROJECT_ID}/board`, { columns: [] });
+    const res = await patchJson(app, `/api/projects/${PROJECT_ID}/board`, { columns: [], version: 1 });
 
     expect(res.status).toBe(400);
 
@@ -184,6 +192,7 @@ describe('PATCH /api/projects/:projectId/board', () => {
     const app = createTestApp();
     const res = await patchJson(app, `/api/projects/${PROJECT_ID}/board`, {
       columns: [{ statusIds: [], position: 0 }],
+      version: 1,
     });
 
     expect(res.status).toBe(400);
@@ -193,6 +202,7 @@ describe('PATCH /api/projects/:projectId/board', () => {
     const app = createTestApp();
     const res = await patchJson(app, `/api/projects/${PROJECT_ID}/board`, {
       columns: [{ statusIds: ['not-a-uuid'], position: 0 }],
+      version: 1,
     });
 
     expect(res.status).toBe(400);
@@ -213,6 +223,7 @@ describe('PATCH /api/projects/:projectId/board', () => {
     const app = createTestApp('MEMBER', 'EDITOR');
     const res = await patchJson(app, `/api/projects/${PROJECT_ID}/board`, {
       columns: [{ statusIds: [VALID_UUID], position: 0 }],
+      version: 1,
     });
 
     expect(res.status).toBe(403);
@@ -222,6 +233,7 @@ describe('PATCH /api/projects/:projectId/board', () => {
     const app = createTestApp('MEMBER', null);
     const res = await patchJson(app, `/api/projects/${PROJECT_ID}/board`, {
       columns: [{ statusIds: [VALID_UUID], position: 0 }],
+      version: 1,
     });
 
     expect(res.status).toBe(403);
@@ -231,6 +243,7 @@ describe('PATCH /api/projects/:projectId/board', () => {
     const app = createTestApp('ADMIN', null);
     const res = await patchJson(app, `/api/projects/${PROJECT_ID}/board`, {
       columns: [{ statusIds: [VALID_UUID], position: 0 }],
+      version: 1,
     });
 
     expect(res.status).toBe(200);
@@ -240,6 +253,7 @@ describe('PATCH /api/projects/:projectId/board', () => {
     const authApp = createAuthTestApp();
     const res = await patchJson(authApp, `/api/projects/${PROJECT_ID}/board`, {
       columns: [{ statusIds: [VALID_UUID], position: 0 }],
+      version: 1,
     });
 
     expect(res.status).toBe(401);
@@ -252,12 +266,52 @@ describe('PATCH /api/projects/:projectId/board', () => {
       {
         method: 'PATCH',
         headers: { Authorization: 'Bearer not-a-jwt', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ columns: [{ statusIds: [VALID_UUID], position: 0 }] }),
+        body: JSON.stringify({ columns: [{ statusIds: [VALID_UUID], position: 0 }], version: 1 }),
       },
       TEST_ENV,
     );
 
     expect(res.status).toBe(401);
+  });
+});
+
+// ─── The caller context is always forwarded ──────────────────────────────────
+
+describe('caller context forwarding (M-001/M-006/M-034)', () => {
+  const expected = { tenantId: TENANT_ID, userId: USER_ID, userRole: 'OWNER' };
+
+  it('GET /projects/:projectId/board forwards tenantId + userId + role', async () => {
+    const sink: { svc?: MockBoardService } = {};
+
+    await getJson(createTestApp('OWNER', null, sink), `/api/projects/${PROJECT_ID}/board`);
+
+    expect(sink.svc?.getBoardByProject).toHaveBeenCalledWith(PROJECT_ID, expected);
+  });
+
+  it('PATCH /projects/:projectId/board forwards the context (no separate userId/role args)', async () => {
+    const sink: { svc?: MockBoardService } = {};
+    const body = { columns: [{ statusIds: [VALID_UUID], position: 0 }], version: 1 };
+    const res = await patchJson(
+      createTestApp('OWNER', 'PROJECT_ADMIN', sink),
+      `/api/projects/${PROJECT_ID}/board`,
+      body,
+    );
+
+    expect(res.status).toBe(200);
+    expect(sink.svc?.updateColumns).toHaveBeenCalledWith(PROJECT_ID, body, expected);
+  });
+
+  it('propagates the role verbatim, so the service gate cannot be bypassed by a missing role', async () => {
+    const sink: { svc?: MockBoardService } = {};
+    const body = { columns: [{ statusIds: [VALID_UUID], position: 0 }], version: 1 };
+
+    await patchJson(createTestApp('MEMBER', 'PROJECT_ADMIN', sink), `/api/projects/${PROJECT_ID}/board`, body);
+
+    expect(sink.svc?.updateColumns).toHaveBeenCalledWith(PROJECT_ID, body, {
+      tenantId: TENANT_ID,
+      userId: USER_ID,
+      userRole: 'MEMBER',
+    });
   });
 });
 
@@ -270,20 +324,20 @@ describe('removed multi-board routes', () => {
   it.each([
     ['GET', `/api/projects/${PROJECT_ID}/boards`],
     ['POST', `/api/projects/${PROJECT_ID}/boards`],
-    ['GET', `/api/boards/board-1`],
-    ['PATCH', `/api/boards/board-1`],
-    ['DELETE', `/api/boards/board-1`],
+    ['GET', `/api/boards/66666666-0000-4000-8000-000000000001`],
+    ['PATCH', `/api/boards/66666666-0000-4000-8000-000000000001`],
+    ['DELETE', `/api/boards/66666666-0000-4000-8000-000000000001`],
   ] as const)('%s %s is gone (404, not handled by board routes)', async (method, path) => {
     const token = await tokenPromise;
-    const res = await app.request(
-      path,
-      {
-        method,
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: method === 'GET' || method === 'DELETE' ? undefined : JSON.stringify({ name: 'X' }),
-      },
-      TEST_ENV,
-    );
+    // `RequestInit` keys are `exactOptionalPropertyTypes`, so a bodiless
+    // GET/DELETE must omit the `body` KEY entirely rather than set it to
+    // `undefined` — the two are different types to the compiler.
+    const init: RequestInit = {
+      method,
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      ...(method === 'GET' || method === 'DELETE' ? {} : { body: JSON.stringify({ name: 'X' }) }),
+    };
+    const res = await app.request(path, init, TEST_ENV);
 
     expect(res.status).toBe(404);
   });

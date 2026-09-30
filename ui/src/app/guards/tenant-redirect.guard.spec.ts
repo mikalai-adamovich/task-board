@@ -1,5 +1,5 @@
 /**
- * Tests for the legacy tenant redirect guard (DEC-032).
+ * Tests for the legacy tenant redirect guard.
  *
  * Legacy `/tenants/:ref` URLs (id or slug) must redirect to `/w/:slug`.
  */

@@ -2,17 +2,54 @@ import { randomUUID, createHash } from 'node:crypto';
 import { MemberStatus, TenantRole, TenantStatus, InvitationStatus, INVITATION_TTL_MS } from '@task-board/shared';
 import type { Tenant, TenantMember, MyInvitation } from '@task-board/shared';
 import { AppError, ConflictError, ForbiddenError, NotFoundError } from '../errors/app-error.js';
+import { withConflictOnDuplicate } from '../db/duplicate-key.js';
+import { buildRateLimitHeaders, createRateLimiter } from '../utils/rate-limiter.js';
+import { logger } from '../utils/logger.js';
 import { MyInvitationSchema } from '../schemas/tenant.js';
 import { TenantRepository } from '../repositories/tenant.repository.js';
 import { TenantMemberRepository } from '../repositories/tenant-member.repository.js';
 import { UserRepository } from '../repositories/user.repository.js';
 import type { InvitationDocument } from '../repositories/tenant-member.repository.js';
 import type { EmailService } from './email.service.js';
+import type { AuditService } from './audit.service.js';
+import { isTenantAdmin } from './rbac.service.js';
 
 /** Structural type that both EmailService and ConsoleEmailService satisfy */
 type EmailSender = Pick<EmailService, 'sendInvitationEmail'>;
 
 // ─── Constants ───────────────────────────────────────────────────────────────
+
+/**
+ * Invitation e-mail cooldown — ONE invitation e-mail per
+ * (workspace, invitee address) per {@link INVITE_COOLDOWN_MS}.
+ *
+ * Every invitation triggers an OUTBOUND e-mail. Without a cooldown an owner (or
+ * an authenticated attacker holding a stolen token) can hammer "invite" against a
+ * single address and turn the workspace into a mail cannon for a third party;
+ * with a per-address cooldown the blast radius is bounded to one message per
+ * address per minute, no matter how fast the requests arrive.
+ *
+ * 60 s is chosen to be invisible to a human inviting a team (a person inviting
+ * twenty people clicks once per person, seconds apart) while capping a flood at
+ * one message per address per minute. A different address is a different key, so
+ * a legitimate bulk onboarding of 20 distinct people is unaffected.
+ */
+const INVITE_COOLDOWN_MS = 60 * 1000;
+/**
+ * Per-user invitation budget — {@link INVITE_MAX_PER_USER} outbound
+ * invitation e-mails per requester per {@link INVITE_USER_WINDOW_MS}.
+ *
+ * The per-(workspace, address) cooldown above only bounds a SINGLE address; a
+ * spray across many addresses would still produce unbounded mail. This is the
+ * outbound-mail ceiling for one authenticated user. 20/hour comfortably covers a
+ * real onboarding (an admin inviting a whole department in one sitting) and
+ * bounds a compromised account to 20 messages an hour instead of thousands.
+ */
+const INVITE_MAX_PER_USER = 20;
+const INVITE_USER_WINDOW_MS = 60 * 60 * 1000;
+// Module-level: the budget must survive across requests (see utils/rate-limiter.ts).
+const inviteCooldown = createRateLimiter(1, INVITE_COOLDOWN_MS);
+const inviteUserBudget = createRateLimiter(INVITE_MAX_PER_USER, INVITE_USER_WINDOW_MS);
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -21,11 +58,54 @@ function hashToken(token: string): string {
 }
 
 /**
- * DEC-055: a membership whose `expiresAt` is on/after now is treated as
+ * A membership whose `expiresAt` is on/after now is treated as
  * ACCESS_REVOKED (lazy evaluation — no cron; the status flips when observed).
  */
 export function isMembershipExpired(member: { expiresAt: string | null }): boolean {
   return member.expiresAt !== null && new Date(member.expiresAt).getTime() <= Date.now();
+}
+
+/** Minimal repository surface the last-OWNER invariant needs. */
+export interface LastOwnerMembershipRepo {
+  findByTenant(tenantId: string): Promise<TenantMember[]>;
+}
+
+/**
+ * A tenant must always keep at least one ACTIVE OWNER — otherwise it
+ * is permanently unmanageable, and the restore path explicitly refuses the
+ * resulting state.
+ *
+ * Exported (not just a private method) so that EVERY path which can remove an
+ * owner's membership applies the SAME rule: the self-service lifecycle
+ * operations in {@link TenantMemberService} AND the cross-tenant
+ * `TenantService.deleteUser` sweep, which deletes ALL of a user's memberships
+ * at once and could otherwise strip the last owner of a tenant the caller was
+ * merely an ADMIN of.
+ *
+ * "Active" follows the DEC-055 lazy-expiry rule: a membership past its
+ * `expiresAt` is treated as ACCESS_REVOKED, so an expired owner does not count
+ * as a remaining owner.
+ *
+ * 409 CONFLICT is the code the domain already uses for state conflicts
+ * (e.g. "Only ACCESS_REVOKED memberships can be restored"). The `message` is
+ * parameterised because the callers name the thing the user must act on
+ * (a membership vs. a whole user account).
+ */
+export async function assertNotLastOwner(
+  repo: LastOwnerMembershipRepo,
+  tenantId: string,
+  target: TenantMember,
+  message = 'This is the last active owner of the workspace — promote another owner before changing this membership',
+): Promise<void> {
+  const members = await repo.findByTenant(tenantId);
+  const anotherActiveOwner = members.some(
+    (m) =>
+      m.id !== target.id && m.role === TenantRole.OWNER && m.status === MemberStatus.ACTIVE && !isMembershipExpired(m),
+  );
+
+  if (!anotherActiveOwner) {
+    throw new ConflictError(message);
+  }
 }
 
 // ─── Tenant Member Service ───────────────────────────────────────────────────
@@ -35,12 +115,48 @@ export function isMembershipExpired(member: { expiresAt: string | null }): boole
  * Split from {@link TenantService} so each file has a single responsibility.
  */
 export class TenantMemberService {
+  /**
+   * Every parameter is REQUIRED (the same rule `TenantService` follows).
+   *
+   * `auditService` was absent entirely, which is why the dataset whose purpose is
+   * "who may see what" carried no actor record for any of its transitions
+   * Optional-and-guarded would have reproduced that: a required
+   * dependency that the container forgets is a compile error, a conditional one
+   * is silence.
+   */
   constructor(
     private readonly tenantRepo: TenantRepository,
     private readonly tenantMemberRepo: TenantMemberRepository,
     private readonly userRepo: UserRepository,
     private readonly emailService: EmailSender,
+    private readonly auditService: AuditService,
   ) {}
+
+  /**
+   * Write the audit event for ONE membership transition.
+   *
+   * The membership IS the audited entity, and its `id` is what
+   * `AuditEnrichmentService` resolves to a person's display name — so the id
+   * passed here must be the membership id, never the user id, except where the
+   * row is addressed by user (an invite for an address with no membership yet).
+   */
+  private async auditMembership(
+    tenantId: string,
+    entityId: string,
+    action: 'CREATED' | 'UPDATED' | 'DELETED',
+    actorId: string,
+    changes: { field: string; oldValue: unknown; newValue: unknown }[] = [],
+  ): Promise<void> {
+    await this.auditService.log({
+      tenantId,
+      projectId: null,
+      entityType: 'MEMBERSHIP',
+      entityId,
+      action,
+      actorId,
+      changes,
+    });
+  }
 
   // ─── Member Management ─────────────────────────────────────────────────────
 
@@ -67,6 +183,16 @@ export class TenantMemberService {
         const flipped = await this.tenantMemberRepo.update(member.id, { status: MemberStatus.ACCESS_REVOKED });
 
         if (flipped) effective = { ...flipped, userEmail: member.userEmail, userDisplayName: member.userDisplayName };
+
+        // DEC-055 expires a membership lazily, when it is observed, and
+        // there is no cron on Workers. Without this event the expiry leaves no
+        // trace at all until somebody reads the list. The actor is the member
+        // whose own access lapsed — nothing else acts here, and an event with no
+        // actor is exactly the gap this closes.
+        await this.auditMembership(member.tenantId, member.id, 'UPDATED', member.userId, [
+          { field: 'status', oldValue: MemberStatus.ACTIVE, newValue: MemberStatus.ACCESS_REVOKED },
+          { field: 'reason', oldValue: null, newValue: 'expired' },
+        ]);
       }
 
       effectiveMembers.push(effective);
@@ -88,7 +214,10 @@ export class TenantMemberService {
   ): Promise<TenantMember> {
     const requesterMembership = await this.requireMembership(requesterId, tenantId, precheckedMembership);
 
-    if (requesterMembership.role !== TenantRole.OWNER && requesterMembership.role !== TenantRole.ADMIN) {
+    // Every `Only owner or admin can …` guard below answers the RBAC
+    // matrix's `manage_tenant` row (see `isTenantAdmin`) while keeping its own
+    // domain message — eleven routes and their tests assert that text.
+    if (!isTenantAdmin(requesterMembership.role)) {
       throw new ForbiddenError('Only owner or admin can invite members');
     }
 
@@ -103,6 +232,11 @@ export class TenantMemberService {
         throw new ConflictError('User is already a member of this tenant');
       }
     }
+
+    // Both invitation-e-mail limits are checked AFTER the authorization and
+    // conflict guards, so a 403/409 never consumes an invite budget, and BEFORE
+    // any mail is sent.
+    this.assertInvitationAllowed(requesterId, tenantId, email);
 
     // Generate invitation token and hash
     const token = randomUUID();
@@ -131,7 +265,7 @@ export class TenantMemberService {
     const existingMember = await this.tenantMemberRepo.findByUserAndTenant(userId, tenantId);
 
     if (existingMember && existingMember.invitation?.status === InvitationStatus.PENDING) {
-      // Replace existing invitation with new token — membership stays ACCESS_REVOKED until accepted (DEC-018)
+      // Replace existing invitation with new token — membership stays ACCESS_REVOKED until accepted
       const replacementDoc: InvitationDocument = {
         status: InvitationStatus.PENDING,
         tokenHash,
@@ -140,6 +274,10 @@ export class TenantMemberService {
         invitedEmail: email.toLowerCase().trim(),
       };
 
+      await this.auditMembership(tenantId, existingMember.id, 'UPDATED', requesterId, [
+        { field: 'role', oldValue: existingMember.role, newValue: role },
+        { field: 'invitation', oldValue: InvitationStatus.PENDING, newValue: InvitationStatus.PENDING },
+      ]);
       await this.tenantMemberRepo.update(existingMember.id, {
         role,
         invitation: replacementDoc,
@@ -157,7 +295,15 @@ export class TenantMemberService {
           token,
         });
       } catch (err) {
-        console.error('Failed to send re-invitation email:', err);
+        // Invitation mail is BEST-EFFORT (the membership is already
+        // persisted, so failing the request would leave a member nobody can
+        // reach). That only stays correct while the failure is REPORTED, and
+        // `EmailService` now throws `EmailDeliveryError` when the provider
+        // resolves `{ error }` — the case the SDK used to hide. This catch is
+        // therefore reachable for a refused send and not only for a network
+        // fault, and a structured line is what an operator reads when nobody
+        // got the mail.
+        logger.error('Failed to send re-invitation email', { err });
       }
 
       return {
@@ -167,15 +313,29 @@ export class TenantMemberService {
       } as unknown as TenantMember;
     }
 
-    // DEC-018: an invited membership persists as ACCESS_REVOKED + invitation PENDING;
+    // An invited membership persists as ACCESS_REVOKED + invitation PENDING;
     // only explicit acceptance flips it to ACTIVE.
-    const member = await this.tenantMemberRepo.create({
-      userId,
-      tenantId,
-      role,
-      status: MemberStatus.ACCESS_REVOKED,
-      invitation: invitationDoc,
-    });
+    // The "already a member" check above is racy; the unique
+    // `{tenantId,userId}` index rejects a concurrent loser, which is the same
+    // domain conflict rather than a 500.
+    const member = await withConflictOnDuplicate(
+      () =>
+        this.tenantMemberRepo.create({
+          userId,
+          tenantId,
+          role,
+          status: MemberStatus.ACCESS_REVOKED,
+          invitation: invitationDoc,
+        }),
+      () => new ConflictError('User is already a member of this tenant'),
+    );
+
+    // An invitation IS a membership transition — the row exists, with
+    // ACCESS_REVOKED status, from the moment it is created.
+    await this.auditMembership(tenantId, member.id, 'CREATED', requesterId, [
+      { field: 'role', oldValue: null, newValue: role },
+      { field: 'status', oldValue: null, newValue: MemberStatus.ACCESS_REVOKED },
+    ]);
 
     // Send invitation email (fire and forget)
     try {
@@ -189,7 +349,7 @@ export class TenantMemberService {
         token, // plaintext token sent in email
       });
     } catch (err) {
-      console.error('Failed to send invitation email:', err);
+      logger.error('Failed to send invitation email', { err });
     }
 
     return member;
@@ -200,7 +360,7 @@ export class TenantMemberService {
   }
 
   /**
-   * DEC-055: full member update — role, expiration date and the underlying
+   * Full member update — role, expiration date and the underlying
    * user's profile (display name / email). Only provided fields are applied.
    * Setting an expiration on (or changing the role of) the workspace OWNER is
    * forbidden. Returns the enriched member so callers can refresh their rows.
@@ -209,17 +369,33 @@ export class TenantMemberService {
     requesterId: string,
     tenantId: string,
     userId: string,
-    patch: { role?: string; expiresAt?: string | null; name?: string; email?: string },
+    // The PATCH body is validated but fully optional, so omitted fields
+    // arrive as explicit `undefined`s — "only provided fields are applied".
+    patch: {
+      role?: string | undefined;
+      expiresAt?: string | null | undefined;
+      name?: string | undefined;
+      email?: string | undefined;
+    },
   ): Promise<TenantMember> {
     const requesterMembership = await this.requireMembership(requesterId, tenantId);
 
-    if (requesterMembership.role !== TenantRole.OWNER && requesterMembership.role !== TenantRole.ADMIN) {
+    if (!isTenantAdmin(requesterMembership.role)) {
       throw new ForbiddenError('Only owner or admin can update members');
     }
 
     const target = await this.requireMembershipByUserId(userId, tenantId);
 
     if (target.role === TenantRole.OWNER) {
+      // An OWNER demoting THEMSELVES when they are the last owner leaves
+      // the tenant permanently unmanageable — nobody is left who can promote
+      // anyone back, and the restore path cannot fix a tenant with no owner.
+      // Scoped to the SELF case: a third party changing an owner's role keeps
+      // hitting the pre-existing blanket 403 below, unchanged.
+      if (patch.role !== undefined && patch.role !== target.role && requesterId === userId) {
+        await this.assertNotLastOwner(tenantId, target);
+      }
+
       if (patch.expiresAt !== undefined) {
         throw new ForbiddenError('Cannot set an expiration date on the workspace owner');
       }
@@ -263,6 +439,25 @@ export class TenantMemberService {
       updated = (await this.tenantMemberRepo.update(target.id, memberPatch)) ?? target;
     }
 
+    // A role or expiration change is a membership transition. Only the
+    // fields that actually changed are recorded, so the event is the difference
+    // and not a copy of the row.
+    const changes: { field: string; oldValue: unknown; newValue: unknown }[] = [];
+
+    if (updated.role !== target.role) {
+      changes.push({ field: 'role', oldValue: target.role, newValue: updated.role });
+    }
+
+    // `TenantMember.expiresAt` is an ISO string (not a Date), so the comparison
+    // is between two strings and the event carries what the row holds.
+    if ((updated.expiresAt ?? null) !== (target.expiresAt ?? null)) {
+      changes.push({ field: 'expiresAt', oldValue: target.expiresAt, newValue: updated.expiresAt });
+    }
+
+    if (changes.length > 0) {
+      await this.auditMembership(tenantId, target.id, 'UPDATED', requesterId, changes);
+    }
+
     // Return the enriched member (fresh profile after possible name/email change)
     const freshUser = await this.userRepo.findById(updated.userId);
 
@@ -277,16 +472,25 @@ export class TenantMemberService {
   ): Promise<void> {
     const requesterMembership = await this.requireMembership(requesterId, tenantId, precheckedMembership);
 
-    if (requesterMembership.role !== TenantRole.OWNER && requesterMembership.role !== TenantRole.ADMIN) {
+    if (!isTenantAdmin(requesterMembership.role)) {
       throw new ForbiddenError('Only owner or admin can remove members');
     }
 
     const targetMembership = await this.requireMembership(userId, tenantId);
 
     if (targetMembership.role === TenantRole.OWNER) {
+      // Self-removal by the last OWNER bricks the tenant. Checked first
+      // so the 409 names the real problem. Scoped to the SELF case — see
+      // updateMember for why.
+      if (requesterId === userId) {
+        await this.assertNotLastOwner(tenantId, targetMembership);
+      }
       throw new ForbiddenError('Cannot remove the owner from the tenant');
     }
 
+    await this.auditMembership(tenantId, targetMembership.id, 'DELETED', requesterId, [
+      { field: 'role', oldValue: targetMembership.role, newValue: null },
+    ]);
     await this.tenantMemberRepo.delete(tenantId, userId);
   }
 
@@ -303,12 +507,12 @@ export class TenantMemberService {
       throw new NotFoundError('Invitation is no longer pending');
     }
 
-    // M-01 (IDOR guard, mirrors declineInvitation): only the invitee may accept
+    // IDOR guard, mirroring `declineInvitation`: only the invitee may accept
     if (member.userId !== userId) {
       throw new ForbiddenError('You can only accept your own invitations');
     }
 
-    // Check TTL expiration — membership stays ACCESS_REVOKED (DEC-018); only the invitation flips to EXPIRED
+    // Check TTL expiration — membership stays ACCESS_REVOKED; only the invitation flips to EXPIRED
     const invitedOn = new Date(member.invitation.invitedOn).getTime();
 
     if (Date.now() - invitedOn > INVITATION_TTL_MS) {
@@ -318,6 +522,9 @@ export class TenantMemberService {
       throw new AppError(410, 'INVITATION_EXPIRED', 'Invitation has expired');
     }
 
+    await this.auditMembership(member.tenantId, member.id, 'UPDATED', userId, [
+      { field: 'status', oldValue: MemberStatus.ACCESS_REVOKED, newValue: MemberStatus.ACTIVE },
+    ]);
     await this.tenantMemberRepo.update(memberId, {
       invitation: null,
       status: MemberStatus.ACTIVE,
@@ -340,16 +547,31 @@ export class TenantMemberService {
       throw new ForbiddenError('You can only decline your own invitations');
     }
 
+    await this.auditMembership(member.tenantId, member.id, 'UPDATED', userId, [
+      { field: 'invitation', oldValue: InvitationStatus.PENDING, newValue: InvitationStatus.DECLINED },
+    ]);
     await this.tenantMemberRepo.update(memberId, {
       invitation: { ...member.invitation, status: InvitationStatus.DECLINED },
     });
   }
 
   /**
-   * V2-7: all member-scoped lifecycle operations address the target by
-   * **userId** (consistent with invite / update-role / remove), resolving the
-   * membership document internally via findByUserAndTenant.
+   * An owner must not be able to remove, revoke or demote THEMSELVES
+   * when they are the last ACTIVE owner.
+   *
+   * Deliberately scoped to the SELF case only. A third party acting on an
+   * owner's membership keeps hitting the pre-existing blanket 403s, unchanged
+   * (see `updateMemberRole when trying to change the owner role` in
+   * tenant.service.test.ts). So this guard can only ever turn an opaque 403
+   * into a precise 409 — it never widens what is permitted.
+   *
+   * The rule itself lives in the module-level {@link assertNotLastOwner}, shared
+   * with `TenantService.deleteUser`.
    */
+  private async assertNotLastOwner(tenantId: string, target: TenantMember): Promise<void> {
+    await assertNotLastOwner(this.tenantMemberRepo, tenantId, target);
+  }
+
   private async requireMembershipByUserId(userId: string, tenantId: string): Promise<TenantMember> {
     const member = await this.tenantMemberRepo.findByUserAndTenant(userId, tenantId);
 
@@ -363,7 +585,7 @@ export class TenantMemberService {
   async revokeInvitation(requesterId: string, tenantId: string, userId: string): Promise<void> {
     const requesterMembership = await this.requireMembership(requesterId, tenantId);
 
-    if (requesterMembership.role !== TenantRole.OWNER && requesterMembership.role !== TenantRole.ADMIN) {
+    if (!isTenantAdmin(requesterMembership.role)) {
       throw new ForbiddenError('Only owner or admin can revoke invitations');
     }
 
@@ -373,6 +595,9 @@ export class TenantMemberService {
       throw new ConflictError('Invitation is no longer pending');
     }
 
+    await this.auditMembership(tenantId, member.id, 'UPDATED', requesterId, [
+      { field: 'invitation', oldValue: InvitationStatus.PENDING, newValue: InvitationStatus.REVOKED },
+    ]);
     await this.tenantMemberRepo.update(member.id, {
       invitation: {
         ...member.invitation,
@@ -390,11 +615,16 @@ export class TenantMemberService {
   ): Promise<void> {
     const requesterMembership = await this.requireMembership(requesterId, tenantId, precheckedMembership);
 
-    if (requesterMembership.role !== TenantRole.OWNER && requesterMembership.role !== TenantRole.ADMIN) {
+    if (!isTenantAdmin(requesterMembership.role)) {
       throw new ForbiddenError('Only owner or admin can reinvite users');
     }
 
     const member = await this.requireMembershipByUserId(userId, tenantId);
+
+    // A re-invite re-sends the invitation e-mail, so it draws from the same
+    // per-(workspace, address) cooldown and the same per-user budget.
+    this.assertInvitationAllowed(requesterId, tenantId, member.userId);
+
     // Generate new token
     const token = randomUUID();
     const tokenHash = hashToken(token);
@@ -408,6 +638,9 @@ export class TenantMemberService {
     };
 
     // DEC-018 invariant: a membership with a PENDING invitation is never ACTIVE
+    await this.auditMembership(tenantId, member.id, 'UPDATED', requesterId, [
+      { field: 'invitation', oldValue: member.invitation?.status ?? null, newValue: InvitationStatus.PENDING },
+    ]);
     await this.tenantMemberRepo.update(member.id, { status: MemberStatus.ACCESS_REVOKED, invitation: invitationDoc });
 
     // Send email
@@ -438,24 +671,28 @@ export class TenantMemberService {
   ): Promise<void> {
     const requesterMembership = await this.requireMembership(requesterId, tenantId, precheckedMembership);
 
-    if (requesterMembership.role !== TenantRole.OWNER && requesterMembership.role !== TenantRole.ADMIN) {
+    if (!isTenantAdmin(requesterMembership.role)) {
       throw new ForbiddenError('Only owner or admin can restore memberships');
     }
 
     const member = await this.requireMembershipByUserId(userId, tenantId);
 
-    // DEC-055: an ACTIVE membership past its expiration is effectively revoked too
+    // An ACTIVE membership past its expiration is effectively revoked too
     if (member.status !== MemberStatus.ACCESS_REVOKED && !isMembershipExpired(member)) {
       throw new ConflictError('Only ACCESS_REVOKED memberships can be restored');
     }
 
-    // BR-036 / DEC-018: a pending invitation can only be activated by the invitee's explicit acceptance
+    // A pending invitation can only be activated by the invitee's explicit acceptance
     if (member.invitation?.status === InvitationStatus.PENDING) {
       throw new ConflictError('Cannot restore a membership with a pending invitation — the invitee must accept it');
     }
 
-    // DEC-055: restoring clears the expiration — access is regained with all
+    // Restoring clears the expiration — access is regained with all
     // projects/roles intact (nothing was ever removed).
+    await this.auditMembership(tenantId, member.id, 'UPDATED', requesterId, [
+      { field: 'status', oldValue: member.status, newValue: MemberStatus.ACTIVE },
+      { field: 'expiresAt', oldValue: member.expiresAt, newValue: null },
+    ]);
     await this.tenantMemberRepo.update(member.id, { status: MemberStatus.ACTIVE, expiresAt: null });
   }
 
@@ -467,16 +704,24 @@ export class TenantMemberService {
   ): Promise<void> {
     const requesterMembership = await this.requireMembership(requesterId, tenantId, precheckedMembership);
 
-    if (requesterMembership.role !== TenantRole.OWNER && requesterMembership.role !== TenantRole.ADMIN) {
+    if (!isTenantAdmin(requesterMembership.role)) {
       throw new ForbiddenError('Only owner or admin can revoke access');
     }
 
     const membership = await this.requireMembershipByUserId(userId, tenantId);
 
     if (membership.role === TenantRole.OWNER) {
+      // See removeMember — checked first so the self-revoke of the last
+      // OWNER is a precise 409 rather than an opaque 403.
+      if (requesterId === userId) {
+        await this.assertNotLastOwner(tenantId, membership);
+      }
       throw new ForbiddenError("Cannot revoke the owner's access");
     }
 
+    await this.auditMembership(tenantId, membership.id, 'UPDATED', requesterId, [
+      { field: 'status', oldValue: membership.status, newValue: MemberStatus.ACCESS_REVOKED },
+    ]);
     await this.tenantMemberRepo.update(membership.id, { status: MemberStatus.ACCESS_REVOKED });
   }
 
@@ -488,16 +733,24 @@ export class TenantMemberService {
   ): Promise<void> {
     const requesterMembership = await this.requireMembership(requesterId, tenantId, precheckedMembership);
 
-    if (requesterMembership.role !== TenantRole.OWNER && requesterMembership.role !== TenantRole.ADMIN) {
+    if (!isTenantAdmin(requesterMembership.role)) {
       throw new ForbiddenError('Only owner or admin can permanently remove members');
     }
 
     const membership = await this.requireMembershipByUserId(userId, tenantId);
 
     if (membership.role === TenantRole.OWNER) {
+      // See removeMember — checked first so the self-revoke of the last
+      // OWNER is a precise 409 rather than an opaque 403.
+      if (requesterId === userId) {
+        await this.assertNotLastOwner(tenantId, membership);
+      }
       throw new ForbiddenError('Cannot permanently remove the owner');
     }
 
+    await this.auditMembership(tenantId, membership.id, 'DELETED', requesterId, [
+      { field: 'role', oldValue: membership.role, newValue: null },
+    ]);
     await this.tenantMemberRepo.deleteById(membership.id);
   }
 
@@ -519,7 +772,7 @@ export class TenantMemberService {
       const user = doc.userId ? (userById.get(doc.userId) ?? null) : null;
       const tenant = tenantById.get(doc.tenantId);
 
-      // MyInvitationSchema is the single source of truth (N-03): parsing the
+      // MyInvitationSchema is the single source of truth: parsing the
       // raw document both validates the enum fields coming out of MongoDB and
       // yields the schema-inferred domain type — no casts needed.
       enriched.push(
@@ -550,6 +803,45 @@ export class TenantMemberService {
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
+
+  /**
+   * Consume one invitation slot, or throw 429.
+   *
+   * `target` is the invitee identity the per-(workspace, address) cooldown is
+   * keyed on: an e-mail address for a fresh invite, a user id for a re-invite
+   * (whose address is only known after the user document is read). Both are
+   * normalized so `Bob@Example.com` and `bob@example.com` share one cooldown.
+   *
+   * Order: the per-user budget is probed FIRST so a user who exhausted their
+   * hourly quota is told that, rather than being told to wait a minute for a
+   * cooldown that would not help them anyway.
+   */
+  private assertInvitationAllowed(requesterId: string, tenantId: string, target: string): void {
+    const normalizedTarget = target.toLowerCase().trim();
+    const budget = inviteUserBudget(`user:${requesterId}`);
+
+    if (budget.limited) {
+      throw new AppError(
+        429,
+        'RATE_LIMITED',
+        'Invitation limit reached. Try again later.',
+        undefined,
+        buildRateLimitHeaders(INVITE_MAX_PER_USER, budget),
+      );
+    }
+
+    const cooldown = inviteCooldown(`invite:${tenantId}:${normalizedTarget}`);
+
+    if (cooldown.limited) {
+      throw new AppError(
+        429,
+        'RATE_LIMITED',
+        'An invitation was already sent to this address recently. Try again later.',
+        undefined,
+        buildRateLimitHeaders(1, cooldown),
+      );
+    }
+  }
 
   private async requireActiveTenant(tenantId: string): Promise<Tenant> {
     const tenant = await this.tenantRepo.findById(tenantId);
@@ -588,6 +880,10 @@ export class TenantMemberService {
     // DEC-055 lazy revoke: an ACTIVE membership past its expiration denies
     // access; the stored status is flipped when observed (no cron on Workers).
     if (membership.status === MemberStatus.ACTIVE && isMembershipExpired(membership)) {
+      await this.auditMembership(tenantId, membership.id, 'UPDATED', userId, [
+        { field: 'status', oldValue: MemberStatus.ACTIVE, newValue: MemberStatus.ACCESS_REVOKED },
+        { field: 'reason', oldValue: null, newValue: 'expired' },
+      ]);
       await this.tenantMemberRepo.update(membership.id, { status: MemberStatus.ACCESS_REVOKED });
       throw new ForbiddenError('Your membership has expired');
     }

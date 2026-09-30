@@ -37,7 +37,7 @@ const mockMember = {
   createdAt: '2025-01-01T00:00:00.000Z',
   updatedAt: '2025-01-01T00:00:00.000Z',
 };
-// DEC-018: an invited-but-unaccepted membership is ACCESS_REVOKED + invitation PENDING
+// An invited-but-unaccepted membership is ACCESS_REVOKED + invitation PENDING
 const mockInvitedMember = {
   ...mockMember,
   id: '550e8400-e29b-41d4-a716-446655440003',
@@ -345,7 +345,7 @@ describe('GET /api/tenants/:tenantId/members includes invited members', () => {
   });
 });
 
-// ─── DEC-055: member update (role / expiration / profile) ────────────────────
+// ─── Member update (role / expiration / profile) ─────────────────────────────
 
 describe('PATCH /api/tenants/:tenantId/members/:memberUserId (DEC-055)', () => {
   it('passes expiresAt through to the service and returns the member', async () => {

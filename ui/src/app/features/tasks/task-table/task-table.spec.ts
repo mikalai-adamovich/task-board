@@ -4,15 +4,16 @@
  * - Debounced free-text search (~300 ms)
  * - Filtered-empty vs true-empty distinction
  * - Active-filter chips with per-chip removal + clear-all
- * - U3: fixed table layout, stable body height, Auto page-size
+ * - Fixed table layout, stable body height, Auto page-size
  */
 import { TestBed, type ComponentFixture } from '@angular/core/testing';
+import { TASK_SEARCH_MIN_LENGTH } from '@task-board/shared';
 import { By } from '@angular/platform-browser';
 import { HlmTooltip } from '@spartan-ng/helm/tooltip';
-import { provideHttpClient } from '@angular/common/http';
+import { HttpErrorResponse, provideHttpClient } from '@angular/common/http';
 import { provideHttpClientTesting } from '@angular/common/http/testing';
 import { provideRouter, Router, ActivatedRoute, NavigationEnd } from '@angular/router';
-import { firstValueFrom, of, Subject } from 'rxjs';
+import { firstValueFrom, of, Subject, throwError } from 'rxjs';
 import { TranslocoTestingModule, TranslocoService } from '@jsverse/transloco';
 import { TaskTable } from './task-table';
 import { safeNumericParam } from '@app/shared/utils/numeric-param';
@@ -25,6 +26,11 @@ import { ProjectRefStore } from '@stores/project-ref-store';
 import { AuthStore } from '@stores/auth-store';
 import { API_BASE_URL } from '@app/api-url.token';
 import { clickUntil, settle } from '@app/shared/testing/zoneless';
+import { toast } from '@spartan-ng/brain/sonner';
+
+vi.mock('@spartan-ng/brain/sonner', () => ({
+  toast: { error: vi.fn(), success: vi.fn(), info: vi.fn(), warning: vi.fn() },
+}));
 
 describe('TaskTable — W9 polish', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -33,6 +39,10 @@ describe('TaskTable — W9 polish', () => {
   let taskClientMock: { list: ReturnType<typeof vi.fn>; bulkUpdate?: ReturnType<typeof vi.fn> };
   let routerMock: { navigate: ReturnType<typeof vi.fn>; events: unknown };
   let routerEvents: Subject<NavigationEnd>;
+
+  beforeEach(() => {
+    vi.mocked(toast.error).mockClear();
+  });
 
   async function setup(
     inputOverrides: Record<string, unknown> = {},
@@ -71,13 +81,13 @@ describe('TaskTable — W9 polish', () => {
           provide: PreferencesStore,
           useValue: {
             pageSize: () => storedPageSize,
-            // R3-P8: format token consumed by the Created/Updated columns
+            // Format token consumed by the Created/Updated columns
             dateTimePipeFormat: () => 'yyyy-MM-dd HH:mm',
-            // P12 (item 28): active language used as the DatePipe locale
+            // Active language used as the DatePipe locale
             language: () => 'en',
             datePipeFormat: () => 'yyyy-MM-dd',
             setPageSize: vi.fn(),
-            // R3-P4: per-project visible task-table columns (null = default set)
+            // Per-project visible task-table columns (null = default set)
             getTaskTableColumns: vi.fn(() => storedColumns),
             setTaskTableColumns: vi.fn(),
             loadProjectPreferences: vi.fn().mockResolvedValue(undefined),
@@ -170,6 +180,83 @@ describe('TaskTable — W9 polish', () => {
     });
   });
 
+  // ── Never send a sub-minimum search ─────────────────────
+  // The API rejects `search` shorter than TASK_SEARCH_MIN_LENGTH with a 400
+  // (a 1-character term matches virtually every task and the server-side
+  // `$or` of five regexes is evaluated against all of them). Committing such a
+  // value to the URL would trade the 400 for a wasted full-project scan.
+
+  describe('search minimum (F11)', () => {
+    beforeEach(() => setup());
+
+    it('should not commit a 1-character search to the URL', () => {
+      vi.useFakeTimers();
+
+      component.onSearch({ target: { value: 'a' } });
+      vi.advanceTimersByTime(300);
+
+      expect(routerMock.navigate).not.toHaveBeenCalled();
+      vi.useRealTimers();
+    });
+
+    it('should still show the typed character in the input (the box is not frozen)', () => {
+      component.onSearch({ target: { value: 'a' } });
+
+      expect(component.searchInput()).toBe('a');
+    });
+
+    it(`should commit as soon as the term reaches the minimum (${TASK_SEARCH_MIN_LENGTH})`, () => {
+      vi.useFakeTimers();
+
+      component.onSearch({ target: { value: 'a' } });
+      component.onSearch({ target: { value: 'r'.repeat(TASK_SEARCH_MIN_LENGTH) } });
+      vi.advanceTimersByTime(300);
+
+      expect(routerMock.navigate).toHaveBeenCalledWith(
+        [],
+        expect.objectContaining({ queryParams: { search: 'r'.repeat(TASK_SEARCH_MIN_LENGTH), page: null } }),
+      );
+      vi.useRealTimers();
+    });
+
+    it('should always commit an empty value — that is how the search is cleared', () => {
+      vi.useFakeTimers();
+
+      component.onSearch({ target: { value: '' } });
+      vi.advanceTimersByTime(300);
+
+      expect(routerMock.navigate).toHaveBeenCalledWith(
+        [],
+        expect.objectContaining({ queryParams: { search: null, page: null } }),
+      );
+      vi.useRealTimers();
+    });
+
+    it('should not send a sub-minimum search that arrived in the URL (bookmark / shared link)', async () => {
+      // The buffer still mirrors the URL (so the input shows what the link asked
+      // for), but no request may carry it — the API would answer 400.
+      fixture.componentRef.setInput('search', 'a');
+      await settle(fixture);
+
+      expect(component.searchInput()).toBe('a');
+
+      const sent = taskClientMock.list.mock.calls.map((call) => (call[1] as { search?: string }).search);
+
+      expect(sent.every((value) => value === undefined)).toBe(true);
+    });
+
+    it('should send a search at or above the minimum unchanged', async () => {
+      fixture.componentRef.setInput('search', 're');
+      await settle(fixture);
+
+      const lastQuery = taskClientMock.list.mock.calls[taskClientMock.list.mock.calls.length - 1]?.[1] as {
+        search?: string;
+      };
+
+      expect(lastQuery?.search).toBe('re');
+    });
+  });
+
   // ── V4-7: no literal "undefined" in the search input ───
 
   describe('search input rendering (V4-7 regression)', () => {
@@ -204,7 +291,7 @@ describe('TaskTable — W9 polish', () => {
       await setup();
 
       const headers = fixture.nativeElement.querySelectorAll('thead th');
-      // Q10: first th is the selection checkbox — Title is the third column
+      // First th is the selection checkbox — Title is the third column
       const titleTh = headers[2] as HTMLElement;
 
       expect(titleTh.className).toContain('w-[30%]');
@@ -253,7 +340,7 @@ describe('TaskTable — W9 polish', () => {
       await setup();
 
       const headers = fixture.nativeElement.querySelectorAll('thead th');
-      // Q10: first th is the selection checkbox — Title is the third column
+      // First th is the selection checkbox — Title is the third column
       const titleTh = headers[2] as HTMLElement;
       const sortButton = titleTh.querySelector('button') as HTMLButtonElement;
 
@@ -293,7 +380,7 @@ describe('TaskTable — W9 polish', () => {
 
       expect(chips).toEqual([
         { param: 'search', labelKey: 'taskTable.filterSearch', value: 'hello' },
-        // P11: priority chips show the translated display label (test dict is empty → the key)
+        // Priority chips show the translated display label (test dict is empty → the key)
         { param: 'priorityLevel', labelKey: 'taskTable.filterPriority', value: 'priority.high' },
       ]);
     });
@@ -360,7 +447,7 @@ describe('TaskTable — W9 polish', () => {
     });
   });
 
-  // ── New Task navigation (U1) ───────────────────────────
+  // ── New Task navigation ────────────────────────────────
 
   describe('goToNewTask', () => {
     beforeEach(() => setup());
@@ -374,7 +461,7 @@ describe('TaskTable — W9 polish', () => {
   });
 
   // ── U3/V4-8: constrained table layout ──────────────────
-  // V4-8 (V6): `table-fixed` ignores `min-width`, so the Title th collapsed to
+  // V4-8: `table-fixed` ignores `min-width`, so the Title th collapsed to
   // 0px whenever the fixed px columns consumed the table width and the Type
   // header swallowed mouse clicks on the Title sort button. The table must NOT
   // use `table-fixed`; auto layout + per-cell `truncate` keeps widths stable.
@@ -440,15 +527,15 @@ describe('TaskTable — W9 polish', () => {
       fixture2.componentRef.setInput('projectKey', 'ABC');
       await settle(fixture2);
 
-      // Q10: first td is the selection checkbox — Title is the third cell
+      // First td is the selection checkbox — Title is the third cell
       const titleCell: HTMLElement = fixture2.nativeElement.querySelector('tbody tr td:nth-child(3)');
 
-      // R3-P3: max-w-0 removes the cell's intrinsic width contribution under table-auto,
+      // Max-w-0 removes the cell's intrinsic width contribution under table-auto,
       // so an unbreakable title can never widen the column/table (no horizontal scroll)
       expect(titleCell.classList.contains('max-w-0')).toBe(true);
       expect(titleCell.classList.contains('truncate')).toBe(true);
 
-      // Q5 (F-07): native `[title]` replaced by the HlmTooltip directive on the cell
+      // Native `[title]` replaced by the HlmTooltip directive on the cell
       const titleCellTooltip = fixture2.debugElement
         .queryAll(By.directive(HlmTooltip))
         .find((d) => d.nativeElement === titleCell);
@@ -473,7 +560,7 @@ describe('TaskTable — W9 polish', () => {
     });
   });
 
-  // ── U3: Auto page-size ─────────────────────────────────
+  // ── Auto page-size ─────────────────────────────────────
 
   describe('auto page-size (U3 / R3-P3 — measured wrapper height)', () => {
     /**
@@ -645,7 +732,7 @@ describe('TaskTable — W9 polish', () => {
     });
   });
 
-  // ── DR-1 status display names + DR-4 label chip padding ─
+  // ── Status display names + label chip padding ─
 
   describe('status names & label padding (DR-1/DR-4)', () => {
     beforeEach(() => setup());
@@ -680,12 +767,12 @@ describe('TaskTable — W9 polish', () => {
 
     it('should render the status badge with the human display name, not the raw id', async () => {
       const fx = await renderOneTask();
-      // Q10: first td is the selection checkbox — Status is the fifth cell
+      // First td is the selection checkbox — Status is the fifth cell
       const statusCell: HTMLElement = fx.nativeElement.querySelector('tbody tr td:nth-child(5)');
 
       expect(statusCell.textContent?.trim()).toBe('To Do');
 
-      // Q5 (F-07): native `[title]` replaced by the HlmTooltip directive on the cell
+      // Native `[title]` replaced by the HlmTooltip directive on the cell
       const statusCellTooltip = fx.debugElement
         .queryAll(By.directive(HlmTooltip))
         .find((d) => d.nativeElement === statusCell);
@@ -779,7 +866,7 @@ describe('TaskTable — W9 polish', () => {
     });
   });
 
-  // ── R3-P4: column chooser ──────────────────────────────
+  // ── Column chooser ─────────────────────────────────────
 
   describe('column chooser (R3-P4)', () => {
     function storeMocks() {
@@ -794,7 +881,7 @@ describe('TaskTable — W9 polish', () => {
 
       const headers = fixture.nativeElement.querySelectorAll('thead th');
 
-      // Q10: 11 data columns + the selection checkbox column (writer role)
+      // 11 data columns + the selection checkbox column (writer role)
       expect(headers).toHaveLength(12);
       expect(component.visibleColumnCount()).toBe(11);
     });
@@ -807,7 +894,7 @@ describe('TaskTable — W9 polish', () => {
       const headers = Array.from(fixture.nativeElement.querySelectorAll('thead th')) as HTMLElement[];
       const headerText = headers.map((h) => h.textContent ?? '').join('|');
 
-      // Q10: 3 visible data columns + the selection checkbox column
+      // 3 visible data columns + the selection checkbox column
       expect(headers).toHaveLength(4);
       expect(headerText).toContain('taskTable.key');
       expect(headerText).toContain('taskTable.titleCol');
@@ -829,7 +916,7 @@ describe('TaskTable — W9 polish', () => {
       expect(headerText).toContain('taskTable.key');
       expect(headerText).toContain('taskTable.titleCol');
       expect(headerText).toContain('taskTable.status');
-      // Q10: 3 visible data columns (pinned Key/Title + status) + the checkbox column
+      // 3 visible data columns (pinned Key/Title + status) + the checkbox column
       expect(headers).toHaveLength(4);
     });
 
@@ -953,7 +1040,7 @@ describe('TaskTable — W9 polish', () => {
 
       component.openChooserFromContextMenu();
 
-      // Round-5 P9 (item 24): the context menu opens the CURSOR-anchored instance…
+      // The context menu opens the CURSOR-anchored instance…
       expect(component.showContextColumnChooser()).toBe(true);
       // …and never the toolbar one
       expect(component.showColumnChooser()).toBe(false);
@@ -1111,7 +1198,7 @@ describe('TaskTable — W9 polish', () => {
     });
   });
 
-  // ── Q10 (RQ-04 ③): multi-select + bulk actions ──────────
+  // ── Multi-select + bulk actions ─────────────────────────
 
   describe('bulk actions', () => {
     function makeTask(id: string) {
@@ -1301,7 +1388,7 @@ describe('TaskTable — W9 polish', () => {
     });
   });
 
-  // ── Q12: saved-view date-range params ──────────────────
+  // ── Saved-view date-range params ───────────────────────
 
   describe('saved-view date-range params (Q12)', () => {
     beforeEach(() => setup());
@@ -1377,7 +1464,7 @@ describe('TaskTable — W9 polish', () => {
       expect(translate).toHaveBeenCalledWith('taskTable.dateMode.between');
     });
 
-    // ── P12 (item 28): localized trigger formatting ─────────────────────────
+    // ── Localized trigger formatting ────────────────────────────────────────
 
     it('should format the picker trigger via DatePipe with the store format + locale (no weekday)', () => {
       // Mocked store: language 'en', datePipeFormat 'yyyy-MM-dd' → plain ISO, no weekday
@@ -1511,6 +1598,52 @@ describe('TaskTable — W9 polish', () => {
         document.body.removeEventListener('click', bodyListener);
         target.remove();
       }
+    });
+  });
+
+  // ── The caller half of the toast contract ────────────────────────────────
+  //
+  // `error-toast-count.spec.ts` asserts the global half: the interceptor toasts
+  // a 5xx or a network failure exactly once, and never a 4xx. This block asserts
+  // the caller half on the component that had the defect: the local toast covers
+  // the 4xx the global layer leaves alone, and NOTHING else. Together: exactly
+  // one toast per failure. The spec runs WITHOUT the interceptor installed, so
+  // every toast counted here is the component's own.
+  describe('list-load failure toasts (D-41)', () => {
+    beforeEach(() => setup());
+
+    /** Make the (mocked) task list fail with `status` and settle the resource. */
+    async function failListWith(status: number): Promise<void> {
+      taskClientMock.list.mockReturnValue(
+        throwError(
+          () =>
+            new HttpErrorResponse({
+              status,
+              statusText: 'Failed',
+              error: { error: { code: 'INTERNAL_ERROR', message: 'boom' } },
+            }),
+        ),
+      );
+      component.reloadTick.update((tick: number) => tick + 1);
+      await settle(fixture);
+    }
+
+    it('should not toast a 5xx list failure locally — the global interceptor owns it', async () => {
+      await failListWith(500);
+
+      expect(vi.mocked(toast.error)).not.toHaveBeenCalled();
+    });
+
+    it('should not toast a network failure locally — the global interceptor owns it', async () => {
+      await failListWith(0);
+
+      expect(vi.mocked(toast.error)).not.toHaveBeenCalled();
+    });
+
+    it('should toast a 4xx list failure locally — the caller owns it', async () => {
+      await failListWith(403);
+
+      expect(vi.mocked(toast.error)).toHaveBeenCalledTimes(1);
     });
   });
 });

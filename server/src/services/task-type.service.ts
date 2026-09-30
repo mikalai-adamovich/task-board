@@ -1,7 +1,14 @@
 import type { TaskType, CreateTaskType, UpdateTaskType } from '@task-board/shared';
 import { ConflictError, ForbiddenError, NotFoundError } from '../errors/app-error.js';
+import { withConflictOnDuplicate } from '../db/duplicate-key.js';
 import { TaskTypeRepository } from '../repositories/task-type.repository.js';
 import { ensurePermission } from './rbac.service.js';
+import {
+  assertProjectInTenant,
+  assertProjectWritableInTenant,
+  requireCallerContext,
+  type CallerContext,
+} from './tenant-assert.js';
 import type { AuditService } from './audit.service.js';
 
 // ─── Interfaces for cross-repository dependencies ────────────────────────────
@@ -28,21 +35,38 @@ export class TaskTypeService {
   constructor(
     private readonly taskTypeRepo: TaskTypeRepository,
     private readonly taskRepo: TaskTypeServiceTaskRepo,
-    private readonly projectRepo?: TaskTypeServiceProjectRepo,
+    private readonly projectRepo: TaskTypeServiceProjectRepo,
     private readonly auditService?: AuditService,
     private readonly projectMemberRepo?: TaskTypeServiceProjectMemberRepo,
   ) {}
 
   /**
-   * V2-4: gate every mutation behind `edit_project_config` (PROJECT_ADMIN
-   * only; tenant Owner/Admin bypass inside the RBAC matrix). Routes with
-   * `:projectId` in the path are additionally gated by requirePermission —
-   * this is the defense-in-depth / id-based-route layer.
+   * (read path): the project must belong to the caller's
+   * tenant, otherwise 404 — never 403, so a foreign project id looks exactly
+   * like a nonexistent one. The caller context is REQUIRED; a missing one
+   * throws instead of silently skipping the check (fail closed).
    */
-  private async ensureEditProjectConfig(projectId: string, userId?: string, userRole?: string): Promise<void> {
-    if (!userId || !userRole) {
-      return; // no caller context → nothing to enforce against (legacy/test callers)
-    }
+  private async assertProjectScope(projectId: string, context: CallerContext): Promise<{ tenantId: string }> {
+    const { tenantId } = requireCallerContext(context);
+
+    return assertProjectInTenant(this.projectRepo, projectId, tenantId);
+  }
+
+  /**
+   * (write path): tenant scope FIRST (404 on a foreign
+   * project), then `edit_project_config` (PROJECT_ADMIN only; tenant
+   * Owner/Admin bypass inside the RBAC matrix) via {@link ensurePermission}.
+   * Routes with `:projectId` in the path are additionally gated by
+   * requirePermission — this is the defense-in-depth / id-based-route layer,
+   * and it no longer fails open when the context is missing.
+   *
+   * @returns the resolved project so callers can audit-log without a second lookup.
+   */
+  private async assertEditProjectConfig(projectId: string, context: CallerContext): Promise<{ tenantId: string }> {
+    const { tenantId, userId, userRole } = requireCallerContext(context);
+    // The WRITABLE seam — tenant scope first, then the single server-owned
+    // rule that a project scheduled for deletion is read-only.
+    const project = await assertProjectWritableInTenant(this.projectRepo, projectId, tenantId);
 
     if (!this.projectMemberRepo) {
       throw new ForbiddenError('Project membership lookup is unavailable');
@@ -51,9 +75,13 @@ export class TaskTypeService {
     const membership = await this.projectMemberRepo.findByUserAndProject(userId, projectId);
 
     ensurePermission('edit_project_config', userRole, membership?.role ?? null);
+
+    return project;
   }
 
-  async getTaskTypesByProject(projectId: string): Promise<TaskType[]> {
+  async getTaskTypesByProject(projectId: string, context: CallerContext): Promise<TaskType[]> {
+    await this.assertProjectScope(projectId, context);
+
     return this.taskTypeRepo.findByProject(projectId);
   }
 
@@ -64,10 +92,9 @@ export class TaskTypeService {
   async reorder(
     projectId: string,
     items: { id: string; position: number }[],
-    userId?: string,
-    userRole?: string,
+    context: CallerContext,
   ): Promise<TaskType[]> {
-    await this.ensureEditProjectConfig(projectId, userId, userRole);
+    await this.assertEditProjectConfig(projectId, context);
 
     const taskTypes = await this.taskTypeRepo.findByProject(projectId);
     const knownIds = new Set(taskTypes.map((t) => t.id));
@@ -81,67 +108,68 @@ export class TaskTypeService {
     return this.taskTypeRepo.findByProject(projectId);
   }
 
-  async createTaskType(
-    projectId: string,
-    input: CreateTaskType,
-    userId?: string,
-    userRole?: string,
-  ): Promise<TaskType> {
-    await this.ensureEditProjectConfig(projectId, userId, userRole);
-
+  async createTaskType(projectId: string, input: CreateTaskType, context: CallerContext): Promise<TaskType> {
+    const project = await this.assertEditProjectConfig(projectId, context);
     const existing = await this.taskTypeRepo.findByProjectAndKey(projectId, input.key);
 
     if (existing) {
       throw new ConflictError('A task type with this key already exists in this project', 'CONFLICT');
     }
 
-    const taskType = await this.taskTypeRepo.create(projectId, input);
+    // The pre-check is racy; the unique `{projectId,key}` index is the real
+    // guard, so a lost race is translated into the same 409.
+    const taskType = await withConflictOnDuplicate(
+      () => this.taskTypeRepo.create(projectId, input),
+      () => new ConflictError('A task type with this key already exists in this project', 'CONFLICT'),
+    );
 
     // Audit side effect
-    if (this.auditService && userId && this.projectRepo) {
-      const project = await this.projectRepo.findById(projectId);
-
+    if (this.auditService) {
       await this.auditService.log({
-        tenantId: project?.tenantId ?? '',
+        tenantId: project.tenantId,
         projectId,
         entityType: 'TASK_TYPE',
         entityId: taskType.id,
         action: 'CREATED',
-        actorId: userId,
+        actorId: context.userId,
       });
     }
 
     return taskType;
   }
 
-  async updateTaskType(
-    taskTypeId: string,
-    input: UpdateTaskType,
-    userId?: string,
-    userRole?: string,
-  ): Promise<TaskType> {
+  async updateTaskType(taskTypeId: string, input: UpdateTaskType, context: CallerContext): Promise<TaskType> {
     const taskType = await this.taskTypeRepo.findById(taskTypeId);
 
     if (!taskType) {
       throw new NotFoundError('Task type not found');
     }
 
-    await this.ensureEditProjectConfig(taskType.projectId, userId, userRole);
-
+    const project = await this.assertEditProjectConfig(taskType.projectId, context);
     // Key is immutable — ignore any key in input
-    const updated = await this.taskTypeRepo.update(taskTypeId, {
-      name: input.name,
-      icon: input.icon,
-      position: input.position,
-    });
+    //
+    // F22 (latent bug the flag exposed): the patch used to be built as
+    // `{ name: input.name, icon: input.icon, position: input.position }`. Every
+    // key was therefore present on EVERY call, and for a PATCH that omits a field
+    // the value is `undefined` — which the BSON serialiser writes as `null`.
+    // `PATCH /task-types/:id {"name":"X"}` therefore nulled `icon` and
+    // `position` in MongoDB. The patch is now assembled from defined keys only,
+    // which is also what `TaskTypeRepository.update`'s parameter type demands
+    // under `exactOptionalPropertyTypes`.
+    const patch: { name?: string; icon?: string; position?: number } = {};
+
+    if (input.name !== undefined) patch.name = input.name;
+    if (input.icon !== undefined) patch.icon = input.icon;
+    if (input.position !== undefined) patch.position = input.position;
+
+    const updated = await this.taskTypeRepo.update(taskTypeId, patch);
 
     if (!updated) {
       throw new NotFoundError('Task type not found');
     }
 
     // Audit side effect
-    if (this.auditService && userId && this.projectRepo) {
-      const project = await this.projectRepo.findById(updated.projectId);
+    if (this.auditService) {
       const changes: { field: string; oldValue: unknown; newValue: unknown }[] = [];
 
       if (input.name !== undefined) changes.push({ field: 'name', oldValue: taskType.name, newValue: input.name });
@@ -149,12 +177,12 @@ export class TaskTypeService {
       if (input.position !== undefined)
         changes.push({ field: 'position', oldValue: taskType.position, newValue: input.position });
       await this.auditService.log({
-        tenantId: project?.tenantId ?? '',
+        tenantId: project.tenantId,
         projectId: updated.projectId,
         entityType: 'TASK_TYPE',
         entityId: updated.id,
         action: 'UPDATED',
-        actorId: userId,
+        actorId: context.userId,
         changes,
       });
     }
@@ -164,9 +192,8 @@ export class TaskTypeService {
 
   async deleteTaskType(
     taskTypeId: string,
-    replacementTypeId?: string,
-    userId?: string,
-    userRole?: string,
+    replacementTypeId: string | undefined,
+    context: CallerContext,
   ): Promise<void> {
     const taskType = await this.taskTypeRepo.findById(taskTypeId);
 
@@ -174,8 +201,7 @@ export class TaskTypeService {
       throw new NotFoundError('Task type not found');
     }
 
-    await this.ensureEditProjectConfig(taskType.projectId, userId, userRole);
-
+    const project = await this.assertEditProjectConfig(taskType.projectId, context);
     // Check if any tasks use this type
     const tasksWithType = await this.taskRepo.countByType(taskType.projectId, taskTypeId);
 
@@ -198,16 +224,14 @@ export class TaskTypeService {
     }
 
     // Audit side effect (before delete)
-    if (this.auditService && userId && this.projectRepo) {
-      const project = await this.projectRepo.findById(taskType.projectId);
-
+    if (this.auditService) {
       await this.auditService.log({
-        tenantId: project?.tenantId ?? '',
+        tenantId: project.tenantId,
         projectId: taskType.projectId,
         entityType: 'TASK_TYPE',
         entityId: taskTypeId,
         action: 'DELETED',
-        actorId: userId,
+        actorId: context.userId,
       });
     }
 

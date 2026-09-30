@@ -6,7 +6,7 @@
  * - Board / initial column pages fetching on init (one HTTP request, no cursors)
  * - Per-column pagination: append, dedupe, batching, guards, stale generations
  * - Drag-and-drop optimistic reconciliation (no refetch, cursor/hasMore stable)
- * - goToTask / goToNewTask navigation, sprint selector, F-08 filters,
+ * - goToTask / goToNewTask navigation, sprint selector, filters,
  *   status display names, loaded-count headers, empty columns
  */
 import { TestBed, type ComponentFixture } from '@angular/core/testing';
@@ -27,13 +27,15 @@ import { AuthStore } from '@stores/auth-store';
 import { API_BASE_URL } from '@app/api-url.token';
 import type { BoardColumn, BoardConfig, BoardPage, BoardTask } from '@task-board/shared';
 import { encodeBoardCursor } from '@task-board/shared';
-import { settle } from '@app/shared/testing/zoneless';
+import { clickUntil, settle } from '@app/shared/testing/zoneless';
 
 // ── Test fixtures ───────────────────────────────────────────
 
 const NOW = new Date().toISOString();
 const mockBoard: BoardConfig = {
   projectId: 'p0000000-0000-0000-0000-000000000001',
+  // A board carries a version, exactly as a task does.
+  version: 1,
   columns: [
     { id: 'col1', statusIds: ['s1', 's2'], position: 0 },
     { id: 'col2', statusIds: ['s3'], position: 1 },
@@ -185,6 +187,8 @@ describe('BoardView', () => {
             activeProject: () => ({ id: 'p0000000-0000-0000-0000-000000000001' }),
             projectRole: () => null,
             members: () => [],
+            loadedMembersFor: () => null,
+            loadMembers: vi.fn().mockResolvedValue(undefined),
           },
         },
       ],
@@ -268,6 +272,8 @@ describe('BoardView', () => {
               activeProject: () => ({ id: 'p0000000-0000-0000-0000-000000000001' }),
               projectRole: () => null,
               members: () => [],
+              loadedMembersFor: () => null,
+              loadMembers: vi.fn().mockResolvedValue(undefined),
             },
           },
         ],
@@ -329,6 +335,8 @@ describe('BoardView', () => {
               activeProject: () => ({ id: 'p0000000-0000-0000-0000-000000000001' }),
               projectRole: () => null,
               members: () => [],
+              loadedMembersFor: () => null,
+              loadMembers: vi.fn().mockResolvedValue(undefined),
             },
           },
         ],
@@ -848,9 +856,24 @@ describe('BoardView', () => {
 
       expect(routerMock.navigate).toHaveBeenCalledWith(['/w', 't1', 'projects', 't1', 'tasks', 't1-5']);
     });
+
+    // Keyboard path (WCAG 2.2 SC 2.1.1). The card emits an application-level
+    // `taskClick` output on Enter/Space, which does NOT bubble as a DOM click;
+    // the board must bind it or a keyboard user can read a card and open none.
+    it('should navigate when a board card is activated with Enter', async () => {
+      const fx = await setup();
+      const card = fx.nativeElement.querySelector('ui-task-card [role="button"]') as HTMLElement | null;
+
+      expect(card).not.toBeNull();
+
+      await clickUntil(
+        () => card?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })),
+        () => expect(routerMock.navigate).toHaveBeenCalledWith(['/w', 't1', 'projects', 't1', 'tasks', 't1-1']),
+      );
+    });
   });
 
-  // ── goToNewTask (U1) ────────────────────────────────────
+  // ── goToNewTask ─────────────────────────────────────────
 
   describe('goToNewTask', () => {
     it('should navigate to the unified create-task page instead of opening a dialog', async () => {
@@ -862,7 +885,7 @@ describe('BoardView', () => {
     });
   });
 
-  // ── Sprint selector (DEC-038) ──────────────────────────
+  // ── Sprint selector ────────────────────────────────────
 
   describe('sprint selector', () => {
     it('should fetch sprints for the board project', async () => {
@@ -926,7 +949,7 @@ describe('BoardView', () => {
     });
   });
 
-  // ── Board assignee/priority filters (F-08) ──────────────
+  // ── Board assignee/priority filters ─────────────────────
 
   describe('board filters (F-08)', () => {
     it('should resolve ?assignee=me to the current user id at query time', async () => {
@@ -1047,7 +1070,7 @@ describe('BoardView', () => {
     });
   });
 
-  // ── Status display names (DR-1 / U5) ────────────────────
+  // ── Status display names ────────────────────────────────
 
   describe('status display names (DR-1)', () => {
     const namedStatuses = [
@@ -1078,7 +1101,7 @@ describe('BoardView', () => {
     });
   });
 
-  // ── Loaded counts in column headers (Q9 / RQ-04 ⑥) ──────
+  // ── Loaded counts in column headers  ──────
 
   describe('loaded counts in column headers (Q9)', () => {
     it('should render a muted count badge with the loaded cards per column', async () => {
@@ -1087,7 +1110,7 @@ describe('BoardView', () => {
       // Wait for the board + pages to render (2 in col1, 1 in col2, 0 in col3)
       await until(fx, () => !!fx.nativeElement.querySelector('.cdk-drop-list'));
 
-      const counts = Array.from(fx.nativeElement.querySelectorAll('h3 span:last-child')).map((span) =>
+      const counts = Array.from(fx.nativeElement.querySelectorAll('h2 span:last-child')).map((span) =>
         (span as HTMLElement).textContent?.trim(),
       );
 
@@ -1108,7 +1131,7 @@ describe('BoardView', () => {
       await until(fx, () => Object.keys(component.columnStates()).length === 3);
       await until(fx, () => !!fx.nativeElement.querySelector('.cdk-drop-list'));
 
-      const counts = Array.from(fx.nativeElement.querySelectorAll('h3 span:last-child')).map((span) =>
+      const counts = Array.from(fx.nativeElement.querySelectorAll('h2 span:last-child')).map((span) =>
         (span as HTMLElement).textContent?.trim(),
       );
 
@@ -1127,6 +1150,93 @@ describe('BoardView', () => {
       expect(dropList).not.toBeNull();
       expect(dropList.querySelector('[data-drop-zone]')).toBeNull();
       expect((dropList.textContent as string).trim()).toBe('');
+    });
+  });
+
+  // ── a11y: keyboard move-to-column (the keyboard path for a pointer-only drag) ──
+
+  describe('keyboard move to column (F20)', () => {
+    async function setupBoard() {
+      const fx = await setup();
+
+      await until(fx, () => Object.keys(component.columnStates()).length === 3);
+      await until(fx, () => !!fx.nativeElement.querySelector('.cdk-drop-list'));
+
+      return fx;
+    }
+
+    function firstCardInCol1(): BoardTask {
+      return component.columnStates()['col1'].tasks[0] as BoardTask;
+    }
+
+    it('should open the picker from a card and offer every OTHER column', async () => {
+      const fx = await setupBoard();
+
+      component.openMoveToColumn(firstCardInCol1());
+
+      expect(component.showMoveToColumn()).toBe(true);
+      expect(component.pendingMove()?.id).toBe('tk000000-0000-0000-0000-000000000001');
+
+      // The card lives in col1 (s1/s2), so col1 is filtered out and the picker
+      // must never offer a no-op.
+      expect(component.moveTargets().map((c: BoardColumn) => c.id)).toEqual(['col2', 'col3']);
+      expect(taskClientMock.update).not.toHaveBeenCalled();
+      void fx;
+    });
+
+    it('should persist the move when a single-status column is picked', async () => {
+      await setupBoard();
+
+      const card = firstCardInCol1();
+
+      component.openMoveToColumn(card);
+      component.moveToColumn(mockBoard.columns[1] as BoardColumn);
+
+      expect(taskClientMock.update).toHaveBeenCalledWith(card.id, { statusId: 's3', version: card.version });
+      expect(component.showMoveToColumn()).toBe(false);
+      expect(component.pendingMove()).toBeNull();
+    });
+
+    it('should ask which status to use when the picked column groups several', async () => {
+      await setupBoard();
+
+      const card = firstCardInCol1();
+
+      component.openMoveToColumn(card);
+      // col2 is single-status; going BACK to a multi-status column must reuse
+      // the existing status prompt rather than guessing.
+      component.moveToColumn({ id: 'colX', statusIds: ['s7', 's8'], position: 9 } as BoardColumn);
+
+      expect(component.showMoveToColumn()).toBe(false);
+      expect(component.showStatusSelect()).toBe(true);
+      expect(component.pendingDrop()?.targetColumn.id).toBe('colX');
+      expect(taskClientMock.update).not.toHaveBeenCalled();
+
+      component.applyStatusSelection('s8');
+
+      expect(taskClientMock.update).toHaveBeenCalledWith(card.id, { statusId: 's8', version: card.version });
+    });
+
+    it('should forget the pending card when the picker is dismissed', async () => {
+      await setupBoard();
+
+      component.openMoveToColumn(firstCardInCol1());
+      component.onMoveToColumnDialogStateChange('closed');
+
+      expect(component.showMoveToColumn()).toBe(false);
+      expect(component.pendingMove()).toBeNull();
+    });
+
+    it('should advertise the shortcut on the rendered card and open the picker on `v`', async () => {
+      const fx = await setupBoard();
+      const card = fx.nativeElement.querySelector('[role="button"][aria-keyshortcuts="v"]') as HTMLElement;
+
+      expect(card).not.toBeNull();
+
+      card.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', bubbles: true }));
+      await settle(fx);
+
+      expect(component.showMoveToColumn()).toBe(true);
     });
   });
 });

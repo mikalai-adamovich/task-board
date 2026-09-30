@@ -27,7 +27,7 @@ import { getErrorMessage } from '@app/shared/utils/error-utils';
 /**
  * Project settings — Danger Zone page (spec S15, DEC-035).
  * Archive / restore / cancel-deletion / delete with typed confirmation.
- * Moved out of the project overview (X-5).
+ * Moved out of the project overview.
  */
 @Component({
   selector: 'ui-project-danger-zone',
@@ -59,10 +59,10 @@ export class ProjectDangerZone {
   private readonly projectStore = inject(ProjectStore);
   /** Bound via withComponentInputBinding() — receives project key from route */
   readonly projectKey = input.required<string>();
-  /** Current tenant slug for navigating back to the overview (DEC-032) */
-  protected readonly tenantSlug = computed(() => this.tenantStore.activeTenant()?.slug ?? '');
+  /** Current tenant slug for navigating back to the overview */
+  private readonly tenantSlug = computed(() => this.tenantStore.activeTenant()?.slug ?? '');
   /** Resolved project UUID from the store */
-  protected readonly projectId = computed(() => this.projectStore.activeProject()?.id ?? '');
+  private readonly projectId = computed(() => this.projectStore.activeProject()?.id ?? '');
   /**
    * Whether the current user can manage project settings (PROJECT_ADMIN+).
    * Tenant OWNER/ADMIN bypass project role checks.
@@ -71,13 +71,13 @@ export class ProjectDangerZone {
     canManageProject(this.projectStore.projectRole(), this.authStore.tenantRole()),
   );
   protected readonly ProjectStatus = ProjectStatus;
-  protected readonly project = signal<Project | null>(this.projectStore.activeProject());
+  private readonly project = signal<Project | null>(this.projectStore.activeProject());
   protected readonly loading = signal(false);
-  protected readonly error = signal('');
-  protected readonly showDeleteConfirm = signal(false);
-  protected readonly deleteConfirmText = signal('');
+  private readonly error = signal('');
+  private readonly showDeleteConfirm = signal(false);
+  private readonly deleteConfirmText = signal('');
   /** Whether the delete confirmation text matches the project key */
-  protected readonly canConfirmDelete = computed(() => {
+  private readonly canConfirmDelete = computed(() => {
     const p = this.project();
 
     return p !== null && this.deleteConfirmText() === p.key;
@@ -122,7 +122,7 @@ export class ProjectDangerZone {
         this.showDeleteConfirm.set(false);
         this.deleteConfirmText.set('');
         this.notify.success('toasts.deleted');
-        // F1: the overview no longer re-fetches the project, so the store must
+        // The overview no longer re-fetches the project, so the store must
         // reflect the new status BEFORE navigating back (the read-only banner
         // reads ProjectStore.activeProject). The server only returns
         // { success: true } here — the status is derived client-side, same as

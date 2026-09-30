@@ -305,7 +305,7 @@ describe('FilterPanel', () => {
     expect(stableValue({ a: 1 })).not.toBe(stableValue({ a: 2 }));
   });
 
-  // ── Q12: date-range criteria in saved views ─────────────────────
+  // ── Date-range criteria in saved views ──────────────────────────
   describe('date-range criteria (Q12)', () => {
     const DATE_FILTERS = {
       createdFrom: '2026-01-01',
@@ -359,6 +359,52 @@ describe('FilterPanel', () => {
 
       expect(component.hasActiveState()).toBe(true);
     });
+  });
+
+  // ── The editable draft must survive a background refresh ──────────────────
+
+  it('should keep an in-progress draft when the parent re-emits identical criteria (F21)', async () => {
+    await setup(mockFilters, { search: 'test' });
+    await waitForViews();
+
+    // The user edits a field in the panel…
+    component.setSingle('statusIds', 'st1');
+    component.onDraftSearch({ target: { value: 'half-typed' } } as unknown as Event);
+    expect(component.draft().statusIds).toEqual(['st1']);
+
+    // …and a background refresh re-emits the SAME criteria as a new object.
+    fixtureRef.componentRef.setInput('currentFilters', { search: 'test' });
+    await settle(fixtureRef);
+
+    expect(component.draft().statusIds).toEqual(['st1']);
+    expect(component.draft().search).toBe('half-typed');
+  });
+
+  it('should re-seed the draft when the applied criteria genuinely change (F21)', async () => {
+    await setup(mockFilters, { search: 'test' });
+    await waitForViews();
+
+    component.setSingle('statusIds', 'st1');
+    component.onDraftSearch({ target: { value: 'half-typed' } } as unknown as Event);
+
+    // The parent applied a saved view — a real change of identity.
+    fixtureRef.componentRef.setInput('currentFilters', { search: 'bug', statusIds: ['s1'] });
+    await settle(fixtureRef);
+
+    expect(component.draft()).toEqual({ search: 'bug', statusIds: ['s1'] });
+  });
+
+  it('should re-seed the draft when the criteria change only in key order (F21)', async () => {
+    await setup(mockFilters, { search: 'test', statusIds: ['s1'] });
+    await waitForViews();
+
+    component.setSingle('labelIds', 'l9');
+
+    // Same content, different key insertion order → still "the same filter".
+    fixtureRef.componentRef.setInput('currentFilters', { statusIds: ['s1'], search: 'test' });
+    await settle(fixtureRef);
+
+    expect(component.draft().labelIds).toEqual(['l9']);
   });
 
   // ── Delete ──────────────────────────────────────────────────────

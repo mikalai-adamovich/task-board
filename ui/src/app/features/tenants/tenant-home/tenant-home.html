@@ -187,16 +187,30 @@
     <form id="create-project-form" [formRoot]="newProjectForm" class="flex flex-col gap-4">
       <hlm-field>
         <label hlmFieldLabel for="project-name">{{ 'projects.name' | transloco }}</label>
-        <input hlmInput id="project-name" type="text" [formField]="newProjectForm.name" placeholder="Project name" />
+        <input
+          hlmInput
+          id="project-name"
+          type="text"
+          [formField]="newProjectForm.name"
+          uiFieldControl
+          placeholder="Project name"
+        />
         @if (newProjectForm.name().touched() && newProjectForm.name().errors().length) {
-          <p hlm-field-error>{{ newProjectForm.name().errors()[0]?.message | transloco }}</p>
+          <hlm-field-error class="block">{{ newProjectForm.name().errors()[0]?.message | transloco }}</hlm-field-error>
         }
       </hlm-field>
       <hlm-field>
         <label hlmFieldLabel for="project-key">{{ 'projects.key' | transloco }}</label>
-        <input hlmInput id="project-key" type="text" [formField]="newProjectForm.key" placeholder="PROJ" />
+        <input
+          hlmInput
+          id="project-key"
+          type="text"
+          [formField]="newProjectForm.key"
+          uiFieldControl
+          placeholder="PROJ"
+        />
         @if (newProjectForm.key().touched() && newProjectForm.key().errors().length) {
-          <p hlm-field-error>{{ newProjectForm.key().errors()[0]?.message | transloco }}</p>
+          <hlm-field-error class="block">{{ newProjectForm.key().errors()[0]?.message | transloco }}</hlm-field-error>
         }
       </hlm-field>
       <hlm-field>
@@ -207,9 +221,15 @@
           hlmTextarea
           id="project-desc"
           [formField]="newProjectForm.description"
+          uiFieldControl
           rows="3"
           [placeholder]="'projects.descriptionPlaceholder' | transloco"
         ></textarea>
+        @if (newProjectForm.description().touched() && newProjectForm.description().errors().length) {
+          <hlm-field-error class="block">{{
+            newProjectForm.description().errors()[0]?.message | transloco
+          }}</hlm-field-error>
+        }
         <p class="text-xs text-muted-foreground" data-testid="desc-char-count">
           {{ 'common.charCount' | transloco: { count: model().description.length, max: 120 } }}
         </p>
@@ -217,12 +237,7 @@
     </form>
     <hlm-dialog-footer>
       <button hlmBtn variant="outline" hlmDialogClose>{{ 'projects.cancel' | transloco }}</button>
-      <button
-        hlmBtn
-        type="submit"
-        form="create-project-form"
-        [disabled]="newProjectForm().invalid() || newProjectForm().submitting()"
-      >
+      <button hlmBtn type="submit" form="create-project-form" [disabled]="newProjectForm().submitting()">
         @if (newProjectForm().submitting()) {
           <hlm-spinner /> {{ 'projects.creating' | transloco }}
         } @else {

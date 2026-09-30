@@ -251,7 +251,7 @@ describe('Settings', () => {
     expect(preferencesStoreMock.setLanguage).toHaveBeenCalledWith('de');
   });
 
-  // ── R3-P8: date/time format preference ───────────────────────────────────
+  // ── Date/time format preference ──────────────────────────────────────────
 
   it('should persist date format changes through the store', async () => {
     await setup();
@@ -269,7 +269,7 @@ describe('Settings', () => {
     expect(preferencesStoreMock.setTimeFormat).toHaveBeenCalledWith('12h');
   });
 
-  // ── P12 (DEC-056): free-form custom date format ──────────────────────────
+  // ── Free-form custom date format ─────────────────────────────────────────
 
   it('should persist a valid custom date format live', async () => {
     await setup();

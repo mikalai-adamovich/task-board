@@ -1,8 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import type { Collection } from 'mongodb';
-import { MemberStatus, InvitationStatus, TenantRole } from '@task-board/shared';
+import { InvitationStatus, TenantRole } from '@task-board/shared';
 import type { TenantMember, Invitation } from '@task-board/shared';
 import { toDomain as tenantToDomain } from './tenant.repository.js';
+
+// guardrail:no-base-repository 2026-09-29 — two reasons. (1) Its `findById`
+// deliberately returns the raw DOCUMENT (the tenant-context middleware reuses it
+// to avoid a second query) where the base maps to the domain. (2) Its `delete` is
+// composite-keyed (`delete(tenantId, userId)`), an incompatible signature.
+// Overriding both would keep the class honest about nothing. See
+// `rules/guardrails.guardrail.test.ts` (P-03).
 
 // Required MongoDB indexes:
 // - { tenantId: 1, userId: 1 } (unique)
@@ -27,7 +34,7 @@ export interface TenantMemberDocument {
   userId: string;
   role: string;
   status: string;
-  /** DEC-055: membership expiration (null/undefined = never expires) */
+  /** Membership expiration (null/undefined = never expires) */
   expiresAt?: Date | null;
   invitation: InvitationDocument | null;
   createdAt: Date;
@@ -71,8 +78,17 @@ export class TenantMemberRepository {
     return doc ? toDomain(doc) : null;
   }
 
+  /**
+   * Members of a tenant, ordered by `userId` ascending.
+   *
+   * The order is now a promise rather than an accident of insertion.
+   * Natural collection order was documented as "same as before" and two
+   * clients could legitimately disagree about what row three is the moment
+   * this list is paginated. `userId` is unique per tenant (the compound
+   * unique index), so the order is total and needs no tie-breaker.
+   */
   async findByTenant(tenantId: string): Promise<TenantMember[]> {
-    const docs = await this.collection.find({ tenantId }).toArray();
+    const docs = await this.collection.find({ tenantId }).sort({ userId: 1 }).toArray();
 
     return docs.map(toDomain);
   }
@@ -87,7 +103,15 @@ export class TenantMemberRepository {
    * Members of a tenant with their user profiles joined server-side in ONE
    * round-trip (`$lookup` + `$unwind`, soft-deleted users excluded). Replaces
    * the previous `findByTenant` → `users.$in` two-step enrichment.
-   * Order: natural collection order (same as `findByTenant` had).
+   *
+   * The order is deterministic and owned HERE, not by the reader's
+   * browser. Display name first (lower-cased, so `ada` and `Ada` do not split
+   * by insertion), then e-mail, then `userId` as the final tie-breaker —
+   * without it, two members with no profile would have no defined order. A
+   * soft-deleted user joins nothing, so `$$REMOVE` leaves its sort key absent
+   * and Mongo places a missing field last. The client used to re-sort this
+   * same list with `localeCompare`, so the order depended on each reader's
+   * own locale data; that second ordering is gone.
    */
   async findByTenantWithUsers(
     tenantId: string,
@@ -104,6 +128,14 @@ export class TenantMemberRepository {
           },
         },
         { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
+        {
+          $addFields: {
+            _sortName: { $toLower: { $ifNull: ['$user.displayName', '$$REMOVE'] } },
+            _sortEmail: { $toLower: { $ifNull: ['$user.email', '$$REMOVE'] } },
+          },
+        },
+        { $sort: { _sortName: 1, _sortEmail: 1, userId: 1 } },
+        { $project: { _sortName: 0, _sortEmail: 0 } },
       ])
       .toArray();
 
@@ -171,9 +203,12 @@ export class TenantMemberRepository {
     return docs.map(toDomain);
   }
 
-  async countActiveByTenant(tenantId: string): Promise<number> {
-    return this.collection.countDocuments({ tenantId, status: MemberStatus.ACTIVE });
-  }
+  // `countActiveByTenant(tenantId)` was removed as dead code — no route, no
+  // service and no quota check reads it. Its F11 compound index
+  // (tenantId+status) went with it: the index-coverage guardrail in
+  // `db/migrations.test.ts` enforces exactly that pairing, and the plain
+  // `{tenantId: 1}` that `findByTenant` uses is untouched. `countOwnedTenants`,
+  // which drives the plan-limit guard, is a different query and is kept.
 
   async countOwnedTenants(userId: string): Promise<number> {
     return this.collection.countDocuments({ userId, role: TenantRole.OWNER });

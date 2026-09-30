@@ -25,13 +25,29 @@ export class AppError extends Error {
   public readonly code: ErrorCode;
   public readonly statusCode: number;
   public readonly details?: unknown;
+  /**
+   * Extra response headers this error requires (e.g. `Retry-After` +
+   * `RateLimit-*` on a 429). Applied by the global error handler BEFORE the JSON
+   * body is written, so the headers survive the envelope rendering.
+   */
+  // The `| undefined` is required under `exactOptionalPropertyTypes` — the
+  // constructor forwards an optional `headers?: Record<string, string>` argument
+  // that is `undefined` for every error that sets no extra headers.
+  public readonly headers?: Record<string, string> | undefined;
 
-  constructor(statusCode: number, code: ErrorCode, message: string, details?: unknown) {
+  constructor(
+    statusCode: number,
+    code: ErrorCode,
+    message: string,
+    details?: unknown,
+    headers?: Record<string, string>,
+  ) {
     super(message);
     this.name = 'AppError';
     this.code = code;
     this.statusCode = statusCode;
     this.details = details;
+    this.headers = headers;
   }
 }
 

@@ -14,6 +14,7 @@ import { HlmFieldImports } from '@spartan-ng/helm/field';
 import { HlmInputImports } from '@spartan-ng/helm/input';
 import { HlmBadgeImports } from '@spartan-ng/helm/badge';
 import { form, FormField, FormRoot, schema, required } from '@angular/forms/signals';
+import { FieldControl } from '@app/shared/field-control/field-control';
 import type { Label, CreateLabel } from '@task-board/shared';
 import type { BrnDialogState } from '@spartan-ng/brain/dialog';
 import { injectUndoToasts } from '@app/shared/utils/undo-toast';
@@ -29,6 +30,7 @@ interface CreateLabelForm {
 @Component({
   selector: 'ui-label-manager',
   imports: [
+    FieldControl,
     ConfirmDialog,
     HlmAlertImports,
     HlmEmptyImports,
@@ -57,16 +59,16 @@ export class LabelManager implements OnInit {
   /** Bound via withComponentInputBinding() — now receives project key from route */
   readonly projectKey = input.required<string>();
   /** Resolved project UUID from the store */
-  protected readonly projectId = computed(() => this.projectStore.activeProject()?.id ?? '');
-  protected readonly labels = signal<Label[]>([]);
-  protected readonly loading = signal(true);
-  protected readonly error = signal('');
-  protected readonly showCreateDialog = signal(false);
-  protected readonly showDeleteDialog = signal(false);
-  protected readonly deletingLabel = signal<Label | null>(null);
-  protected readonly editingId = signal<string | null>(null);
-  protected readonly editingName = signal('');
-  protected readonly saving = signal(false);
+  private readonly projectId = computed(() => this.projectStore.activeProject()?.id ?? '');
+  private readonly labels = signal<Label[]>([]);
+  private readonly loading = signal(true);
+  private readonly error = signal('');
+  private readonly showCreateDialog = signal(false);
+  private readonly showDeleteDialog = signal(false);
+  private readonly deletingLabel = signal<Label | null>(null);
+  private readonly editingId = signal<string | null>(null);
+  private readonly editingName = signal('');
+  private readonly saving = signal(false);
   private readonly createModel = signal<CreateLabelForm>({ name: '' });
   protected readonly createForm = form(
     this.createModel,
@@ -101,7 +103,7 @@ export class LabelManager implements OnInit {
     this.editingName.set(label.name);
   }
 
-  protected cancelEdit(): void {
+  private cancelEdit(): void {
     this.editingId.set(null);
     this.editingName.set('');
   }
@@ -149,7 +151,7 @@ export class LabelManager implements OnInit {
           this.labels.update((list) => list.filter((l) => l.id !== label.id));
           this.showDeleteDialog.set(false);
           this.deletingLabel.set(null);
-          // Q11 (DEC-053): undo recreates the label with the same name — labels
+          // Undo recreates the label with the same name — labels
           // carry no color in this app, so name is the full restorable state.
           this.notify.successWithUndo('toasts.deleted', () =>
             this.labelClient

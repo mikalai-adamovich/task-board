@@ -1,0 +1,60 @@
+# C-4 / D-25 — security headers for the STATIC tier.
+#
+# This file is the platform's static-header file: Cloudflare Pages reads
+# `_headers` from the deployed output root and applies it to every response it
+# serves. It lives in `ui/public/` because `ui/angular.json` copies
+# `{"glob": "**/*", "input": "public"}` into the build output verbatim, so it
+# ships without touching the Angular build and without a Pages Function.
+#
+# NOTE ON COMMENT SYNTAX: this format has exactly one comment marker, `#`.
+# A `/* … */` block is NOT a comment here — it parses as a path pattern — which
+# is why this file uses `#` throughout. The first non-comment line must be the
+# path pattern the headers below it apply to.
+#
+# WHY BOTH TIERS: the compensating headers were absent from BOTH halves of the
+# deployment — the page and the cross-origin API. The API half is
+# `server/src/middleware/security-headers.ts`; this file is the page half. They
+# are deliberately two files, because they are two tiers with two different
+# jobs: this one governs a document that loads and runs script, the other
+# governs a JSON endpoint that loads nothing. A test
+# (`server/src/middleware/security-headers.test.ts`) asserts the two agree on
+# the header NAMES, so a half-fix on either side fails the build.
+#
+# CONTENT-SECURITY-POLICY: REPORT-ONLY, and why
+# --------------------------------------------
+# The header below is `Content-Security-Policy-Report-Only`, not
+# `Content-Security-Policy`. The browser evaluates and reports on it WITHOUT
+# blocking, which is the staged rollout the owner approved: a policy that has
+# never been observed against this application in production is a policy whose
+# first enforced day is an outage day. This is an Angular SPA with inline
+# styles, `ng-*` bootstrapping, a Milkdown/ProseMirror editor that injects DOM
+# the app did not author, and 104 third-party theme stylesheets.
+#
+# WHAT AN ENFORCING SWITCH WOULD NEED (all four; the full reasoning is in
+# `server/src/middleware/security-headers.ts`):
+#   1. A REPORT COLLECTOR. `report-uri` below points at a path on this site. If
+#      nothing is deployed to receive those reports the report-only phase
+#      produces NO EVIDENCE, and flipping to enforcing becomes a guess. Verify
+#      reports arrive before switching.
+#   2. EVERY DIRECTIVE PROVEN AGAINST REAL TRAFFIC — in particular `style-src`
+#      and `script-src`, which carry `'unsafe-inline'` above because Angular
+#      emits inline styles and bootstraps `ng-*` elements.
+#   3. THE `connect-src` ALLOW-LIST PINNED TO THE DEPLOYED API ORIGIN. The API
+#      URL is injected at build time (`API_URL` ->
+#      `ui/src/environments/environment.prod.ts`), so it differs per
+#      environment and cannot be written down in this file.
+#   4. A ROLLBACK COMMIT READY. The switch itself is one header rename; keeping
+#      it to a single reviewed commit is the entire point of staging it.
+#
+# NOT SET, DELIBERATELY: `Cross-Origin-Resource-Policy`. The API is a separate
+# origin called with a bearer token; a strict CORP here would restrict nothing
+# useful and could only break subresource loads.
+
+/*
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), interest-cohort=()
+  Cross-Origin-Opener-Policy: same-origin
+  Content-Security-Policy-Report-Only: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; report-uri /__csp-report

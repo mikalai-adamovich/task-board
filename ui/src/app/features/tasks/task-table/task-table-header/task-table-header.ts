@@ -7,7 +7,7 @@ import { HlmInputImports } from '@spartan-ng/helm/input';
 import { HlmTooltipImports } from '@spartan-ng/helm/tooltip';
 
 /**
- * M-13 (4.2): toolbar extracted from the TaskTable composition root — title,
+ * Toolbar extracted from the TaskTable composition root — title,
  * debounced search input (`data-task-table-search` is the `/` keyboard-shortcut
  * focus target), filters button, density toggle and the New Task control.
  * Presentational: the search buffer/debounce, density preference and navigation
@@ -23,7 +23,7 @@ import { HlmTooltipImports } from '@spartan-ng/helm/tooltip';
 export class TaskTableHeader {
   /** Buffered search text (committed to the URL by the parent after debounce) */
   readonly searchValue = input('');
-  /** Q9 (RQ-04 ⑤): device-local table density — compact mode label flips */
+  /** Device-local table density — compact mode label flips */
   readonly isCompact = input(false);
   /** V2-10: the New Task control is hidden from VIEWER-role users */
   readonly canCreateTasks = input(false);

@@ -13,7 +13,7 @@ import {
   lucideUsers,
 } from '@ng-icons/lucide';
 import { rxResource } from '@angular/core/rxjs-interop';
-import { map } from 'rxjs';
+import { map, of } from 'rxjs';
 import { TaskClient } from '@services/task-client';
 import { AuthStore } from '@stores/auth-store';
 import { ProjectStore } from '@stores/project-store';
@@ -42,7 +42,7 @@ interface StatusCount {
  *
  * Widgets: header (name/key/status/description), task summary by status,
  * active-sprint block, recent tasks, members preview, board shortcuts.
- * Lifecycle actions (archive/delete) live in the settings hub danger zone (DEC-035).
+ * Lifecycle actions (archive/delete) live in the settings hub danger zone.
  */
 @Component({
   selector: 'ui-project-detail',
@@ -79,14 +79,14 @@ export class ProjectDetail {
   private readonly authStore = inject(AuthStore);
   private readonly projectStore = inject(ProjectStore);
   private readonly preferencesStore = inject(PreferencesStore);
-  /** R3-P8: DatePipe token derived from the user's date format preference */
+  /** DatePipe token derived from the user's date format preference */
   protected readonly dateFmt = this.preferencesStore.datePipeFormat;
-  /** P12 (item 28): active language passed as the DatePipe locale for localized month names */
+  /** Active language passed as the DatePipe locale for localized month names */
   protected readonly lang = this.preferencesStore.language;
   private readonly tenantStore = inject(TenantStore);
 
   constructor() {
-    // F2: load sprints + statuses through the shared ProjectRefStore cache.
+    // Load sprints + statuses through the shared ProjectRefStore cache.
     // Reading the entity lists keeps the effect reactive — after an
     // invalidate() (status/sprint mutations elsewhere) the effect re-runs.
     effect(() => {
@@ -102,34 +102,40 @@ export class ProjectDetail {
   /** Bound via withComponentInputBinding() — receives project key from route */
   readonly projectKey = input.required<string>();
   /** Resolved project UUID from the store */
-  protected readonly projectId = computed(() => this.projectStore.activeProject()?.id ?? '');
-  /** Current tenant slug for building links (DEC-032) */
+  private readonly projectId = computed(() => this.projectStore.activeProject()?.id ?? '');
+  /** Current tenant slug for building links */
   protected readonly tenantSlug = computed(() => this.tenantStore.activeTenant()?.slug ?? '');
   protected readonly ProjectStatus = ProjectStatus;
   protected readonly SprintStatus = SprintStatus;
-  // F1: the project itself is NOT re-fetched here — projectGuard already loaded
+  // The project itself is NOT re-fetched here — projectGuard already loaded
   // it via /projects/by-key/:key into ProjectStore.activeProject() before this
   // component activates, and mutations (settings/danger zone) update the store
   // in place. A duplicate GET /projects/:projectId would only add latency.
-  protected readonly project = computed(() => this.projectStore.activeProject());
+  private readonly project = computed(() => this.projectStore.activeProject());
   // Single-board model (doc 102): no board-list fetch — the project has one board.
-  // F2: sprints + statuses come from the SHARED ProjectRefStore cache (same data
+  // Sprints + statuses come from the SHARED ProjectRefStore cache (same data
   // as the board/tasks pages — no per-page duplicate requests).
-  protected readonly sprints = computed(() => this.refStore.sprintEntities(this.projectId()));
+  private readonly sprints = computed(() => this.refStore.sprintEntities(this.projectId()));
   protected readonly activeSprint = computed(
     () => this.sprints().find((s) => s.status === SprintStatus.ACTIVE) ?? null,
   );
-  protected readonly statuses = computed(() => this.refStore.statusEntities(this.projectId()));
+  private readonly statuses = computed(() => this.refStore.statusEntities(this.projectId()));
   /**
-   * S-05: one status-summary request (server-side $group aggregation) instead
+   * One status-summary request (server-side $group aggregation) instead
    * of one list request per status; counts are joined with the statuses in code.
    */
+  // Both project-scoped resources below short-circuit on a blank projectId
+  // (the store is briefly empty between the guard resolving and the first
+  // render). Without the guard they fired `GET /projects//…`.
   private readonly statusSummaryResource = rxResource({
     params: () => ({ projectId: this.projectId() }),
-    stream: ({ params }) => this.taskClient.statusSummary(params.projectId),
+    stream: ({ params }) =>
+      params.projectId
+        ? this.taskClient.statusSummary(params.projectId)
+        : of([] as { statusId: string; count: number }[]),
     defaultValue: [] as { statusId: string; count: number }[],
   });
-  protected readonly statusCounts = computed<StatusCount[]>(() => {
+  private readonly statusCounts = computed<StatusCount[]>(() => {
     if (!this.statusSummaryResource.hasValue()) return [];
 
     const counts = new Map(this.statusSummaryResource.value().map((row) => [row.statusId, row.count]));
@@ -140,10 +146,12 @@ export class ProjectDetail {
   private readonly recentTasksResource = rxResource({
     params: () => ({ projectId: this.projectId() }),
     stream: ({ params }) =>
-      // F5: recent tasks never render the description — omit it from the payload
-      this.taskClient
-        .list(params.projectId, { limit: 5, sort: 'updatedAt:desc', excludeDescription: true })
-        .pipe(map((res) => res.data)),
+      // Recent tasks never render the description — omit it from the payload
+      params.projectId
+        ? this.taskClient
+            .list(params.projectId, { limit: 5, sort: 'updatedAt:desc', excludeDescription: true })
+            .pipe(map((res) => res.data))
+        : of([] as Task[]),
     defaultValue: [] as Task[],
   });
   protected readonly recentTasks = computed(() =>
@@ -154,7 +162,7 @@ export class ProjectDetail {
   // of the store being cleared while the component is alive (e.g. logout race).
   protected readonly loading = computed(() => !this.projectStore.hasProject());
   /** Members preview comes from the project context store (loaded by projectGuard) */
-  protected readonly membersPreview = computed(() => this.projectStore.members().slice(0, 5));
+  private readonly membersPreview = computed(() => this.projectStore.members().slice(0, 5));
   protected readonly extraMembersCount = computed(() =>
     Math.max(this.projectStore.members().length - this.membersPreview().length, 0),
   );

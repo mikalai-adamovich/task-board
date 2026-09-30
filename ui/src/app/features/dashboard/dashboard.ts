@@ -34,8 +34,8 @@ export class Dashboard implements OnInit {
   private readonly tenantStore = inject(TenantStore);
   private readonly tenantClient = inject(TenantClient);
   private readonly router = inject(Router);
-  protected readonly invitations = signal<MyInvitation[]>([]);
-  protected readonly loading = signal(true);
+  private readonly invitations = signal<MyInvitation[]>([]);
+  private readonly loading = signal(true);
   protected readonly dashboardState = computed<DashboardState>(() => {
     if (!this.authStore.isAuthenticated()) return 'visitor';
     if (this.tenantStore.tenants().length > 0) return 'redirecting';

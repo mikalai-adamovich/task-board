@@ -6,19 +6,38 @@ on:
   pull_request:
     branches: [main]
 
+# Least privilege by default. The job below re-declares the same, narrower value so
+# that a future job cannot silently inherit write access. Nothing in CI needs to push,
+# comment, create releases, or read secrets — `contents: read` is sufficient to check
+# out the code.
+permissions:
+  contents: read
+
+# A newer push to the same ref makes the in-flight run obsolete, so cancel it. This
+# keeps runner minutes from being spent validating a commit nobody will merge.
+# `github.workflow` is included so CI can never cancel a CD run sharing the name.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    # Hard ceiling: a hung test/browser process must not occupy a runner for hours.
+    # The normal run takes a few minutes; 30 leaves generous headroom.
+    timeout-minutes: 30
+    permissions:
+      contents: read
     strategy:
       matrix:
         node-version: [24]
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
@@ -26,17 +45,33 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # N-05: non-blocking dependency audit — surfaces high-severity
-      # vulnerabilities without failing the pipeline.
-      - name: Audit dependencies (high severity, non-blocking)
+      # BLOCKING dependency audit — it was `continue-on-error` before, so a
+      # high-severity advisory could reach `main` with nothing red.
+      #
+      # Measured at the time of writing: `npm audit --audit-level=high` exits 0
+      # (0 high, 0 critical; 2 moderate remain, below the level this gate
+      # enforces). It was 7 high before the transitive advisories below were
+      # addressed, which is what a blocking gate is for.
+      #
+      # `smol-toml` and `brace-expansion` are reached only through `nx`
+      # (`@spartan-ng/cli`, a devDependency), and every published `nx` release
+      # pins them to exact versions, so no bump reaches a fix and
+      # `npm audit fix` cannot apply one — root `overrides` is the only lever
+      # npm offers. Both overrides stay inside the major their consumer
+      # declares.
+      - name: Audit dependencies (high severity, blocking)
         run: npm audit --audit-level=high
-        continue-on-error: true
 
       - name: Build shared package
         run: npm run build --workspace=shared
 
       - name: Lint all packages
         run: npm run lint
+
+      # The i18n gate. `check:i18n` fails when a key is referenced in ui/src but absent
+      # from en.json, and when a key present in en.json is missing from any other locale.
+      - name: Check i18n completeness
+        run: npm run check:i18n --workspace=ui
 
       - name: Run server tests
         run: npm test --workspace=server
@@ -50,12 +85,216 @@ jobs:
       - name: Type-check server
         run: npm run typecheck --workspace=server
 
-      # N-04: fast, dedicated UI typecheck (fails before the full build).
+      # Fast, dedicated UI typecheck (fails before the full build).
       - name: Type-check UI
         run: npm run typecheck --workspace=ui
 
       - name: Build UI
         run: npm run build --workspace=ui
 
+      # The 117 runtime assets (105 themes, 11 translations, the
+      # favicon) are published under stable names, so a one-year cache lifetime
+      # on them would be a stale-asset bug and no lifetime at all is the
+      # bandwidth cost the item is about. This step content-hashes the names,
+      # rewrites the two manifests and `index.html` that point at them, and
+      # completes `_headers` with the matching cache policy.
+      #
+      # It is NOT continue-on-error: the script verifies its own output and exits
+      # non-zero if a name is unhashed, if a hashed file is missing, or if
+      # `_headers` did not reach the build output. CD runs the same step before
+      # deploying, so what is verified here is what ships.
+      - name: Content-hash the runtime assets and write the cache policy
+        run: node ui/scripts/hash-runtime-assets.mjs
+
+      # The artefact that ships is built by no gate. `server/package.json`'s
+      # `build` is `wrangler deploy --dry-run`, and `grep -n "build
+      # --workspace=server" .github/workflows/*.yml` matched nothing: CI built
+      # shared and the UI and never bundled the Worker. A change that lints,
+      # type-checks on all three packages and passes every test could still fail
+      # to bundle, and the first signal of that was the deploy itself.
+      #
+      # `--dry-run` reaches no Cloudflare account and writes nothing live; it
+      # resolves every import the Worker entry actually pulls in, which is what
+      # the three typechecks and the unit tests (which mock the boundary) do not.
+      - name: Build server bundle (the artefact that ships)
+        run: npm run build --workspace=server
+
+      # The pipeline's own supply chain. Every `run:` line in this directory is
+      # scanned: an `npx <tool>` invocation is acceptable only if the tool is
+      # resolvable from a committed lockfile (the version the repo declares) or
+      # carries an exact `@x.y.z` version. Anything else is fetched from the
+      # registry at whatever it serves as `latest`.
+      #
+      # This is the property, not a list: it fires on the DEFECT CLASS (a step
+      # that runs code the repository does not pin), so a future `npx <newtool>`
+      # is caught with no edit here, and a correctly-pinned `npx <tool>@1.2.3`
+      # passes without an allowlist entry. It found exactly one offender on
+      # landing — `npx -y tsx` in cd.yml's migration step, which executes with
+      # the Atlas URI, the JWT signing secret and the Cloudflare token in its
+      # environment — and every other invocation resolves from the lockfile.
+      #
+      # The scan is a property check on THIS repository's own workflows, so it
+      # runs after `npm ci` (it reads the installed bins) and is deliberately
+      # not `continue-on-error`.
+      - name: Assert pipeline tooling is pinned
+        run: node .github/scripts/check-pinned-tools.mjs
+
+      # Formatting is reported but NOT enforced. The repo currently carries pre-existing
+      # drift in the hand-authored theme stylesheets (ui/public/themes/*.css), so a
+      # blocking gate would be red before any change is made. Flip `continue-on-error` to
+      # false in the same commit that runs a one-time `npx prettier --write .` to clear
+      # the backlog.
+      - name: Check formatting (non-blocking, see comment)
+        run: npm run format:check
+        continue-on-error: true
+
+      # Commit-message policy currently exists only as a bypassable husky hook
+      # (--no-skip flag), so it is enforced here as well. The range covers only the
+      # commits introduced by this event, and the push leg is skipped for a branch's
+      # first push, where `before` is the all-zeros SHA and commitlint cannot walk it.
+      - name: Lint commit messages (pull request)
+        if: github.event_name == 'pull_request'
+        run: npx commitlint --from ${{ github.event.pull_request.base.sha }} --to ${{ github.sha }} --verbose
+
+      - name: Lint commit messages (push)
+        if: github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
+        run: npx commitlint --from ${{ github.event.before }} --to ${{ github.sha }} --verbose
+
       # Deployment lives in cd.yml, which is gated on this workflow's success
       # via the `workflow_run` trigger.
+
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    # The suite boots its own stack (wrangler dev + ng serve, see
+    # ui/playwright.config.ts) and generates its own throwaway JWT_SECRET, so the only
+    # external dependency is a database. 20 minutes stays the ceiling: webServer timeouts
+    # alone allow 180 s (API) + 300 s (UI), and the suite is serial (workers: 1) with CI
+    # retries.
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    # The service is what makes this job a real gate. The mongo image listens on 27017
+    # INSIDE the container, so the published port must be 27017:27017 — a host:host
+    # mapping such as 27099:27099 leaves nothing listening where the config expects,
+    # and the failure mode is then a hanging webServer timeout rather than a clear
+    # error. The health check is a mongosh ping; the job waits for it to pass before
+    # the first step runs, so no step races container startup.
+    #
+    # NOT YET PROVEN ON A RUNNER. This gate was enabled by inspection, not by a real
+    # CI run: what was verified statically is that the YAML parses, that the service
+    # definition matches the port the config connects to (27017, internal == host), and
+    # that E2E_MONGODB_URI is the first variable ui/playwright.config.ts reads. The first
+    # push to main IS the test of the gate itself — if it goes red, read the failing step
+    # before weakening anything below.
+    services:
+      mongo:
+        # The URI below carries no replicaSet, so the node is reached as a standalone —
+        # the same shape as the config's own localhost default.
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ ping: 1 }).ok'" --health-interval 10s --health-timeout
+          5s --health-retries 10 --health-start-period 20s
+    env:
+      # ui/playwright.config.ts reads E2E_MONGODB_URI first, then MONGODB_URI, then a
+      # localhost default. This is the first slot, so the suite never touches a
+      # developer's own database. No credentials: the service is unauthenticated and
+      # reachable only from this ephemeral runner.
+      E2E_MONGODB_URI: mongodb://127.0.0.1:27017/taskboard_e2e
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build shared package
+        run: npm run build --workspace=shared
+
+      # `--yes` is deliberately NOT passed: @playwright/test is a pinned devDependency of
+      # the ui workspace, so `npx playwright` resolves the local binary and cannot drift to
+      # whatever version the registry serves at that moment.
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+        working-directory: ui
+
+      # `npm run e2e` (not `--workspace=ui`): npm resolves the workspace root from the
+      # CWD, so combining `--workspace` with `working-directory: ui` fails outright with
+      # "No workspaces found". From `ui/` the local `e2e` script (`npx playwright test`)
+      # runs against ui/playwright.config.ts, which is where the baseURL and specDir live.
+      - name: Run Playwright e2e suite
+        run: npm run e2e
+        working-directory: ui
+
+  # The agent harness is a separate layer with its own gate, and `AGENTS.md`
+  # tells every agent to run `npm run check:harness` when `.harness/` or
+  # `.roomodes` change. Nothing in any workflow, hook or commit step ran it, so
+  # the rule described a check that no run could reach. This job makes it true.
+  #
+  # `paths:`-filtered, so an application-only PR does not pay for it and the
+  # harness gate never becomes a second, slower `npm run check`. The harness has
+  # no effect on production, which is why it is a separate job rather than a
+  # step inside build-and-test.
+  harness:
+    name: harness
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # Full history: the filter below diffs the merge base against HEAD.
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+
+      # Actions has no job-level `paths:` filter — that key exists only on the
+      # workflow trigger, where it would suppress the whole pipeline. So the
+      # filter is computed here from the actual diff, which is the same
+      # predicate and costs one `git diff`. It is deliberately NOT a list of
+      # files: the rule is "a change under .harness/ or to .roomodes", so adding
+      # a harness file satisfies it with no edit to this workflow.
+      #
+      # Both legs are covered: a PR is diffed against its base, a push against
+      # the previous commit. If the base is unavailable the step FAILS the job
+      # rather than silently reporting "no harness change" — a guardrail that
+      # cannot decide must not decide "skip".
+      - name: Detect harness-relevant changes
+        id: filter
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+            git fetch --no-tags --depth=1 origin "$BASE" || { echo "cannot fetch base $BASE"; exit 1; }
+          else
+            git rev-parse HEAD^ 2>/dev/null || { echo "no parent commit to diff against"; exit 1; }
+            BASE="HEAD^"
+          fi
+          CHANGED=$(git diff --name-only "$BASE" HEAD)
+          echo "$CHANGED" | sed 's/^/  /'
+          if echo "$CHANGED" | grep -Eq '^\.harness/|^\.roomodes$|^\.roo/rules-harness-evaluator/'; then
+            echo "harness-relevant change detected"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "no harness-relevant change"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # No `npm ci`: the harness self-test is plain node and deliberately reads
+      # the repository, not node_modules. Installing dependencies here would
+      # make a harness-only change fail for a dependency reason.
+      - name: Harness self-test and compatibility check
+        if: steps.filter.outputs.changed == 'true'
+        run: npm run check:harness

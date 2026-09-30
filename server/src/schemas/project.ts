@@ -62,14 +62,7 @@ export const UpdateProjectMemberSchema = z.object({
   role: z.enum(ProjectRoleValues),
 });
 
-/**
- * Project membership schema.
- */
-export const ProjectMemberSchema = z.object({
-  id: uuid(),
-  projectId: uuid(),
-  userId: uuid(),
-  role: z.enum(ProjectRoleValues),
-  createdAt: isoDateTime(),
-  updatedAt: isoDateTime(),
-});
+// `ProjectMemberSchema` was removed as dead code (unwired response schema —
+// it validated nothing; the membership contract is the shared `ProjectMember`
+// interface). `ProjectSchema` next to it is KEPT: `project.test.ts` exercises
+// its 120-char description bound, so it is not dead.

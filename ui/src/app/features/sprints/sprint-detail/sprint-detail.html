@@ -8,7 +8,7 @@
     <div class="mb-6 flex items-center justify-between">
       <div>
         <div class="flex items-center gap-3">
-          <h2 class="text-2xl font-bold text-foreground">{{ s.name }}</h2>
+          <h1 class="text-2xl font-bold text-foreground">{{ s.name }}</h1>
           <span hlmBadge [variant]="statusBadgeVariant(s.status)">
             {{ s.status }}
           </span>
@@ -53,10 +53,10 @@
     <!-- Sprint tasks -->
     <section>
       <div class="mb-4">
-        <h3 class="text-lg font-semibold text-foreground">
+        <h2 class="text-lg font-semibold text-foreground">
           {{ 'sprintDetail.tasks' | transloco }}
           <span class="text-sm font-normal text-muted-foreground">({{ sprintTasks().length }})</span>
-        </h3>
+        </h2>
       </div>
 
       @if (sprintTasks().length === 0) {
@@ -94,6 +94,7 @@
                     size="icon-xs"
                     (click)="removeTaskFromSprint(task)"
                     [hlmTooltip]="'sprintDetail.removeFromSprint' | transloco"
+                    [attr.aria-label]="'sprintDetail.removeTaskFromSprint' | transloco: { name: task.title }"
                   >
                     <ng-icon name="lucideX" />
                   </button>
@@ -159,7 +160,7 @@
     </hlm-dialog-content>
   </hlm-dialog>
 
-  <!-- V8: dedicated start/end date edit dialog -->
+  <!-- Dedicated start/end date edit dialog -->
   <hlm-dialog [state]="showEditDates() ? 'open' : 'closed'" (stateChanged)="onEditDatesDialogStateChange($event)">
     <!-- form-narrow token (= max-w-md, product-analysis/32-ui-polish-plan.md) -->
     <hlm-dialog-content *hlmDialogPortal class="sm:max-w-md">

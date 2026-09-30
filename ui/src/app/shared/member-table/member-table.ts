@@ -53,15 +53,18 @@ import { useAutoRowMeasurement } from '@app/shared/auto-table/use-auto-row-measu
 /** Normalized row model consumed by {@link MemberTable} — both member shapes map onto it. */
 export interface MemberRow {
   userId: string;
-  displayName?: string | null;
-  email?: string | null;
+  // `| undefined` — rows are built from shared `ProjectMember` /
+  // `TenantMember` projections whose `email`/`displayName` are validated-but-absent
+  // optionals (explicit `undefined`), so the row type must accept that value.
+  displayName?: string | null | undefined;
+  email?: string | null | undefined;
   role: string;
   /** Tenant variant only (`MemberStatus`). */
-  status?: string;
+  status?: string | undefined;
   /** Tenant variant only (`InvitationStatus`). */
-  invitationStatus?: string | null;
-  /** DEC-055: membership expiration (ISO 8601, tenant variant only, null = never). */
-  expiresAt?: string | null;
+  invitationStatus?: string | null | undefined;
+  /** Membership expiration (ISO 8601, tenant variant only, null = never). */
+  expiresAt?: string | null | undefined;
 }
 
 /** Payload of the {@link MemberTable.memberChange} output. */
@@ -103,7 +106,7 @@ function isoToDate(value: string | null | undefined): Date | undefined {
 }
 
 /**
- * DEC-055: convert the picked expiration date to an end-of-day ISO datetime —
+ * Convert the picked expiration date to an end-of-day ISO datetime —
  * the member keeps access for the whole selected day and is revoked from the next day on.
  */
 function toEndOfDayIso(date: Date): string {
@@ -111,7 +114,7 @@ function toEndOfDayIso(date: Date): string {
 }
 
 /**
- * Shared member table used by BOTH the tenant members and project members pages (U4).
+ * Shared member table used by BOTH the tenant members and project members pages.
  *
  * Columns: User (avatar + name), Email, Role, [tenant-only: Access/Invitation status], Actions.
  * Actions: Edit (small dialog with role select + confirm) and Remove (confirm dialog);
@@ -161,7 +164,7 @@ function toEndOfDayIso(date: Date): string {
     }),
   ],
   templateUrl: './member-table.html',
-  // Q2 (F-05): the host element is a flex item of the page's full-height column —
+  // The host element is a flex item of the page's full-height column —
   // flexing it lets the inner table wrapper stretch and the pagination pin to the bottom.
   host: { class: 'flex min-h-0 w-full flex-1 flex-col' },
 })
@@ -173,7 +176,7 @@ export class MemberTable {
   /** Whether the current user may manage members (shows the Actions column). */
   readonly canManage = input(false);
   /**
-   * Q2 (F-05): whether the Auto rows-per-page option is offered (full-height tables only).
+   * Whether the Auto rows-per-page option is offered (full-height tables only).
    * When `isAuto` is set, the effective page size is derived from the measured wrapper height.
    */
   readonly autoEnabled = input(false);
@@ -193,11 +196,11 @@ export class MemberTable {
   readonly pageSize = input(20);
   readonly total = input(0);
   readonly totalPages = input(1);
-  /** Q2 (F-05): measured wrapper height forwarded to the host page for Auto pagination. */
+  /** Measured wrapper height forwarded to the host page for Auto pagination. */
   readonly rowsHeightChange = output<number>();
   /** Measured row pitch forwarded to the host page for an exact Auto page size. */
   readonly rowHeightChange = output<number>();
-  /** Q2 (F-05): the user picked the Auto option in the rows-per-page selector. */
+  /** The user picked the Auto option in the rows-per-page selector. */
   readonly autoPageSizeChange = output();
   readonly sortField = input('');
   readonly sortDirection = input<'asc' | 'desc'>('asc');
@@ -223,7 +226,7 @@ export class MemberTable {
   readonly hardDelete = output<MemberRow>();
   private readonly i18n = inject(TranslocoService);
   /**
-   * Q9 (RQ-04 ⑤): device-local table density — owned by the HOST page (the toggle
+   * Device-local table density — owned by the HOST page (the toggle
    * lives in the page header) and passed down; compact mode shrinks vertical cell
    * padding via a class on the `<table>`, and the Auto math reacts through the
    * density-aware fallback row height.
@@ -232,7 +235,7 @@ export class MemberTable {
   /** Density-aware fallback row height used by the Auto page-size math */
   private readonly rowHeightPx = computed(() => rowHeightForDensity(this.isCompact()));
   /**
-   * Q2 (F-05): measures this table's wrapper so Auto mode can derive its row count;
+   * Measures this table's wrapper so Auto mode can derive its row count;
    * the height is forwarded to the host page which owns the effective page size.
    */
   private readonly measurement = useAutoRowMeasurement();
@@ -250,20 +253,20 @@ export class MemberTable {
   protected readonly memberStatusBadgeVariant = memberStatusBadgeVariant;
   protected readonly MemberStatus = MemberStatus;
   protected readonly InvitationStatus = InvitationStatus;
-  protected readonly editingRow = signal<MemberRow | null>(null);
-  protected readonly editRole = signal('');
-  protected readonly editName = signal('');
-  protected readonly editEmail = signal('');
+  private readonly editingRow = signal<MemberRow | null>(null);
+  private readonly editRole = signal('');
+  private readonly editName = signal('');
+  private readonly editEmail = signal('');
   /** Picked expiration date in the Edit dialog (null = no expiration). */
-  protected readonly editExpiresAt = signal<Date | null>(null);
-  protected readonly rowToRemove = signal<MemberRow | null>(null);
+  private readonly editExpiresAt = signal<Date | null>(null);
+  private readonly rowToRemove = signal<MemberRow | null>(null);
   private readonly preferencesStore = inject(PreferencesStore);
-  /** R3-P8: DatePipe token derived from the user's date format preference. */
+  /** DatePipe token derived from the user's date format preference. */
   protected readonly dateFmt = this.preferencesStore.datePipeFormat;
-  /** P12 (item 28): active language passed as the DatePipe locale for localized month names */
+  /** Active language passed as the DatePipe locale for localized month names */
   protected readonly lang = this.preferencesStore.language;
   /** Column definitions depend on the variant (tenant adds the status column). */
-  protected readonly columns = computed<ColumnDef[]>(() => {
+  private readonly columns = computed<ColumnDef[]>(() => {
     const cols: ColumnDef[] = [
       {
         field: 'name',
@@ -296,7 +299,7 @@ export class MemberTable {
         popoverWidth: 'w-48',
         selectAllLabelKey: 'members.allStatuses',
       });
-      // DEC-055: expiration date — display-only column (no filter popover)
+      // Expiration date — display-only column (no filter popover)
       cols.push({
         field: 'expiresAt',
         labelKey: 'members.expiresAt',
@@ -337,7 +340,7 @@ export class MemberTable {
   ];
 
   /** Human-readable role label; unknown enum values render verbatim. */
-  protected roleLabel(role: string): string {
+  private roleLabel(role: string): string {
     const key = ROLE_LABEL_KEYS[role];
 
     return key ? this.i18n.translate(key) : role;
@@ -430,12 +433,12 @@ export class MemberTable {
     return row.role === TenantRole.OWNER;
   }
 
-  /** DEC-055: the membership expiration date is on/after now (lazy revoke). */
+  /** The membership expiration date is on/after now (lazy revoke). */
   protected isExpired(row: MemberRow): boolean {
     return row.expiresAt !== null && row.expiresAt !== undefined && new Date(row.expiresAt).getTime() <= Date.now();
   }
 
-  /** Revoked/expired invitation → Reinvite applies (BR-036: pending ones only via the invitee). */
+  /** Revoked/expired invitation → Reinvite applies (pending ones only via the invitee). */
   protected hasExpiredOrRevokedInvitation(row: MemberRow): boolean {
     return row.invitationStatus === InvitationStatus.EXPIRED || row.invitationStatus === InvitationStatus.REVOKED;
   }

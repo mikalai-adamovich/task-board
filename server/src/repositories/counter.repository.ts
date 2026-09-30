@@ -1,6 +1,11 @@
 import type { Collection } from 'mongodb';
 import { escapeRegExp } from '../utils/regex.js';
 
+// guardrail:no-base-repository 2026-09-29 — counters are keyed by the Mongo
+// `_id` (a string such as `taskNumber:<projectId>`), not by an `id` field, and
+// the only operation is an atomic `$inc` upsert. There is nothing for an
+// `id`-keyed base to add. See `rules/guardrails.guardrail.test.ts` (P-03).
+
 // ─── MongoDB Document Shape ───────────────────────────────────────────────────
 
 export interface CounterDocument {
@@ -30,15 +35,10 @@ export class CounterRepository {
 
     return result?.value ?? 1;
   }
-
-  /**
-   * Get the current value without incrementing.
-   */
-  async getCurrentValue(key: string): Promise<number> {
-    const doc = await this.collection.findOne({ _id: key });
-
-    return doc?.value ?? 0;
-  }
+  // `getCurrentValue(key)` was removed as dead code. `increment()` is the
+  // only counter operation in the product; a read-without-increment accessor has
+  // no caller and, if one appeared, it would be a TOCTOU read next to the
+  // `findOneAndUpdate` that actually allocates the number.
 
   /**
    * Delete all counters belonging to a project. Used for cascade delete.

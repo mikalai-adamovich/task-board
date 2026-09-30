@@ -1,5 +1,5 @@
 /**
- * Task-table column model (R3-P4).
+ * Task-table column model.
  *
  * Single source of truth for the columns of the tasks table, shared by the
  * server (Zod validation of the persisted `taskTableColumns` preference) and

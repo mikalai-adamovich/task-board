@@ -100,7 +100,8 @@
       "email": "Email",
       "submit": "Send reset link",
       "submitting": "Sending",
-      "backToLogin": "Back to sign in"
+      "backToLogin": "Back to sign in",
+      "failed": "Falha ao enviar o link de redefinição. Por favor, tente novamente."
     },
     "resetPassword": {
       "title": "Reset password",
@@ -110,7 +111,10 @@
       "confirmPassword": "Confirm password",
       "submit": "Reset password",
       "submitting": "Resetting",
-      "backToLogin": "Back to sign in"
+      "backToLogin": "Back to sign in",
+      "invalidToken": "Este link de redefinição é inválido ou expirou. Solicite um novo link.",
+      "passwordsNotMatch": "As senhas não coincidem.",
+      "success": "Senha atualizada com sucesso"
     }
   },
   "landing": {
@@ -179,7 +183,9 @@
       "checking": "Checking availability",
       "taken": "This URL is already taken",
       "available": "This URL is available",
-      "hint": "Lowercase letters, numbers and hyphens only."
+      "hint": "Lowercase letters, numbers and hyphens only.",
+      "invalid": "Use apenas letras minúsculas, números e hifens",
+      "required": "A URL do workspace é obrigatória"
     },
     "plan": {
       "title": "Choose a plan",
@@ -303,7 +309,9 @@
     "expired": "Expirado",
     "editMemberTitle": "Editar membro",
     "editMemberDesc": "Atualize o nome, o e-mail, a função e a data de expiração do membro.",
-    "clearExpiration": "Limpar"
+    "clearExpiration": "Limpar",
+    "removeConfirm": "Tem certeza de que deseja remover este membro?",
+    "removeMemberTitle": "Remover membro"
   },
   "projects": {
     "createTitle": "Criar Projeto",
@@ -350,7 +358,9 @@
     "viewAllTasks": "View all tasks",
     "sprintDates": "{{start}} – {{end}}",
     "board": "Quadro",
-    "manageBoard": "Configurar colunas"
+    "manageBoard": "Configurar colunas",
+    "archivedBanner": "Este projeto está arquivado e é somente leitura.",
+    "deletionPendingBanner": "Este projeto tem a exclusão agendada e é somente leitura."
   },
   "boardView": {
     "loading": "Carregando quadro",
@@ -370,7 +380,9 @@
     "allAssignees": "Todos os responsáveis",
     "currentUser": "Eu",
     "unassigned": "Sem responsável",
-    "allPriorities": "Todas as prioridades"
+    "allPriorities": "Todas as prioridades",
+    "moveTaskTitle": "Mover tarefa",
+    "moveTaskDesc": "Escolha a coluna para a qual mover esta tarefa."
   },
   "priority": {
     "low": "Baixa",
@@ -449,7 +461,8 @@
     "editDatesTitle": "Editar datas do sprint",
     "startDateLabel": "Data de início",
     "endDateLabel": "Data de término",
-    "saveDates": "Salvar datas"
+    "saveDates": "Salvar datas",
+    "removeTaskFromSprint": "Remover {{name}} do sprint"
   },
   "docs": {
     "title": "Documentação",
@@ -533,7 +546,8 @@
     "typeRequired": "O tipo de tarefa é obrigatório",
     "statusRequired": "O status é obrigatório",
     "priorityRequired": "A prioridade é obrigatória",
-    "titleMaxLength": "Title must be at most 200 characters"
+    "titleMaxLength": "Title must be at most 200 characters",
+    "descriptionMax": "A descrição deve ter no máximo 120 caracteres"
   },
   "errors": {
     "unexpected": "Ocorreu um erro inesperado. Por favor, tente novamente.",
@@ -544,6 +558,7 @@
     "forbidden": "Você não tem permissão para realizar esta ação.",
     "conflict": "Este recurso foi modificado por outro usuário. Recarregue e tente novamente.",
     "validation": "Verifique sua entrada e tente novamente.",
+    "payloadTooLarge": "A solicitação é muito grande. Reduza a quantidade de dados enviados e tente novamente.",
     "badRequest": "A solicitação era inválida. Verifique sua entrada.",
     "tooManyRequests": "Muitas solicitações. Aguarde um momento e tente novamente.",
     "unknown": "Ocorreu um erro desconhecido.",
@@ -561,12 +576,19 @@
     "tenantArchived": "Este espaço de trabalho está arquivado. Restaure-o para fazer alterações.",
     "projectKeyImmutable": "A chave do projeto não pode ser alterada porque já existem tarefas para este projeto.",
     "taskTypeInUse": "Este tipo de tarefa está em uso por tarefas existentes. Selecione um tipo substituto antes de excluir.",
-    "statusInUse": "Este status está em uso por tarefas existentes. Selecione um status substituto antes de excluir."
+    "statusInUse": "Este status está em uso por tarefas existentes. Selecione um status substituto antes de excluir.",
+    "slugTaken": "Esta URL já está em uso",
+    "invalidResetToken": "Esta ligação de redefinição de palavra-passe é inválida ou expirou. Peça uma nova.",
+    "rateLimited": "Demasiadas tentativas. Aguarde um momento e tente novamente.",
+    "queryTimeout": "O pedido demorou demasiado e foi cancelado. Tente novamente.",
+    "taskNumberUnavailable": "Não foi possível atribuir um número de tarefa agora. Tente novamente dentro de momentos.",
+    "tooManyRequestsAfter": "Demasiados pedidos. Tente novamente dentro de {{seconds}} segundos."
   },
   "toasts": {
     "created": "Criado com sucesso",
     "updated": "Atualizado com sucesso",
-    "deleted": "Excluído com sucesso"
+    "deleted": "Excluído com sucesso",
+    "saved": "Salvo com sucesso"
   },
   "common": {
     "cancel": "Cancelar",
@@ -574,7 +596,8 @@
     "delete": "Excluir",
     "undo": "Desfazer",
     "undoSuccess": "Ação desfeita",
-    "charCount": "{{count}}/{{max}}"
+    "charCount": "{{count}}/{{max}}",
+    "undoFailed": "Não foi possível desfazer a ação"
   },
   "labelManager": {
     "createDesc": "Crie uma nova etiqueta para este projeto.",
@@ -722,7 +745,9 @@
       "apply": "Aplicar",
       "clear": "Limpar",
       "selectAll": "Selecionar tudo",
-      "selectRow": "Selecionar linha"
+      "selectRow": "Selecionar linha",
+      "partial": "{{count}} tarefas atualizadas, {{failed}} com falha",
+      "success": "{{count}} tarefas atualizadas"
     }
   },
   "comments": {
@@ -783,7 +808,9 @@
     "apply": "Apply",
     "rename": "Renomear",
     "renameTitle": "Renomear filtro",
-    "renaming": "Renomeando"
+    "renaming": "Renomeando",
+    "nameRequired": "O nome do filtro é obrigatório",
+    "renameError": "Falha ao renomear o filtro."
   },
   "auditLog": {
     "time": "Hora",
@@ -808,6 +835,7 @@
     "codeBlock": "Bloco de código",
     "raw": "Fonte",
     "wysiwyg": "WYSIWYG",
+    "editor": "Editor de texto rico",
     "showRaw": "Mostrar markdown",
     "showWysiwyg": "Mostrar editor de texto rico",
     "rawPlaceholder": "Escreva markdown aqui",
@@ -856,7 +884,10 @@
     "saveColumns": "Guardar alterações",
     "columnIndex": "Coluna {{index}}",
     "emptyColumnHint": "Atribua pelo menos um estado",
-    "unassignedStatuses": "Não exibidos no quadro: {{names}}"
+    "unassignedStatuses": "Não exibidos no quadro: {{names}}",
+    "moveUpColumn": "Mover a coluna {{index}} para cima",
+    "moveDownColumn": "Mover a coluna {{index}} para baixo",
+    "removeColumnIndex": "Remover a coluna {{index}}"
   },
   "taskCreate": {
     "title": "Create task",
@@ -903,7 +934,8 @@
     "projectSwitcher": "Seletor de projeto",
     "goTasks": "Ir para as tarefas",
     "goBoard": "Ir para o quadro",
-    "toggleSidebar": "Alternar barra lateral"
+    "toggleSidebar": "Alternar barra lateral",
+    "moveCard": "Mover o cartão em foco para outra coluna"
   },
   "tableDensity": {
     "comfortable": "Confortável",
@@ -921,5 +953,17 @@
     "modeLight": "Claro",
     "modeDark": "Escuro",
     "deferredToast": "Tema guardado. Será aplicado quando o Automático mudar para {{mode}}, ou mude agora o modo para {{mode}}."
+  },
+  "a11y": {
+    "skipToContent": "Ir para o conteúdo",
+    "filterColumn": "Filtrar por {{column}}"
+  },
+  "pageTitles": {
+    "workspace": "Espaço de trabalho",
+    "project": "Projeto",
+    "board": "Quadro",
+    "task": "Tarefa",
+    "sprint": "Sprint",
+    "projectGeneral": "Configurações gerais"
   }
 }

@@ -1,5 +1,5 @@
 /**
- * Tests for the TaskTableBulkBar sub-component (M-13 / 4.2):
+ * Tests for the TaskTableBulkBar sub-component:
  *
  * - Renders the selection count and the three bulk-field selects
  * - Emits field changes (status/assignee/sprint)

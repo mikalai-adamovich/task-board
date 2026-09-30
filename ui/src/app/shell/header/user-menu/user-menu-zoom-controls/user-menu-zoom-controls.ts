@@ -12,7 +12,7 @@ import { getNextZoom } from '../../zoom.util';
 })
 export class UserMenuZoomControls {
   private readonly destroyRef = inject(DestroyRef);
-  protected readonly preferencesStore = inject(PreferencesStore);
+  private readonly preferencesStore = inject(PreferencesStore);
 
   constructor() {
     // Commit pending zoom to backend when the dropdown is destroyed (closed).

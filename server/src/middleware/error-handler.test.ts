@@ -11,6 +11,7 @@ import {
   AppError,
 } from './error-handler.js';
 import { requestIdMiddleware } from './request-id.js';
+import { MAX_TIME_MS_EXPIRED_CODE, isQueryTimeoutError } from '../db/query-timeout.js';
 
 /** Helper to extract the `error` object from a JSON response. */
 async function errorBody(res: Response) {
@@ -52,6 +53,16 @@ function createTestApp() {
     throw new AppError(403, 'PROJECT_ARCHIVED', 'Cannot modify archived project');
   });
 
+  // An AppError may carry response headers (Retry-After / RateLimit-*).
+  app.get('/rate-limited', () => {
+    throw new AppError(429, 'RATE_LIMITED', 'Too many login attempts. Try again later.', undefined, {
+      'Retry-After': '900',
+      'RateLimit-Limit': '10',
+      'RateLimit-Remaining': '0',
+      'RateLimit-Reset': '900',
+    });
+  });
+
   app.get('/zod-error', (c) => {
     const schema = z.object({ email: z.email() });
     const result = schema.safeParse({ email: 'bad' });
@@ -60,6 +71,15 @@ function createTestApp() {
       throw result.error;
     }
     return c.json({ ok: true });
+  });
+
+  // What MongoDB actually throws when a query exceeds its maxTimeMS budget.
+  app.get('/query-timeout', () => {
+    throw Object.assign(new Error('operation exceeded time limit'), {
+      name: 'MongoServerError',
+      code: 50,
+      codeName: 'MaxTimeMSExpired',
+    });
   });
 
   app.get('/unknown', () => {
@@ -180,6 +200,57 @@ describe('errorHandler', () => {
     expect((err.details as unknown[]).length).toBeGreaterThan(0);
   });
 
+  // ── A maxTimeMS expiry is a KNOWN outcome, not an internal error ───────────
+  it('maps a MongoDB maxTimeMS expiry to 503 QUERY_TIMEOUT in the standard envelope', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      const res = await app.request('/query-timeout');
+
+      expect(res.status).toBe(503);
+
+      const err = await errorBody(res);
+
+      expect(err.code).toBe('QUERY_TIMEOUT');
+      expect(err.message).toMatch(/too long/i);
+      // The operator keeps the cause; the client never sees it.
+      expect(consoleSpy).toHaveBeenCalledOnce();
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it('does not leak the driver message, the collection, or a stack to the client', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      const res = await app.request('/query-timeout');
+      const raw = await res.text();
+
+      // The raw driver string is the only clue an operator had before F11 — and
+      // it must not become a client-visible oracle for query shapes.
+      expect(raw).not.toMatch(/exceeded time limit/i);
+      expect(raw).not.toMatch(/MaxTimeMSExpired/);
+      expect(raw).not.toMatch(/MongoServerError/);
+      expect(raw).not.toContain('stack');
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it('still classifies every other error as before (a non-timeout driver error is a 500)', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      const res = await app.request('/unknown');
+
+      expect(res.status).toBe(500);
+      expect((await errorBody(res)).code).toBe('INTERNAL_ERROR');
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
   it('returns 500 for unknown errors without leaking stack', async () => {
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
@@ -201,7 +272,15 @@ describe('errorHandler', () => {
   });
 
   it('all responses are wrapped in { error: { ... } }', async () => {
-    const endpoints = ['/not-found', '/unauthorized', '/forbidden', '/validation', '/conflict', '/unknown'];
+    const endpoints = [
+      '/not-found',
+      '/unauthorized',
+      '/forbidden',
+      '/validation',
+      '/conflict',
+      '/unknown',
+      '/query-timeout',
+    ];
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
     try {
@@ -216,6 +295,40 @@ describe('errorHandler', () => {
       }
     } finally {
       consoleSpy.mockRestore();
+    }
+  });
+});
+
+/**
+ * The predicate behind the mapping above. Driver-agnostic by design: it reads
+ * `code` / `codeName` instead of `instanceof MongoServerError`, so the Durable
+ * Object transport and a plain object in a test are classified identically.
+ */
+describe('isQueryTimeoutError (F11)', () => {
+  it('recognises the code MongoDB returns for an expired maxTimeMS', () => {
+    expect(isQueryTimeoutError({ code: MAX_TIME_MS_EXPIRED_CODE })).toBe(true);
+    expect(isQueryTimeoutError({ codeName: 'MaxTimeMSExpired' })).toBe(true);
+    expect(isQueryTimeoutError({ code: 50, codeName: 'MaxTimeMSExpired' })).toBe(true);
+  });
+
+  it('does not swallow other driver failures into a 503', () => {
+    // E11000 DuplicateKey, E11001 legacy duplicate, an exhausted pool, a
+    // server-selection timeout — all of these must stay 500, because reporting
+    // them as "your query was too slow" would send an operator hunting a
+    // maxTimeMS budget that does not exist.
+    expect(isQueryTimeoutError({ code: 11000, codeName: 'DuplicateKey' })).toBe(false);
+    expect(isQueryTimeoutError({ code: 89, codeName: 'NetworkTimeout' })).toBe(false);
+    expect(isQueryTimeoutError(new Error('nope'))).toBe(false);
+  });
+
+  it('treats the numeric code as sufficient on its own (codeName is not always populated)', () => {
+    // A driver/transport that drops `codeName` must not lose the classification.
+    expect(isQueryTimeoutError({ code: 50 })).toBe(true);
+  });
+
+  it('tolerates non-error inputs (the handler is reached with anything)', () => {
+    for (const value of [null, undefined, 'timeout', 42]) {
+      expect(isQueryTimeoutError(value)).toBe(false);
     }
   });
 });
@@ -255,5 +368,38 @@ describe('errorHandler request-id correlation (M-10)', () => {
 
     expect(err.requestId).toMatch(UUID_PATTERN);
     expect(res.headers.get('X-Request-Id')).toBe(err.requestId);
+  });
+});
+
+// ─── Error-carried response headers ───────────────────────────────────────────
+
+describe('errorHandler — AppError response headers (W-42)', () => {
+  it('applies Retry-After and RateLimit-* to the 429 response', async () => {
+    const app = createTestApp();
+    const res = await app.request('/rate-limited');
+
+    expect(res.status).toBe(429);
+    expect(res.headers.get('Retry-After')).toBe('900');
+    expect(res.headers.get('RateLimit-Limit')).toBe('10');
+    expect(res.headers.get('RateLimit-Remaining')).toBe('0');
+    expect(res.headers.get('RateLimit-Reset')).toBe('900');
+  });
+
+  it('keeps the error envelope intact alongside the headers', async () => {
+    const app = createTestApp();
+    const res = await app.request('/rate-limited');
+    const body = await errorBody(res);
+
+    expect(body.code).toBe('RATE_LIMITED');
+    expect(body.message).toBe('Too many login attempts. Try again later.');
+  });
+
+  it('does not invent headers for an AppError that carries none', async () => {
+    const app = createTestApp();
+    const res = await app.request('/conflict');
+
+    expect(res.status).toBe(409);
+    expect(res.headers.get('Retry-After')).toBeNull();
+    expect(res.headers.get('RateLimit-Limit')).toBeNull();
   });
 });

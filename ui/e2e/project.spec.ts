@@ -1,78 +1,61 @@
 /**
- * E2E tests for project creation and navigation.
+ * E2E for project creation and navigation, on top of the shared owner workspace.
  *
- * The project creation modal lives on the tenant home page ("Create Project"
- * CTA opens a dialog with name/key fields). Tests create their own workspace
- * first so they are independent of seeded data.
+ * The create-project dialog is opened from the tenant home. Its trigger is the
+ * first action button of the page header row (`firstMainAction`), and the form
+ * fields carry stable ids (`#project-name`, `#project-key`).
  *
- * Requires: Angular dev server (port 4200) + backend API (port 8787).
+ * NOTE ON THE EXPECTED OUTCOME: creating a project does NOT navigate away — the
+ * dialog closes and the tenant home shows the new card. The previous spec
+ * expected a jump to `/projects/:key`, which is why it could never pass.
  */
-import { test, expect } from '@playwright/test';
-import { registerUser, uniqueEmail } from './helpers';
+import { test, expect } from './fixtures/test';
+import { firstMainAction, main, pageHeading } from './helpers';
 
-/** Register a user, create a workspace, and land on the tenant home page. */
-async function setupWorkspace(page: import('@playwright/test').Page): Promise<string> {
-  await registerUser(page, uniqueEmail('project'));
-  await page.goto('/workspace/create');
+/** Fill the create-project dialog and submit it. */
+async function createProjectThroughUi(page: import('@playwright/test').Page, name: string, key: string): Promise<void> {
+  await firstMainAction(page).click();
 
-  const workspaceName = `E2E Projects ${Date.now()}`;
+  const dialog = page.getByRole('dialog');
 
-  await page.getByPlaceholder('My Workspace').fill(workspaceName);
-  await page.locator('button[type="submit"]').click();
-  await expect(page).toHaveURL(/\/w\//, { timeout: 10_000 });
-
-  // Extract the tenant slug from the URL for deep-link navigation
-  return page.url().split('/w/')[1].split('/')[0];
+  await expect(dialog).toBeVisible();
+  await dialog.locator('#project-name').fill(name);
+  await dialog.locator('#project-key').fill(key);
+  await dialog.locator('button[type="submit"][form="create-project-form"]').click();
 }
 
 test.describe('Projects', () => {
-  test('tenant home shows the Create Project CTA', async ({ page }) => {
-    await setupWorkspace(page);
+  test('the tenant home lists the workspace projects', async ({ page, owner }) => {
+    await page.goto(`/w/${owner.tenantSlug}`);
 
-    await expect(page.getByRole('button', { name: /Create Project/i })).toBeVisible();
+    // The seeded project card renders its name as a heading inside the grid.
+    await expect(pageHeading(page, owner.project.name)).toBeVisible();
   });
 
-  test('creates a project and navigates to its detail page', async ({ page }) => {
-    await setupWorkspace(page);
+  test('creates a project through the dialog and lists it', async ({ page, owner }) => {
+    const name = `E2E Project ${Date.now().toString(36)}`;
+    const key = `EP${Date.now()
+      .toString(36)
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, '')}`.slice(0, 10);
 
-    const projectName = `E2E Project ${Date.now()}`;
+    await page.goto(`/w/${owner.tenantSlug}`);
+    await createProjectThroughUi(page, name, key);
 
-    await page
-      .getByRole('button', { name: /Create Project/i })
-      .first()
-      .click();
-
-    // The creation dialog opens — fill the first text input (project name)
-    const dialog = page.getByRole('dialog');
-
-    await expect(dialog).toBeVisible();
-    await dialog.locator('input[type="text"]').first().fill(projectName);
-    await dialog.getByRole('button', { name: /Create/i }).click();
-
-    // Project detail is routed under /w/:slug/projects/:key
-    await expect(page).toHaveURL(/\/projects\//, { timeout: 10_000 });
-    await expect(page.getByText(projectName).first()).toBeVisible();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(pageHeading(page, name)).toBeVisible();
+    await expect(main(page).locator(`a[href$="/projects/${key}"]`)).toBeVisible();
   });
 
-  test('project detail exposes the task table route', async ({ page }) => {
-    const slug = await setupWorkspace(page);
-    const projectName = `E2E Tasks ${Date.now()}`;
+  test('opens a project from the tenant home list', async ({ page, owner }) => {
+    await page.goto(`/w/${owner.tenantSlug}`);
+    await main(page).locator(`a[href$="/projects/${owner.project.key}"]`).click();
 
-    await page
-      .getByRole('button', { name: /Create Project/i })
-      .first()
-      .click();
-
-    const dialog = page.getByRole('dialog');
-
-    await dialog.locator('input[type="text"]').first().fill(projectName);
-    await dialog.getByRole('button', { name: /Create/i }).click();
-    await expect(page).toHaveURL(/\/projects\//, { timeout: 10_000 });
-
-    const projectKey = page.url().split('/projects/')[1].split('/')[0];
-
-    // The task table route resolves for the created project
-    await page.goto(`/w/${slug}/projects/${projectKey}/tasks`);
-    await expect(page).toHaveURL(new RegExp(`/w/${slug}/projects/${projectKey}/tasks`));
+    await expect(page).toHaveURL(new RegExp(`/w/${owner.tenantSlug}/projects/${owner.project.key}`));
+    // The project name is the page heading. Addressing it by its accessible name
+    // instead of by heading level: level 2 inside `<main>` is shared by the four
+    // widget card titles (Task summary / Active sprint / Recent tasks / Members),
+    // so a level selector is a strict-mode violation here (F26).
+    await expect(pageHeading(page, owner.project.name)).toHaveText(owner.project.name);
   });
 });

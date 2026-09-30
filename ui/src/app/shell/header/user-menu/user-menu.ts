@@ -44,11 +44,11 @@ import { UserMenuThemeSheet } from './user-menu-theme-sheet/user-menu-theme-shee
 export class UserMenu {
   protected readonly ExpandState = ExpandState;
   private readonly authStore = inject(AuthStore);
-  /** P13 (item 31b): `m` hotkey coordination — see the effect below. */
+  /** `m` hotkey coordination — see the effect below. */
   private readonly shortcuts = inject(KeyboardShortcuts);
   private readonly menuTrigger = viewChild(HlmDropdownMenuTrigger);
-  protected readonly user = computed(() => this.authStore.currentUser());
-  protected readonly role = computed(() => this.authStore.tenantRole());
+  private readonly user = computed(() => this.authStore.currentUser());
+  private readonly role = computed(() => this.authStore.tenantRole());
   protected readonly roleColor = computed(() => getRoleColor(this.role()));
   protected readonly roleLabel = computed(() => {
     const r = this.role();
@@ -70,7 +70,7 @@ export class UserMenu {
   protected readonly themeSheetOpen = signal<ExpandState>(ExpandState.Closed);
 
   constructor() {
-    // P13 (item 31b) / P13b: the global `m` hotkey bumps `userMenuToggle`.
+    // The global `m` hotkey bumps `userMenuToggle`.
     // React STATE-AWARE: read the trigger's actual `isOpen()` and call
     // `openFocused()`/`close()` explicitly — a blind `toggle()` double-fired
     // (open+close) left the menu stuck, and programmatic open never focused
@@ -95,15 +95,15 @@ export class UserMenu {
     });
   }
 
-  /** P13b: counter value already consumed — guards against double effect runs. */
+  /** Counter value already consumed — guards against double effect runs. */
   private lastHandledToggle = 0;
 
-  /** P13b: report open state to KeyboardShortcuts (wired in the template). */
+  /** Report open state to KeyboardShortcuts (wired in the template). */
   protected onMenuOpened(): void {
     this.shortcuts.userMenuOpen.set(true);
   }
 
-  /** P13b: report closed state to KeyboardShortcuts (wired in the template). */
+  /** Report closed state to KeyboardShortcuts (wired in the template). */
   protected onMenuClosed(): void {
     this.shortcuts.userMenuOpen.set(false);
   }

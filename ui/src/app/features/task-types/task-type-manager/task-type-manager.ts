@@ -16,6 +16,7 @@ import { HlmNativeSelectImports } from '@spartan-ng/helm/native-select';
 import { HlmCardImports } from '@spartan-ng/helm/card';
 import { HlmBadgeImports } from '@spartan-ng/helm/badge';
 import { form, FormField, FormRoot, schema, required } from '@angular/forms/signals';
+import { FieldControl } from '@app/shared/field-control/field-control';
 import type { TaskType, CreateTaskType } from '@task-board/shared';
 import type { BrnDialogState } from '@spartan-ng/brain/dialog';
 import { injectUndoToasts } from '@app/shared/utils/undo-toast';
@@ -32,6 +33,7 @@ interface CreateTaskTypeForm {
 @Component({
   selector: 'ui-task-type-manager',
   imports: [
+    FieldControl,
     HlmAlertImports,
     HlmEmptyImports,
     TranslocoPipe,
@@ -61,18 +63,18 @@ export class TaskTypeManager implements OnInit {
   /** Bound via withComponentInputBinding() — now receives project key from route */
   readonly projectKey = input.required<string>();
   /** Resolved project UUID from the store */
-  protected readonly projectId = computed(() => this.projectStore.activeProject()?.id ?? '');
-  protected readonly taskTypes = signal<TaskType[]>([]);
-  protected readonly loading = signal(true);
-  protected readonly error = signal('');
-  protected readonly showCreateDialog = signal(false);
-  protected readonly showDeleteDialog = signal(false);
-  protected readonly deletingType = signal<TaskType | null>(null);
-  protected readonly replacementTypeId = signal('');
-  protected readonly editingId = signal<string | null>(null);
-  protected readonly editingName = signal('');
-  protected readonly editingIcon = signal('');
-  protected readonly saving = signal(false);
+  private readonly projectId = computed(() => this.projectStore.activeProject()?.id ?? '');
+  private readonly taskTypes = signal<TaskType[]>([]);
+  private readonly loading = signal(true);
+  private readonly error = signal('');
+  private readonly showCreateDialog = signal(false);
+  private readonly showDeleteDialog = signal(false);
+  private readonly deletingType = signal<TaskType | null>(null);
+  private readonly replacementTypeId = signal('');
+  private readonly editingId = signal<string | null>(null);
+  private readonly editingName = signal('');
+  private readonly editingIcon = signal('');
+  private readonly saving = signal(false);
   private readonly createModel = signal<CreateTaskTypeForm>({ key: '', name: '', icon: '' });
   protected readonly createForm = form(
     this.createModel,
@@ -122,7 +124,7 @@ export class TaskTypeManager implements OnInit {
     this.editingIcon.set(taskType.icon ?? '');
   }
 
-  protected cancelEdit(): void {
+  private cancelEdit(): void {
     this.editingId.set(null);
     this.editingName.set('');
     this.editingIcon.set('');
@@ -230,7 +232,7 @@ export class TaskTypeManager implements OnInit {
           this.taskTypes.update((list) => list.filter((t) => t.id !== taskType.id));
           this.showDeleteDialog.set(false);
           this.deletingType.set(null);
-          // Q11 (DEC-053): undo recreates the type with the same immutable key,
+          // Undo recreates the type with the same immutable key,
           // name and icon. Position caveat: the original position may already be
           // taken — recreated at the end of the list.
           this.notify.successWithUndo('toasts.deleted', () => {

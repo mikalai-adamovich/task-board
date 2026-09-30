@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { TaskRepository } from './task.repository.js';
 import type { TaskDocument } from './task.repository.js';
 import type { Collection, InsertOneResult, DeleteResult } from 'mongodb';
+import { QUERY_MAX_TIME_MS_BOARD, QUERY_MAX_TIME_MS_LIST } from '../db/query-timeout.js';
 
 function createMockCollection() {
   return {
@@ -110,7 +111,7 @@ describe('TaskRepository', () => {
 
       await repo.findByProject('project-1', {});
 
-      expect(collection.find).toHaveBeenCalledWith({ projectId: 'project-1' }, undefined);
+      expect(collection.find).toHaveBeenCalledWith({ projectId: 'project-1' }, { maxTimeMS: QUERY_MAX_TIME_MS_LIST });
     });
 
     it('F5: projects description out when excludeDescription is set', async () => {
@@ -124,7 +125,13 @@ describe('TaskRepository', () => {
 
       await repo.findByProject('project-1', { excludeDescription: true });
 
-      expect(collection.find).toHaveBeenCalledWith({ projectId: 'project-1' }, { projection: { description: 0 } });
+      // `descriptionText` is a plain-text COPY of the description, so it
+      // leaves with it. Excluding only `description` would ship the whole body to
+      // a caller that asked not to receive it — the exact regression F5 removed.
+      expect(collection.find).toHaveBeenCalledWith(
+        { projectId: 'project-1' },
+        { projection: { description: 0, descriptionText: 0 }, maxTimeMS: QUERY_MAX_TIME_MS_LIST },
+      );
     });
 
     it('view=board projects out every non-card field (description, projectId, reporter, timestamps, metadata)', async () => {
@@ -143,6 +150,8 @@ describe('TaskRepository', () => {
         {
           projection: {
             description: 0,
+            // The projection travels with the description out of a card.
+            descriptionText: 0,
             projectId: 0,
             reporterId: 0,
             reporterSnapshot: 0,
@@ -155,7 +164,171 @@ describe('TaskRepository', () => {
             createdAt: 0,
             updatedAt: 0,
           },
+          maxTimeMS: QUERY_MAX_TIME_MS_LIST,
         },
+      );
+    });
+  });
+
+  /**
+   * The "no sprint" (backlog) filter.
+   *
+   * Two levels of proof:
+   *  1. SHAPE — the exact Mongo filter the repository builds for each form.
+   *  2. SEMANTICS — a small in-memory matcher applies the produced filter to a
+   *     fixture project, proving the sprint set and the backlog set are
+   *     DISJOINT and, together with the other sprint, COVER the whole project.
+   *     Shape assertions alone would pass even if `sprintId: null` were built
+   *     wrongly relative to how documents actually store a missing sprint.
+   */
+  describe('findByProject — sprint filter (F7)', () => {
+    const SPRINT_A = '550e8400-e29b-41d4-a716-4466554400a1';
+    const SPRINT_B = '550e8400-e29b-41d4-a716-4466554400a2';
+
+    /**
+     * Minimal Mongo matcher for the two filter shapes the repository can emit
+     * for the sprint field: an exact id, `null` (equality on a stored null) and
+     * `{ $ne: null }`. Anything else throws so a new shape cannot silently pass
+     * an un-modelled test.
+     */
+    function matchesSprintFilter(doc: TaskDocument, filter: unknown): boolean {
+      if (filter === undefined) return true;
+      if (filter === null) return doc.sprintId === null;
+      if (typeof filter === 'string') return doc.sprintId === filter;
+      if (typeof filter === 'object' && filter !== null && '$ne' in filter) {
+        return (filter as { $ne: unknown }).$ne === null ? doc.sprintId !== null : false;
+      }
+      throw new Error(`unmodelled sprint filter shape: ${JSON.stringify(filter)}`);
+    }
+
+    /** The `{projectId, sprintId}` part of the query the repository handed to Mongo. */
+    function sprintFilterOf(query: Record<string, unknown>): unknown {
+      return query.sprintId;
+    }
+
+    /** The sprint filter of the most recent `find` call — runs one query. */
+    function lastSprintFilterOf(options: Parameters<TaskRepository['findByProject']>[1]): unknown {
+      selectIds(options);
+
+      const calls = collection.find.mock.calls;
+
+      return sprintFilterOf(calls[calls.length - 1]?.[0] as Record<string, unknown>);
+    }
+
+    /**
+     * Project fixture: 2 tasks in sprint A, 1 in sprint B, 2 with no sprint.
+     * Exercises the real production shape — `sprintId: null` on backlog tasks.
+     */
+    const PROJECT_DOCS: TaskDocument[] = [
+      makeDoc({ id: 'a1', number: 1, sprintId: SPRINT_A, sprintName: 'A' }),
+      makeDoc({ id: 'a2', number: 2, sprintId: SPRINT_A, sprintName: 'A' }),
+      makeDoc({ id: 'b1', number: 3, sprintId: SPRINT_B, sprintName: 'B' }),
+      makeDoc({ id: 'n1', number: 4, sprintId: null, sprintName: null }),
+      makeDoc({ id: 'n2', number: 5, sprintId: null, sprintName: null }),
+    ];
+
+    /**
+     * Ids the repository's filter actually selects from the fixture.
+     * `findByProject` is async, but the query is handed to `find` synchronously,
+     * so the LAST recorded call reflects THIS invocation.
+     */
+    function selectIds(options: Parameters<TaskRepository['findByProject']>[1]): string[] {
+      const toArray = vi.fn().mockResolvedValue([]);
+      const limit = vi.fn().mockReturnValue({ toArray });
+      const skip = vi.fn().mockReturnValue({ limit });
+      const sort = vi.fn().mockReturnValue({ skip });
+
+      collection.find.mockReturnValue({ sort });
+      collection.countDocuments.mockResolvedValue(0);
+
+      void repo.findByProject('project-1', options);
+
+      const calls = collection.find.mock.calls;
+      const query = calls[calls.length - 1]?.[0] as Record<string, unknown>;
+
+      return PROJECT_DOCS.filter((doc) => matchesSprintFilter(doc, sprintFilterOf(query))).map((doc) => doc.id);
+    }
+
+    it('sprintId=<uuid> selects exactly that sprint tasks', () => {
+      expect(selectIds({ sprintId: SPRINT_A })).toEqual(['a1', 'a2']);
+    });
+
+    it('hasSprint=false selects exactly the tasks with no sprint', () => {
+      expect(selectIds({ hasSprint: false })).toEqual(['n1', 'n2']);
+    });
+
+    it('hasSprint=true selects every task in some sprint', () => {
+      expect(selectIds({ hasSprint: true })).toEqual(['a1', 'a2', 'b1']);
+    });
+
+    it('an absent filter selects the whole project (no sprint filtering)', () => {
+      expect(selectIds({})).toEqual(['a1', 'a2', 'b1', 'n1', 'n2']);
+    });
+
+    it('DISJOINT + COVER: the sprint set and the backlog set partition the project', () => {
+      const sprintA = new Set(selectIds({ sprintId: SPRINT_A }));
+      const backlog = new Set(selectIds({ hasSprint: false }));
+      const project = new Set(PROJECT_DOCS.map((d) => d.id));
+
+      // Disjoint: no task is in both a sprint and the backlog.
+      expect([...sprintA].filter((id) => backlog.has(id))).toEqual([]);
+
+      // Cover: together with the other sprint they account for every task.
+      const union = new Set([...sprintA, ...backlog, ...selectIds({ sprintId: SPRINT_B })]);
+
+      expect(union).toEqual(project);
+    });
+
+    it('builds `sprintId: null` for the backlog — an equality match, index-served', () => {
+      expect(lastSprintFilterOf({ hasSprint: false })).toBeNull();
+    });
+
+    it('builds `sprintId: { $ne: null }` for hasSprint=true', () => {
+      expect(lastSprintFilterOf({ hasSprint: true })).toEqual({ $ne: null });
+    });
+
+    it('builds the plain equality filter for a sprint uuid', () => {
+      expect(lastSprintFilterOf({ sprintId: SPRINT_A })).toBe(SPRINT_A);
+    });
+
+    it('sprintId wins over hasSprint when both reach the repository (schema rejects the pair first)', () => {
+      // Defence in depth: the Zod refine already 400s this combination, so the
+      // repository only has to stay deterministic.
+      expect(selectIds({ sprintId: SPRINT_A, hasSprint: false })).toEqual(['a1', 'a2']);
+    });
+
+    it('applies the sprint filter to the countDocuments query too (pagination total matches the data)', async () => {
+      const toArray = vi.fn().mockResolvedValue([makeDoc({ id: 'n1', sprintId: null })]);
+      const limit = vi.fn().mockReturnValue({ toArray });
+      const skip = vi.fn().mockReturnValue({ limit });
+      const sort = vi.fn().mockReturnValue({ skip });
+
+      collection.find.mockReturnValue({ sort });
+      collection.countDocuments.mockResolvedValue(2);
+
+      const result = await repo.findByProject('project-1', { hasSprint: false, limit: 1 });
+
+      expect(collection.countDocuments).toHaveBeenCalledWith(
+        { projectId: 'project-1', sprintId: null },
+        { maxTimeMS: QUERY_MAX_TIME_MS_LIST },
+      );
+      expect(result.pagination.total).toBe(2);
+    });
+
+    it('composes with other filters and the project scope', async () => {
+      const toArray = vi.fn().mockResolvedValue([]);
+      const limit = vi.fn().mockReturnValue({ toArray });
+      const skip = vi.fn().mockReturnValue({ limit });
+      const sort = vi.fn().mockReturnValue({ skip });
+
+      collection.find.mockReturnValue({ sort });
+      collection.countDocuments.mockResolvedValue(0);
+
+      await repo.findByProject('project-9', { hasSprint: false, statusId: 'status-1' });
+
+      expect(collection.find).toHaveBeenCalledWith(
+        { projectId: 'project-9', statusId: 'status-1', sprintId: null },
+        { maxTimeMS: QUERY_MAX_TIME_MS_LIST },
       );
     });
   });
@@ -237,13 +410,13 @@ describe('TaskRepository', () => {
       return { toArray, limit, sort };
     }
 
-    it('filters by assigneeId, sorts by updatedAt desc and applies the minimal projection', async () => {
+    it('filters by assigneeId AND the membership scope, sorts by updatedAt desc and applies the minimal projection', async () => {
       const { sort, limit } = chain([makeDoc()]);
 
-      await repo.findAssignedTo('user-9');
+      await repo.findAssignedTo('user-9', ['project-1', 'project-2']);
 
       expect(collection.find).toHaveBeenCalledWith(
-        { assigneeId: 'user-9' },
+        { assigneeId: 'user-9', projectId: { $in: ['project-1', 'project-2'] } },
         {
           projection: {
             id: 1,
@@ -254,10 +427,26 @@ describe('TaskRepository', () => {
             createdAt: 1,
             updatedAt: 1,
           },
+          maxTimeMS: QUERY_MAX_TIME_MS_LIST,
         },
       );
       expect(sort).toHaveBeenCalledWith({ updatedAt: -1 });
       expect(limit).toHaveBeenCalledWith(50);
+    });
+
+    it('D-17: an EMPTY membership scope matches nothing — a user id alone cannot reach a task', () => {
+      // The property, stated as a query: there is no call shape in which the
+      // assignee predicate stands alone. `$in: []` is MongoDB's "matches no
+      // document", so a caller with no readable tenant gets an empty page
+      // rather than every task ever assigned to them.
+      chain([]);
+
+      repo.findAssignedTo('user-9', []);
+
+      const [filter] = collection.find.mock.calls[0] as [Record<string, unknown>];
+
+      expect(filter).toHaveProperty('projectId');
+      expect(filter).toEqual({ assigneeId: 'user-9', projectId: { $in: [] } });
     });
 
     it('maps projected documents — fields outside the projection are simply absent', async () => {
@@ -273,7 +462,7 @@ describe('TaskRepository', () => {
 
       chain([projected]);
 
-      const result = await repo.findAssignedTo('user-9');
+      const result = await repo.findAssignedTo('user-9', ['project-1']);
 
       expect(result).toHaveLength(1);
 
@@ -289,7 +478,7 @@ describe('TaskRepository', () => {
     it('honours a custom limit', async () => {
       const { limit } = chain([]);
 
-      await repo.findAssignedTo('user-9', 10);
+      await repo.findAssignedTo('user-9', ['project-1'], 10);
 
       expect(limit).toHaveBeenCalledWith(10);
     });
@@ -423,6 +612,8 @@ describe('TaskRepository', () => {
 
     const BOARD_PROJECTION = {
       description: 0,
+      // The plain-text projection is excluded with the description.
+      descriptionText: 0,
       projectId: 0,
       reporterId: 0,
       reporterSnapshot: 0,
@@ -442,7 +633,7 @@ describe('TaskRepository', () => {
 
       expect(collection.find).toHaveBeenCalledWith(
         { projectId: 'project-1', statusId: { $in: ['status-1', 'status-2'] } },
-        { projection: BOARD_PROJECTION },
+        { projection: BOARD_PROJECTION, maxTimeMS: QUERY_MAX_TIME_MS_BOARD },
       );
       expect(sort).toHaveBeenCalledWith({ priorityLevel: -1, number: 1 });
       expect(limit).toHaveBeenCalledWith(51);
@@ -483,7 +674,7 @@ describe('TaskRepository', () => {
           statusId: { $in: ['status-1'] },
           $or: [{ priorityLevel: { $lt: 2 } }, { priorityLevel: 2, number: { $gt: 184 } }],
         },
-        { projection: BOARD_PROJECTION },
+        { projection: BOARD_PROJECTION, maxTimeMS: QUERY_MAX_TIME_MS_BOARD },
       );
     });
 
@@ -505,7 +696,7 @@ describe('TaskRepository', () => {
           assigneeId: 'user-2',
           priorityLevel: 3,
         },
-        { projection: BOARD_PROJECTION },
+        { projection: BOARD_PROJECTION, maxTimeMS: QUERY_MAX_TIME_MS_BOARD },
       );
     });
 

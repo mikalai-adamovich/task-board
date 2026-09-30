@@ -5,7 +5,7 @@ import { TranslocoPipe } from '@jsverse/transloco';
 import { provideIcons } from '@ng-icons/core';
 import { lucidePlus, lucideCalendar, lucideChevronRight, lucideChevronsUpDown, lucideInbox } from '@ng-icons/lucide';
 import { rxResource } from '@angular/core/rxjs-interop';
-import { map } from 'rxjs';
+import { map, of } from 'rxjs';
 import { SprintClient } from '@services/sprint-client';
 import { TaskClient } from '@services/task-client';
 import { isSprintOverdue } from '@app/shared/utils/sprint-utils';
@@ -27,6 +27,7 @@ import { HlmCollapsibleImports } from '@spartan-ng/helm/collapsible';
 import { HlmBadgeImports } from '@spartan-ng/helm/badge';
 import { NgIcon } from '@ng-icons/core';
 import { form, FormField, FormRoot, schema, required } from '@angular/forms/signals';
+import { FieldControl } from '@app/shared/field-control/field-control';
 import type { Sprint } from '@task-board/shared';
 import type { BrnDialogState } from '@spartan-ng/brain/dialog';
 import { injectToasts } from '@app/shared/utils/toast-utils';
@@ -50,6 +51,7 @@ interface SprintGroup {
 @Component({
   selector: 'ui-sprint-list',
   imports: [
+    FieldControl,
     HlmAlertImports,
     HlmEmptyImports,
     RouterLink,
@@ -74,32 +76,32 @@ interface SprintGroup {
 export class SprintList {
   /** Shared badge-class helper (see constants/priority.ts) */
   protected readonly statusBadgeVariant = statusBadgeVariant;
-  /** Visual-only overdue flag (DEC-029) */
+  /** Visual-only overdue flag */
   protected readonly isSprintOverdue = isSprintOverdue;
   private readonly notify = injectToasts();
   private readonly preferencesStore = inject(PreferencesStore);
-  /** R3-P8: DatePipe token derived from the user's date format preference */
+  /** DatePipe token derived from the user's date format preference */
   protected readonly dateFmt = this.preferencesStore.datePipeFormat;
-  /** P12 (item 28): active language passed as the DatePipe locale for localized month names */
+  /** Active language passed as the DatePipe locale for localized month names */
   protected readonly lang = this.preferencesStore.language;
   private readonly sprintClient = inject(SprintClient);
   private readonly taskClient = inject(TaskClient);
   private readonly authStore = inject(AuthStore);
   private readonly projectStore = inject(ProjectStore);
   private readonly tenantStore = inject(TenantStore);
-  /** F2: shared ProjectRefStore cache — sprints are shared with board/overview */
+  /** Shared ProjectRefStore cache — sprints are shared with board/overview */
   private readonly refStore = inject(ProjectRefStore);
-  /** Current tenant slug for building sprint-detail links (DEC-032) */
+  /** Current tenant slug for building sprint-detail links */
   protected readonly tenantSlug = computed(() => this.tenantStore.activeTenant()?.slug ?? '');
   /** Bound via withComponentInputBinding() — now receives project key from route */
   readonly projectKey = input<string>('');
   /** Resolved project UUID from the store */
-  protected readonly projectId = computed(() => this.projectStore.activeProject()?.id ?? '');
-  // F2: the sprint list comes from the shared ProjectRefStore cache
-  protected readonly sprints = computed(() => this.refStore.sprintEntities(this.projectId()));
+  private readonly projectId = computed(() => this.projectStore.activeProject()?.id ?? '');
+  // The sprint list comes from the shared ProjectRefStore cache
+  private readonly sprints = computed(() => this.refStore.sprintEntities(this.projectId()));
 
   constructor() {
-    // F2: kick off the sprint fetch EAGERLY (like the previous rxResource did)
+    // Kick off the sprint fetch EAGERLY (like the previous rxResource did)
     // so the first render already has data loading without waiting for the
     // first effect flush.
     const initialPid = this.projectId();
@@ -117,11 +119,22 @@ export class SprintList {
       this.refStore.ensure(pid, ['sprints']);
     });
   }
-  /** Number of unassigned (backlog) tasks — powers the Backlog group count (DEC-039) */
+  /**
+   * Number of unassigned (backlog) tasks — powers the Backlog group count.
+   * `hasSprint: false` is the server-side "no sprint" filter. Passing
+   * `sprintId: null` (the pre-F7 call) only meant "no sprint filtering", so the
+   * counter showed ALL project tasks instead of the backlog ones.
+   */
+  // No request while the project id is blank (the store resolves
+  // asynchronously) — it would hit `/projects//tasks`.
   private readonly backlogCountResource = rxResource<number, { projectId: string }>({
     params: () => ({ projectId: this.projectId() ?? '' }),
     stream: ({ params }) =>
-      this.taskClient.list(params.projectId, { sprintId: null, limit: 1 }).pipe(map((res) => res.pagination.total)),
+      params.projectId
+        ? this.taskClient
+            .list(params.projectId, { hasSprint: false, limit: 1 })
+            .pipe(map((res) => res.pagination.total))
+        : of(0),
     defaultValue: 0,
   });
   protected readonly backlogCount = computed(() =>
@@ -130,8 +143,8 @@ export class SprintList {
   protected readonly loading = computed(() => this.refStore.isLoading(this.projectId(), 'sprints'));
   private readonly actionError = signal('');
   protected readonly error = computed(() => this.actionError());
-  protected readonly showCreateModal = signal(false);
-  protected readonly expandedGroups = signal<Record<string, boolean>>({});
+  private readonly showCreateModal = signal(false);
+  private readonly expandedGroups = signal<Record<string, boolean>>({});
   private readonly model = signal<CreateSprintForm>({
     name: '',
     startDate: '',
@@ -157,7 +170,7 @@ export class SprintList {
             })
             .subscribe({
               next: (sprint) => {
-                // F2: patch the SHARED cache — board/overview see the new sprint
+                // Patch the SHARED cache — board/overview see the new sprint
                 // immediately without any extra GET.
                 this.refStore.upsertEntity(this.projectId(), 'sprints', sprint);
                 this.showCreateModal.set(false);

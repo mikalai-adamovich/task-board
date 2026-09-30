@@ -1,5 +1,5 @@
 /**
- * Tests for the ProjectSettingsGeneral page (DEC-035).
+ * Tests for the ProjectSettingsGeneral page.
  *
  * Covers:
  * - Form seeded from the project context store
@@ -83,7 +83,7 @@ async function setup(options: { tenantRole?: string; projectRole?: string } = {}
         useValue: {
           activeProject: activeProjectMock,
           projectRole: vi.fn().mockReturnValue(options.projectRole ?? null),
-          // F4: the save handler patches the shared tenant project-list cache
+          // The save handler patches the shared tenant project-list cache
           upsertProject: vi.fn(),
         },
       },

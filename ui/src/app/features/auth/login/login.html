@@ -1,8 +1,9 @@
-<!-- R3-P6: viewport minus the sticky app header (--header-height) so the page never scrolls -->
+<!-- Viewport minus the sticky app header (--header-height) so the page never scrolls -->
 <div class="flex min-h-[calc(100dvh-var(--header-height))] items-center justify-center bg-muted/50">
   <hlm-card class="w-full max-w-md">
     <hlm-card-header>
-      <h3 hlmCardTitle>{{ 'auth.login.title' | transloco }}</h3>
+      <!-- a11y: exactly one <h1> per page — the card title IS the page heading -->
+      <h1 hlmCardTitle>{{ 'auth.login.title' | transloco }}</h1>
       <p hlmCardDescription>{{ 'auth.login.description' | transloco }}</p>
     </hlm-card-header>
 
@@ -22,11 +23,12 @@
               id="email"
               type="email"
               [formField]="loginForm.email"
+              uiFieldControl
               autocomplete="email"
               placeholder="you&#64;example.com"
             />
             @if (loginForm.email().touched() && loginForm.email().errors().length) {
-              <p hlm-field-error>{{ loginForm.email().errors()[0]?.message | transloco }}</p>
+              <hlm-field-error class="block">{{ loginForm.email().errors()[0]?.message | transloco }}</hlm-field-error>
             }
           </hlm-field>
 
@@ -37,11 +39,14 @@
               id="password"
               type="password"
               [formField]="loginForm.password"
+              uiFieldControl
               autocomplete="current-password"
               placeholder="••••••••"
             />
             @if (loginForm.password().touched() && loginForm.password().errors().length) {
-              <p hlm-field-error>{{ loginForm.password().errors()[0]?.message | transloco }}</p>
+              <hlm-field-error class="block">{{
+                loginForm.password().errors()[0]?.message | transloco
+              }}</hlm-field-error>
             }
           </hlm-field>
         </hlm-field-group>
@@ -49,13 +54,11 @@
     </div>
 
     <hlm-card-footer class="flex-col gap-2">
-      <button
-        hlmBtn
-        type="submit"
-        form="login-form"
-        class="w-full"
-        [disabled]="loginForm().invalid() || loginForm().submitting()"
-      >
+      <!-- The button stays enabled while the form is invalid — `submit()` marks every
+           field touched, which is what makes the field-level errors (and their aria wiring)
+           become visible. Disabling on `invalid()` made an empty submit impossible, so the
+           user never saw any validation feedback. Only the in-flight state disables it. -->
+      <button hlmBtn type="submit" form="login-form" class="w-full" [disabled]="loginForm().submitting()">
         @if (loginForm().submitting()) {
           <hlm-spinner /> {{ 'auth.login.submitting' | transloco }}
         } @else {

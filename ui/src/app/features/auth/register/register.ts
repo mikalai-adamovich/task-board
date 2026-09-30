@@ -2,6 +2,7 @@ import { Component, inject, signal } from '@angular/core';
 import { Router, RouterLink } from '@angular/router';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { form, FormField, FormRoot, schema, required, email, minLength, maxLength } from '@angular/forms/signals';
+import { FieldControl } from '@app/shared/field-control/field-control';
 import { AuthStore } from '@stores/auth-store';
 import { HlmCardImports } from '@spartan-ng/helm/card';
 import { HlmFieldImports } from '@spartan-ng/helm/field';
@@ -20,6 +21,7 @@ interface RegisterModel {
 
 @Component({
   imports: [
+    FieldControl,
     HlmAlertImports,
     RouterLink,
     TranslocoPipe,
@@ -37,7 +39,7 @@ interface RegisterModel {
 export class Register {
   private readonly authStore = inject(AuthStore);
   private readonly router = inject(Router);
-  protected readonly error = signal('');
+  private readonly error = signal('');
   private readonly model = signal<RegisterModel>({
     displayName: '',
     email: '',

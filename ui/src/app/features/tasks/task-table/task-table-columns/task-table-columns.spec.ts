@@ -1,5 +1,5 @@
 /**
- * Tests for the TaskTableColumns sub-component (M-13 / 4.2):
+ * Tests for the TaskTableColumns sub-component:
  *
  * - Renders one checkbox row per column; pinned columns are disabled
  * - Emits `toggleColumn` / `toggleAll` from the chooser checkboxes

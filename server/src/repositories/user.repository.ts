@@ -2,6 +2,14 @@ import { randomUUID } from 'node:crypto';
 import type { Collection } from 'mongodb';
 import type { User } from '@task-board/shared';
 
+// guardrail:no-base-repository 2026-09-29 — two reasons. (1) `findById` and
+// `findByIds` here filter `deletedAt: null`; the base's do not, so inheriting
+// them would be a silent behaviour change on the one account lookup that must
+// never return a soft-deleted user. (2) The base hands out a hard `delete(id)`,
+// and hard-vs-soft delete is an open owner decision — a synchronous hard
+// delete must not arrive as a side effect of a refactor. See
+// `rules/guardrails.guardrail.test.ts` (P-03).
+
 // Required MongoDB indexes:
 // - { id: 1 } (unique)
 // - { email: 1 } (unique)
@@ -64,13 +72,30 @@ export class UserRepository {
     return docs.map(toDomain);
   }
 
-  /** Find a user by ID including soft-deleted users */
-  async findByIdIncludingDeleted(id: string): Promise<User | null> {
-    const doc = await this.collection.findOne({ id });
+  // `findByIdIncludingDeleted(id)` was removed as dead code. Nothing called
+  // it, and it bypasses the `deletedAt: null` filter that every other lookup on
+  // this repository applies — re-introducing it would silently undo the soft-delete
+  // contract. A deliberate "restore a deleted user" feature would need its own
+  // method name so the exception is visible at the call site.
 
-    return doc ? toDomain(doc) : null;
-  }
-
+  /**
+   * Find a user by email INCLUDING soft-deleted rows.
+   *
+   * This is NOT the soft-delete filter, and it is deliberately not. Every
+   * caller of this method is a UNIQUENESS check on a write path (register,
+   * invite an existing account, change an email address), and `users.email`
+   * carries a plain — not partial — unique index, so a soft-deleted row is one
+   * an insert with the same email WILL collide with. A check that filtered
+   * `deletedAt: null` would report the address as free and the write would then
+   * fail on E11000 with a duplicate-key error instead of the intended
+   * "already taken" answer. Whether a deleted account may re-register at all is
+   * an open owner decision (partial index on `users.email`), and until it is made
+   * the row must stay visible here.
+   *
+   * Authentication is the other question and is not a uniqueness check: it uses
+   * {@link findActiveByEmail}, which is the only method that may return a
+   * credential-bearing document for a login.
+   */
   async findByEmail(email: string): Promise<UserDocument | null> {
     return this.collection.findOne({ email: normalizeEmail(email) });
   }

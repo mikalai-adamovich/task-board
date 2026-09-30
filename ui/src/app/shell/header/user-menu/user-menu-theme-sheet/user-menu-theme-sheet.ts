@@ -25,9 +25,9 @@ const GRID_GAP_X = 24;
 })
 export class UserMenuThemeSheet {
   private readonly destroyRef = inject(DestroyRef);
-  protected readonly preferencesStore = inject(PreferencesStore);
-  protected readonly themeRegistry = inject(ThemeRegistry);
-  protected readonly notify = injectThemePickToasts();
+  private readonly preferencesStore = inject(PreferencesStore);
+  private readonly themeRegistry = inject(ThemeRegistry);
+  private readonly notify = injectThemePickToasts();
   protected readonly open = model<ExpandState>(ExpandState.Closed);
   /**
    * Initial focus target when the sheet opens: the radio of the ACTIVE mode in
@@ -47,11 +47,11 @@ export class UserMenuThemeSheet {
    * grid (to the mode switch or anywhere else) clears it, so exactly one
    * region (listbox highlight OR mode-switch pill) highlights at a time.
    */
-  protected readonly focusedTheme = signal<string | null>(null);
+  private readonly focusedTheme = signal<string | null>(null);
   /** Last highlighted theme id — used to restore the highlight when focus returns to the grid. */
   private lastHighlightedId: string | null = null;
   /** Mode-aware theme list: dark mode → dark themes only, light mode → light themes only, auto → all. */
-  protected readonly visibleThemes = computed(() => {
+  private readonly visibleThemes = computed(() => {
     const themes = this.themeRegistry.themes();
     const mode = this.preferencesStore.themeMode();
 
@@ -61,9 +61,9 @@ export class UserMenuThemeSheet {
     return themes;
   });
   /** Theme chosen for light mode (null → default light theme). */
-  protected readonly selectedLightTheme = computed(() => this.preferencesStore.lightTheme() ?? DEFAULT_THEME_ID);
+  private readonly selectedLightTheme = computed(() => this.preferencesStore.lightTheme() ?? DEFAULT_THEME_ID);
   /** Theme chosen for dark mode (null → default dark theme). */
-  protected readonly selectedDarkTheme = computed(() => this.preferencesStore.darkTheme() ?? 'dark');
+  private readonly selectedDarkTheme = computed(() => this.preferencesStore.darkTheme() ?? 'dark');
 
   /**
    * Whether the theme is one of the two per-mode selections — marked with a
@@ -96,7 +96,7 @@ export class UserMenuThemeSheet {
     this.destroyRef.onDestroy(() => this.preferencesStore.commitTheme());
   }
 
-  protected selectTheme(themeId: string): void {
+  private selectTheme(themeId: string): void {
     if (themeId !== this.preferencesStore.selectedTheme()) {
       const mode = this.themeRegistry.findById(themeId)?.mode ?? 'light';
 
@@ -228,7 +228,7 @@ export class UserMenuThemeSheet {
    * active mode (Up from the listbox top row). The highlight is cleared —
    * the last highlighted id stays remembered for the return trip.
    */
-  protected focusModeSwitch(): void {
+  private focusModeSwitch(): void {
     this.setHighlight(null);
     this.modeSwitch()?.focusActive();
   }

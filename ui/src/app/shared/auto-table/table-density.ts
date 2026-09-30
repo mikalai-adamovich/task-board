@@ -1,7 +1,7 @@
 import { signal } from '@angular/core';
 
 /**
- * Q9 (RQ-04 ⑤): table density preference.
+ * Table density preference.
  *
  * Device-local setting (localStorage key `task-board.table-density`) — deliberately
  * NOT part of the server-persisted `PreferencesStore`, which has no generic

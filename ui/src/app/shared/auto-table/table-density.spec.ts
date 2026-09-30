@@ -1,5 +1,5 @@
 /**
- * Tests for the Q9 (RQ-04 ⑤) table-density preference helpers.
+ * Tests for the Q9 table-density preference helpers.
  *
  * Covers:
  * - read/write roundtrip against a storage stub (default = comfortable)

@@ -12,7 +12,7 @@ import {
 } from '@ng-icons/lucide';
 import { TenantStore } from '@stores/tenant-store';
 import { AuthStore } from '@stores/auth-store';
-import { TenantRole, TenantStatus } from '@task-board/shared';
+import { TenantRole, TenantStatus, TENANT_DESCRIPTION_MAX_LENGTH, TENANT_NAME_MAX_LENGTH } from '@task-board/shared';
 import { statusBadgeVariant } from '@app/constants/priority';
 import { HlmButtonImports } from '@spartan-ng/helm/button';
 import { HlmCardImports } from '@spartan-ng/helm/card';
@@ -22,6 +22,7 @@ import { HlmSpinnerImports } from '@spartan-ng/helm/spinner';
 import { HlmDialogImports } from '@spartan-ng/helm/dialog';
 import { HlmBadgeImports } from '@spartan-ng/helm/badge';
 import { form, FormField, FormRoot, schema, required, maxLength } from '@angular/forms/signals';
+import { FieldControl } from '@app/shared/field-control/field-control';
 import type { BrnDialogState } from '@spartan-ng/brain/dialog';
 import { injectToasts } from '@app/shared/utils/toast-utils';
 import { getErrorMessage } from '@app/shared/utils/error-utils';
@@ -31,6 +32,7 @@ import { HlmAlertImports } from '@spartan-ng/helm/alert';
 @Component({
   selector: 'ui-tenant-settings',
   imports: [
+    FieldControl,
     HlmAlertImports,
     TranslocoPipe,
     NgIcon,
@@ -63,22 +65,24 @@ export class TenantSettings implements OnInit {
   private readonly tenantStore = inject(TenantStore);
   private readonly authStore = inject(AuthStore);
   private readonly router = inject(Router);
-  protected readonly loading = signal(true);
-  protected readonly error = signal('');
-  protected readonly showDeleteDialog = signal(false);
-  protected readonly deleteConfirmName = signal('');
+  private readonly loading = signal(true);
+  private readonly error = signal('');
+  private readonly showDeleteDialog = signal(false);
+  private readonly deleteConfirmName = signal('');
   protected readonly TenantStatus = TenantStatus;
   /** Current tenant name, used for delete confirmation comparison */
   protected readonly currentTenantName = computed(() => this.tenantStore.activeTenant()?.name ?? '');
   protected readonly currentStatus = computed(() => this.tenantStore.activeTenant()?.status ?? TenantStatus.ACTIVE);
   private readonly tenantId = computed(() => this.tenantStore.activeTenant()?.id ?? null);
   protected readonly canEdit = computed(() => hasMinTenantRole(this.authStore.tenantRole(), TenantRole.ADMIN));
-  protected readonly model = signal<{ name: string; description: string }>({ name: '', description: '' });
+  private readonly model = signal<{ name: string; description: string }>({ name: '', description: '' });
   protected readonly settingsForm = form(
     this.model,
     schema<{ name: string; description: string }>((field) => {
       required(field.name, { message: 'validation.nameRequired' });
-      maxLength(field.description, 120, { message: 'validation.descriptionMax' });
+      // The server's bound, not a hand-typed twin of it.
+      maxLength(field.name, TENANT_NAME_MAX_LENGTH, { message: 'validation.nameMax' });
+      maxLength(field.description, TENANT_DESCRIPTION_MAX_LENGTH, { message: 'validation.descriptionMax' });
     }),
     {
       submission: {

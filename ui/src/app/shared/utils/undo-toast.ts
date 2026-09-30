@@ -15,7 +15,7 @@ export const UNDO_TOAST_DURATION_MS = 11000;
 
 /**
  * Toast helpers bound to the caller's `TranslocoService`, extended with an
- * "Undo" action toast for destructive operations (Q11 / RQ-04 ④).
+ * "Undo" action toast for destructive operations.
  *
  * Must be called within an injection context (e.g. a component field initializer):
  *

@@ -1,0 +1,97 @@
+# Dependency update automation.
+#
+# Uses only GitHub's built-in Dependabot — it needs no repository secrets, no deploy
+# keys and no external token. PRs it opens run under the repository's normal CI, which
+# after this change carries an explicit `contents: read` permissions block.
+#
+# Grouping: patch/minor bumps for the same ecosystem are combined into one PR to keep
+# the queue reviewable, while majors stay separate because they are the ones that can
+# break the build (e.g. @angular/build, which AGENTS.md pins deliberately).
+version: 2
+
+updates:
+  # Root workspace (eslint, prettier, husky, lint-staged, commitlint, typescript-eslint)
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      root-patch:
+        update-types:
+          - patch
+        patterns:
+          - '*'
+      root-minor:
+        update-types:
+          - minor
+        patterns:
+          - '*'
+
+  - package-ecosystem: npm
+    directory: /ui
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      ui-patch:
+        update-types:
+          - patch
+        patterns:
+          - '*'
+      ui-minor:
+        update-types:
+          - minor
+        patterns:
+          - '*'
+
+  - package-ecosystem: npm
+    directory: /server
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      server-patch:
+        update-types:
+          - patch
+        patterns:
+          - '*'
+      server-minor:
+        update-types:
+          - minor
+        patterns:
+          - '*'
+
+  - package-ecosystem: npm
+    directory: /shared
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      shared-patch:
+        update-types:
+          - patch
+        patterns:
+          - '*'
+      shared-minor:
+        update-types:
+          - minor
+        patterns:
+          - '*'
+
+  # Keeps actions/checkout and actions/setup-node pinned to verified SHAs up to date.
+  # Dependabot rewrites the SHA and updates the `# vX.Y.Z` comment together, so the
+  # pins stay auditable without anyone hand-editing them.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns:
+          - '*'

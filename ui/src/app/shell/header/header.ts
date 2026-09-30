@@ -19,7 +19,7 @@ import { HeaderBranding } from './header-branding/header-branding';
 export class Header {
   /** DEC-052a: below md the Spartan sidebar renders as an offcanvas sheet —
    *  this hamburger toggles its openMobile state (no-op on desktop). */
-  protected readonly sidebarService = inject(HlmSidebarService);
+  private readonly sidebarService = inject(HlmSidebarService);
 
   protected openMobileSidebar(): void {
     this.sidebarService.setOpenMobile(true);

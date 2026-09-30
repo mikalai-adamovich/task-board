@@ -106,7 +106,7 @@ describe('SprintDetail', () => {
   const refStoreMock = {
     ensure: vi.fn(),
     invalidate: vi.fn(),
-    // F2: full-DTO layer — the disposition dialog's "Move to…" targets
+    // Full-DTO layer — the disposition dialog's "Move to…" targets
     sprintEntities: vi.fn(() => []),
     statusEntities: vi.fn(() => []),
     upsertEntity: vi.fn(),
@@ -282,7 +282,7 @@ describe('SprintDetail', () => {
     });
   });
 
-  // ── Overdue indicator (DEC-029) ─────────────────────────
+  // ── Overdue indicator ───────────────────────────────────
 
   describe('overdue indicator', () => {
     beforeEach(() => setup());
@@ -472,7 +472,7 @@ describe('SprintDetail', () => {
     });
   });
 
-  // ── V8: dedicated start/end date edit dialog ─────────────────
+  // ── Dedicated start/end date edit dialog ─────────────────────
 
   describe('date edit dialog (V8)', () => {
     beforeEach(() => setup());

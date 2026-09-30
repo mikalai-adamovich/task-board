@@ -1,6 +1,6 @@
 <div class="mx-auto max-w-6xl">
   <div class="mb-6 flex items-center justify-between">
-    <h2 class="text-2xl font-bold text-foreground">{{ 'taskTypeManager.title' | transloco }}</h2>
+    <h1 class="text-2xl font-bold text-foreground">{{ 'taskTypeManager.title' | transloco }}</h1>
     @if (canManage()) {
       <button hlmBtn (click)="showCreateDialog.set(true)">
         <ng-icon name="lucidePlus" class="mr-1" />
@@ -149,29 +149,48 @@
             id="task-type-key"
             type="text"
             [formField]="createForm.key"
+            uiFieldControl
             placeholder="BUG"
             class="uppercase"
           />
+          @if (createForm.key().touched() && createForm.key().errors().length) {
+            <hlm-field-error class="block">{{ createForm.key().errors()[0]?.message | transloco }}</hlm-field-error>
+          }
           <p class="text-xs text-muted-foreground">{{ 'taskTypeManager.keyHint' | transloco }}</p>
         </hlm-field>
         <hlm-field>
           <label hlmFieldLabel for="task-type-name">{{ 'taskTypeManager.name' | transloco }}</label>
-          <input hlmInput id="task-type-name" type="text" [formField]="createForm.name" placeholder="Bug" />
+          <input
+            hlmInput
+            id="task-type-name"
+            type="text"
+            [formField]="createForm.name"
+            uiFieldControl
+            placeholder="Bug"
+          />
+          @if (createForm.name().touched() && createForm.name().errors().length) {
+            <hlm-field-error class="block">{{ createForm.name().errors()[0]?.message | transloco }}</hlm-field-error>
+          }
         </hlm-field>
         <hlm-field>
           <label hlmFieldLabel for="task-type-icon">{{ 'taskTypeManager.icon' | transloco }}</label>
-          <input hlmInput id="task-type-icon" type="text" [formField]="createForm.icon" placeholder="🐛" />
+          <input
+            hlmInput
+            id="task-type-icon"
+            type="text"
+            [formField]="createForm.icon"
+            uiFieldControl
+            placeholder="🐛"
+          />
+          @if (createForm.icon().touched() && createForm.icon().errors().length) {
+            <hlm-field-error class="block">{{ createForm.icon().errors()[0]?.message | transloco }}</hlm-field-error>
+          }
           <p class="text-xs text-muted-foreground">{{ 'taskTypeManager.iconHint' | transloco }}</p>
         </hlm-field>
       </form>
       <hlm-dialog-footer>
         <button hlmBtn variant="outline" hlmDialogClose>{{ 'taskTypeManager.cancel' | transloco }}</button>
-        <button
-          hlmBtn
-          type="submit"
-          form="create-task-type-form"
-          [disabled]="createForm().invalid() || createForm().submitting()"
-        >
+        <button hlmBtn type="submit" form="create-task-type-form" [disabled]="createForm().submitting()">
           @if (createForm().submitting()) {
             <hlm-spinner /> {{ 'taskTypeManager.creating' | transloco }}
           } @else {

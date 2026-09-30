@@ -1,7 +1,7 @@
 import { numberAttribute } from '@angular/core';
 
 /**
- * N-14 (4.3): strict numeric query-param transform — `numberAttribute` yields
+ * Strict numeric query-param transform — `numberAttribute` yields
  * `NaN` for empty/garbage values which previously leaked into the URL as
  * `?limit=NaN`. Non-finite or non-positive values fall back to 0 so callers
  * apply their own defaults.

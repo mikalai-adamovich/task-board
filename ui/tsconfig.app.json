@@ -9,7 +9,6 @@
     "useDefineForClassFields": false,
     "lib": ["ES2022", "dom"],
     "paths": {
-      "@task-board/shared": ["../../shared/src/index.ts"],
       "@services/*": ["./src/app/services/*"],
       "@stores/*": ["./src/app/stores/*"],
       "@guards/*": ["./src/app/guards/*"],

@@ -37,10 +37,31 @@ function createMockTenantMemberRepo() {
   };
 }
 
+/**
+ * The project cascade the workspace purge drives. A one-method
+ * fake on purpose — the interface is one method wide, so a spec cannot reach
+ * anything else through it.
+ */
+function createMockProjectPurge() {
+  return { purgeProjectData: vi.fn().mockResolvedValue(undefined) };
+}
+
 function createMockProjectMemberRepo() {
   return {
     deleteByUserId: vi.fn().mockResolvedValue(undefined),
   };
+}
+
+/** The tenant → project archive/restore cascade target. */
+function createMockProjectRepo() {
+  return {
+    findByTenant: vi.fn().mockResolvedValue([]),
+    update: vi.fn(),
+  };
+}
+
+function createMockAuditService() {
+  return { log: vi.fn().mockResolvedValue(undefined), logMany: vi.fn() };
 }
 
 function createMockUserRepo() {
@@ -76,6 +97,9 @@ function makeMember(overrides: Record<string, unknown> = {}) {
     tenantId: 'tenant-1',
     role: 'OWNER',
     status: 'ACTIVE',
+    // The real repository always maps `expiresAt` — mirrored here so
+    // `isMembershipExpired` sees the production shape.
+    expiresAt: null,
     invitation: null,
     displayName: null,
     email: null,
@@ -99,6 +123,10 @@ describe('TenantService', () => {
   let memberRepo: ReturnType<typeof createMockTenantMemberRepo>;
   let userRepo: ReturnType<typeof createMockUserRepo>;
   let emailService: ReturnType<typeof createMockEmailService>;
+  let projectRepo: ReturnType<typeof createMockProjectRepo>;
+  let projectPurge: ReturnType<typeof createMockProjectPurge>;
+  let projectMemberRepo: ReturnType<typeof createMockProjectMemberRepo>;
+  let auditService: ReturnType<typeof createMockAuditService>;
   let service: TenantService;
   let memberService: TenantMemberService;
 
@@ -107,12 +135,27 @@ describe('TenantService', () => {
     memberRepo = createMockTenantMemberRepo();
     userRepo = createMockUserRepo();
     emailService = createMockEmailService();
-    service = new TenantService(tenantRepo as never, memberRepo as never, userRepo as never);
+    projectRepo = createMockProjectRepo();
+    projectPurge = createMockProjectPurge();
+    projectMemberRepo = createMockProjectMemberRepo();
+    auditService = createMockAuditService();
+    // `projectRepo` / `auditService` are required deps — every spec
+    // supplies real fakes so no tenant cascade or audit write can be skipped.
+    service = new TenantService(
+      tenantRepo as never,
+      memberRepo as never,
+      userRepo as never,
+      projectRepo,
+      auditService as never,
+      projectMemberRepo,
+      projectPurge,
+    );
     memberService = new TenantMemberService(
       tenantRepo as never,
       memberRepo as never,
       userRepo as never,
       emailService as never,
+      auditService as never,
     );
   });
 
@@ -202,7 +245,7 @@ describe('TenantService', () => {
     });
   });
 
-  // ── isSlugAvailable (DEC-032) ─────────────────────────────────────────────
+  // ── isSlugAvailable ───────────────────────────────────────────────────────
 
   describe('isSlugAvailable', () => {
     it('returns true for a free, valid slug', async () => {
@@ -224,24 +267,8 @@ describe('TenantService', () => {
     });
   });
 
-  // ── listTenantsForUser ──────────────────────────────────────────────────
-
-  describe('listTenantsForUser', () => {
-    it('returns all tenants the user is an active member of', async () => {
-      memberRepo.findByUser.mockResolvedValue([
-        makeMember({ tenantId: 't1', status: 'ACTIVE' }),
-        makeMember({ tenantId: 't2', role: 'MEMBER', status: 'ACTIVE' }),
-      ]);
-      tenantRepo.findByIds.mockResolvedValue([
-        makeTenant({ id: 't1', name: 'Tenant 1' }),
-        makeTenant({ id: 't2', name: 'Tenant 2' }),
-      ]);
-
-      const result = await service.listTenantsForUser('user-1');
-
-      expect(result).toHaveLength(2);
-    });
-  });
+  // The `listTenantsForUser` block moved with the method — it was dead code
+  // (the workspace switcher resolves memberships through `listTenantsWithRole`).
 
   // ── listTenantsWithRole ─────────────────────────────────────────────────
 
@@ -352,6 +379,25 @@ describe('TenantService', () => {
       expect(tenantRepo.update).toHaveBeenCalledWith('tenant-1', { status: 'ARCHIVED' });
     });
 
+    // This cascade never ran while `projectRepo` was `undefined`.
+    it('cascades ARCHIVED/TENANT_ARCHIVE to non-archived projects only', async () => {
+      memberRepo.findByUserAndTenant.mockResolvedValue(makeMember({ role: 'OWNER' }));
+      tenantRepo.findById.mockResolvedValue(makeTenant());
+      projectRepo.findByTenant.mockResolvedValue([
+        { id: 'proj-1', status: 'ACTIVE', archiveReason: null },
+        { id: 'proj-2', status: 'ARCHIVED', archiveReason: 'PROJECT_ARCHIVE' },
+      ]);
+
+      await service.archiveTenant('user-1', 'tenant-1');
+
+      expect(projectRepo.findByTenant).toHaveBeenCalledWith('tenant-1');
+      expect(projectRepo.update).toHaveBeenCalledTimes(1);
+      expect(projectRepo.update).toHaveBeenCalledWith('proj-1', {
+        status: 'ARCHIVED',
+        archiveReason: 'TENANT_ARCHIVE',
+      });
+    });
+
     it('throws for already archived tenant', async () => {
       memberRepo.findByUserAndTenant.mockResolvedValue(makeMember({ role: 'OWNER' }));
       tenantRepo.findById.mockResolvedValue(makeTenant({ status: 'ARCHIVED' }));
@@ -372,6 +418,47 @@ describe('TenantService', () => {
         status: 'ACTIVE',
         deletionScheduledAt: null,
       });
+    });
+
+    // This cascade never ran while `projectRepo` was `undefined`.
+    it('restores only projects archived by TENANT_ARCHIVE', async () => {
+      memberRepo.findByUserAndTenant.mockResolvedValue(makeMember({ role: 'OWNER' }));
+      projectRepo.findByTenant.mockResolvedValue([
+        { id: 'proj-1', status: 'ARCHIVED', archiveReason: 'TENANT_ARCHIVE' },
+        { id: 'proj-2', status: 'ARCHIVED', archiveReason: 'PROJECT_ARCHIVE' },
+        { id: 'proj-3', status: 'ACTIVE', archiveReason: null },
+      ]);
+
+      await service.restoreTenant('user-1', 'tenant-1');
+
+      expect(projectRepo.update).toHaveBeenCalledTimes(1);
+      expect(projectRepo.update).toHaveBeenCalledWith('proj-1', { status: 'ACTIVE', archiveReason: null });
+    });
+  });
+
+  // ── Tenant audit event (the restored audit service) ───────────────────────
+
+  describe('tenant audit', () => {
+    it('writes a CREATED event on createTenant', async () => {
+      tenantRepo.create.mockResolvedValue(makeTenant());
+      memberRepo.create.mockResolvedValue(makeMember());
+
+      await service.createTenant('user-1', { name: 'Test Workspace' });
+
+      // A tenant creation is a TENANT event, and the creator's OWN
+      // membership is a MEMBERSHIP event — the two are the whole story of who
+      // can see the workspace from the moment it exists.
+      expect(auditService.log).toHaveBeenCalledWith({
+        tenantId: 'tenant-1',
+        projectId: null,
+        entityType: 'TENANT',
+        entityId: 'tenant-1',
+        action: 'CREATED',
+        actorId: 'user-1',
+      });
+      expect(auditService.log).toHaveBeenCalledWith(
+        expect.objectContaining({ entityType: 'MEMBERSHIP', action: 'CREATED', actorId: 'user-1' }),
+      );
     });
   });
 
@@ -404,7 +491,7 @@ describe('TenantService', () => {
       const result = await memberService.inviteUser('user-1', 'tenant-1', 'invited@example.com', 'MEMBER');
 
       expect(result.invitation).toBeDefined();
-      // DEC-018: invited membership persists as ACCESS_REVOKED until accepted
+      // Invited membership persists as ACCESS_REVOKED until accepted
       expect(memberRepo.create).toHaveBeenCalledWith(
         expect.objectContaining({
           userId: 'user-2',
@@ -551,23 +638,17 @@ describe('TenantService', () => {
     });
   });
 
-  // ── deleteUser (DEC-019) ─────────────────────────────────────────────────
-
+  // ── deleteUser ───────────────────────────────────────────────────────────
   describe('deleteUser', () => {
-    let projectMemberRepo: ReturnType<typeof createMockProjectMemberRepo>;
-
-    beforeEach(() => {
-      projectMemberRepo = createMockProjectMemberRepo();
-    });
-
     function makeDeletableUserService() {
       return new TenantService(
         tenantRepo as never,
         memberRepo as never,
         userRepo as never,
-        undefined,
-        undefined,
-        projectMemberRepo as never,
+        projectRepo,
+        auditService as never,
+        projectMemberRepo,
+        projectPurge,
       );
     }
 
@@ -629,6 +710,177 @@ describe('TenantService', () => {
       userRepo.findById.mockResolvedValue(null);
 
       await expect(makeDeletableUserService().deleteUser('user-1', 'missing')).rejects.toThrow('User not found');
+    });
+  });
+
+  // ── deleteUser: last-OWNER invariant ─────────────────────────────────────
+  //
+  // `deleteUser` removes ALL of the target's memberships in one sweep, so it
+  // must apply the same last-owner invariant the self-revoke path added: a tenant must
+  // keep at least one ACTIVE (non-expired, DEC-055) owner. Without it, an ADMIN
+  // of tenant A could delete a user who is the sole OWNER of unrelated tenant B
+  // and permanently brick B. The check runs BEFORE any write, so a refusal is
+  // atomic — nothing is partially applied.
+  describe('deleteUser — last-OWNER invariant (F7)', () => {
+    const PAST = '2020-01-01T00:00:00.000Z';
+
+    function makeService() {
+      return new TenantService(
+        tenantRepo as never,
+        memberRepo as never,
+        userRepo as never,
+        projectRepo,
+        auditService as never,
+        projectMemberRepo,
+        projectPurge,
+      );
+    }
+
+    /**
+     * Target `user-2` is a member of tenant-1 (requester user-1 is its OWNER,
+     * so the deletion is authorized) and an OWNER of the other tenants given.
+     */
+    function seedOwnerOf(extraMemberships: ReturnType<typeof makeMember>[]) {
+      userRepo.findById.mockResolvedValue({ id: 'user-2', displayName: 'Bob' });
+      memberRepo.findByUser.mockResolvedValue([
+        makeMember({ userId: 'user-2', tenantId: 'tenant-1', role: 'MEMBER' }),
+        ...extraMemberships,
+      ]);
+      memberRepo.findByUserAndTenant.mockResolvedValue(makeMember({ userId: 'user-1', role: 'OWNER' }));
+    }
+
+    it('refuses to delete a user who is the LAST active owner of a tenant', async () => {
+      seedOwnerOf([makeMember({ id: 'member-9', userId: 'user-2', tenantId: 'tenant-9', role: 'OWNER' })]);
+      memberRepo.findByTenant.mockResolvedValue([
+        makeMember({ id: 'member-9', userId: 'user-2', tenantId: 'tenant-9', role: 'OWNER' }),
+      ]);
+      tenantRepo.findById.mockResolvedValue(makeTenant({ id: 'tenant-9', name: 'Other Workspace' }));
+
+      await expect(makeService().deleteUser('user-1', 'user-2')).rejects.toMatchObject({
+        statusCode: 409,
+        code: 'CONFLICT',
+      });
+      await expect(makeService().deleteUser('user-1', 'user-2')).rejects.toThrow(
+        'last active owner of the workspace "Other Workspace"',
+      );
+    });
+
+    it('is ATOMIC: nothing is written when the invariant refuses (no partial removal)', async () => {
+      seedOwnerOf([makeMember({ id: 'member-9', userId: 'user-2', tenantId: 'tenant-9', role: 'OWNER' })]);
+      memberRepo.findByTenant.mockResolvedValue([
+        makeMember({ id: 'member-9', userId: 'user-2', tenantId: 'tenant-9', role: 'OWNER' }),
+      ]);
+      tenantRepo.findById.mockResolvedValue(makeTenant({ id: 'tenant-9', name: 'Other Workspace' }));
+
+      await expect(makeService().deleteUser('user-1', 'user-2')).rejects.toThrow();
+
+      expect(userRepo.softDelete).not.toHaveBeenCalled();
+      expect(memberRepo.deleteByUserId).not.toHaveBeenCalled();
+      expect(projectMemberRepo.deleteByUserId).not.toHaveBeenCalled();
+    });
+
+    it('allows deleting a user who is ONE OF SEVERAL active owners', async () => {
+      seedOwnerOf([makeMember({ id: 'member-9', userId: 'user-2', tenantId: 'tenant-9', role: 'OWNER' })]);
+      memberRepo.findByTenant.mockResolvedValue([
+        makeMember({ id: 'member-9', userId: 'user-2', tenantId: 'tenant-9', role: 'OWNER' }),
+        makeMember({ id: 'member-8', userId: 'user-3', tenantId: 'tenant-9', role: 'OWNER' }),
+      ]);
+
+      await makeService().deleteUser('user-1', 'user-2');
+
+      expect(userRepo.softDelete).toHaveBeenCalledWith('user-2');
+      expect(memberRepo.deleteByUserId).toHaveBeenCalledWith('user-2');
+      expect(projectMemberRepo.deleteByUserId).toHaveBeenCalledWith('user-2');
+    });
+
+    it('allows deleting a user with NO owner role anywhere (the invariant never engages)', async () => {
+      seedOwnerOf([
+        makeMember({ id: 'member-9', userId: 'user-2', tenantId: 'tenant-9', role: 'ADMIN' }),
+        makeMember({ id: 'member-10', userId: 'user-2', tenantId: 'tenant-10', role: 'MEMBER' }),
+      ]);
+      // Never consulted: the loop skips every non-OWNER membership.
+      memberRepo.findByTenant.mockResolvedValue([]);
+
+      await makeService().deleteUser('user-1', 'user-2');
+
+      expect(memberRepo.findByTenant).not.toHaveBeenCalled();
+      expect(userRepo.softDelete).toHaveBeenCalledWith('user-2');
+    });
+
+    it('an EXPIRED second owner does not count as remaining (DEC-055) → still refused', async () => {
+      seedOwnerOf([makeMember({ id: 'member-9', userId: 'user-2', tenantId: 'tenant-9', role: 'OWNER' })]);
+      memberRepo.findByTenant.mockResolvedValue([
+        makeMember({ id: 'member-9', userId: 'user-2', tenantId: 'tenant-9', role: 'OWNER' }),
+        makeMember({ id: 'member-8', userId: 'user-3', tenantId: 'tenant-9', role: 'OWNER', expiresAt: PAST }),
+      ]);
+      tenantRepo.findById.mockResolvedValue(makeTenant({ id: 'tenant-9', name: 'Other Workspace' }));
+
+      await expect(makeService().deleteUser('user-1', 'user-2')).rejects.toMatchObject({ statusCode: 409 });
+      expect(userRepo.softDelete).not.toHaveBeenCalled();
+    });
+
+    it('a non-ACTIVE (ACCESS_REVOKED) second owner does not count → still refused', async () => {
+      seedOwnerOf([makeMember({ id: 'member-9', userId: 'user-2', tenantId: 'tenant-9', role: 'OWNER' })]);
+      memberRepo.findByTenant.mockResolvedValue([
+        makeMember({ id: 'member-9', userId: 'user-2', tenantId: 'tenant-9', role: 'OWNER' }),
+        makeMember({ id: 'member-8', userId: 'user-3', tenantId: 'tenant-9', role: 'OWNER', status: 'ACCESS_REVOKED' }),
+      ]);
+      tenantRepo.findById.mockResolvedValue(makeTenant({ id: 'tenant-9', name: 'Other Workspace' }));
+
+      await expect(makeService().deleteUser('user-1', 'user-2')).rejects.toMatchObject({ statusCode: 409 });
+      expect(userRepo.softDelete).not.toHaveBeenCalled();
+    });
+
+    it('refuses when ANY of several owner-tenants is short an owner, and names that one', async () => {
+      seedOwnerOf([
+        makeMember({ id: 'member-9', userId: 'user-2', tenantId: 'tenant-9', role: 'OWNER' }),
+        makeMember({ id: 'member-11', userId: 'user-2', tenantId: 'tenant-11', role: 'OWNER' }),
+      ]);
+      // tenant-9 has a second owner (fine); tenant-11 does not (refused).
+      memberRepo.findByTenant.mockImplementation((tenantId: string) =>
+        Promise.resolve(
+          tenantId === 'tenant-9'
+            ? [
+                makeMember({ id: 'member-9', userId: 'user-2', tenantId: 'tenant-9', role: 'OWNER' }),
+                makeMember({ id: 'member-8', userId: 'user-3', tenantId: 'tenant-9', role: 'OWNER' }),
+              ]
+            : [makeMember({ id: 'member-11', userId: 'user-2', tenantId: 'tenant-11', role: 'OWNER' })],
+        ),
+      );
+      tenantRepo.findById.mockResolvedValue(makeTenant({ id: 'tenant-11', name: 'Bricked Workspace' }));
+
+      await expect(makeService().deleteUser('user-1', 'user-2')).rejects.toThrow(
+        'last active owner of the workspace "Bricked Workspace"',
+      );
+      // Atomic: the perfectly-fine tenant-9 membership was NOT removed either.
+      expect(memberRepo.deleteByUserId).not.toHaveBeenCalled();
+      expect(projectMemberRepo.deleteByUserId).not.toHaveBeenCalled();
+    });
+
+    it('falls back to the tenant id in the message when the tenant document cannot be read', async () => {
+      seedOwnerOf([makeMember({ id: 'member-9', userId: 'user-2', tenantId: 'tenant-9', role: 'OWNER' })]);
+      memberRepo.findByTenant.mockResolvedValue([
+        makeMember({ id: 'member-9', userId: 'user-2', tenantId: 'tenant-9', role: 'OWNER' }),
+      ]);
+      tenantRepo.findById.mockResolvedValue(null);
+
+      await expect(makeService().deleteUser('user-1', 'user-2')).rejects.toThrow(
+        'last active owner of the workspace tenant-9',
+      );
+    });
+
+    it('the authorization check still runs FIRST (unauthorized requester never reaches the invariant)', async () => {
+      userRepo.findById.mockResolvedValue({ id: 'user-2', displayName: 'Bob' });
+      memberRepo.findByUser.mockResolvedValue([
+        makeMember({ id: 'member-9', userId: 'user-2', tenantId: 'tenant-9', role: 'OWNER' }),
+      ]);
+      memberRepo.findByUserAndTenant.mockResolvedValue(null); // requester is not a member
+
+      await expect(makeService().deleteUser('user-1', 'user-2')).rejects.toThrow(
+        'Only an owner or admin of the same tenant',
+      );
+      expect(memberRepo.findByTenant).not.toHaveBeenCalled();
+      expect(userRepo.softDelete).not.toHaveBeenCalled();
     });
   });
 });

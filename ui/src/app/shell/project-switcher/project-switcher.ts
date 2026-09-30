@@ -17,7 +17,7 @@ import { hasMinTenantRole } from '@app/shared/utils/role-utils';
 import { KeyboardShortcuts } from '../../shared/keyboard-shortcuts/keyboard-shortcuts';
 
 /**
- * Sidebar project switcher — heads the project group (F-10 / D-47).
+ * Sidebar project switcher — heads the project group.
  * Styled 1:1 on the tenant switcher (outline lg w-full trigger, chevron,
  * active checkmark). In collapsed-icon mode renders as an icon button with
  * a tooltip. Selecting a project navigates to `/w/:slug/projects/:key`.
@@ -29,22 +29,22 @@ import { KeyboardShortcuts } from '../../shared/keyboard-shortcuts/keyboard-shor
   templateUrl: './project-switcher.html',
 })
 export class ProjectSwitcher {
-  protected readonly tenantStore = inject(TenantStore);
+  private readonly tenantStore = inject(TenantStore);
   private readonly authStore = inject(AuthStore);
   private readonly sidebarService = inject(HlmSidebarService);
   private readonly projectStore = inject(ProjectStore);
   private readonly router = inject(Router);
-  /** P13 (item 31b): `p` hotkey coordination — see the effect below. */
+  /** `p` hotkey coordination — see the effect below. */
   private readonly shortcuts = inject(KeyboardShortcuts);
   private readonly menuTrigger = viewChild(HlmDropdownMenuTrigger);
   /**
-   * F4: projects of the active tenant come from the SHARED tenant-scoped cache
+   * Projects of the active tenant come from the SHARED tenant-scoped cache
    * in ProjectStore (same cache as TenantHome — one GET /projects per tenant
    * session, no duplicate fetch, and create/update mutations are visible here
    * immediately via upsertProject).
    */
   private readonly activeTenantId = computed(() => this.tenantStore.activeTenant()?.id ?? '');
-  protected readonly projects = computed(() => this.projectStore.projectList(this.activeTenantId()));
+  private readonly projects = computed(() => this.projectStore.projectList(this.activeTenantId()));
   /** Reactive signal of the current URL for active-project detection */
   private readonly currentUrl = toSignal(
     this.router.events.pipe(
@@ -55,7 +55,7 @@ export class ProjectSwitcher {
     { initialValue: this.router.url },
   );
   /** Extract projectKey from the current URL (null when not in project context) */
-  protected readonly currentProjectKey = computed(() => this.currentUrl().match(/\/projects\/([^/?#]+)/)?.[1] ?? null);
+  private readonly currentProjectKey = computed(() => this.currentUrl().match(/\/projects\/([^/?#]+)/)?.[1] ?? null);
   /** Collapsed-icon mode (desktop only) — render as icon button with tooltip */
   protected readonly isCollapsedIconMode = computed(
     () => this.sidebarService.state() === 'collapsed' && !this.sidebarService.isMobile(),
@@ -73,7 +73,7 @@ export class ProjectSwitcher {
   }
 
   constructor() {
-    // F4: load the project list through the shared cache. Reading
+    // Load the project list through the shared cache. Reading
     // projectList() keeps the effect reactive — after invalidateProjectList()
     // the effect re-runs and refetches.
     effect(() => {
@@ -87,7 +87,7 @@ export class ProjectSwitcher {
       });
     });
 
-    // P13 (item 31b) / P13b: the global `p` hotkey bumps `projectMenuToggle`.
+    // The global `p` hotkey bumps `projectMenuToggle`.
     // React STATE-AWARE: read the trigger's actual `isOpen()` and call
     // `openFocused()`/`close()` explicitly — a blind `toggle()` double-fired
     // (open+close) left the menu stuck, and programmatic open never focused
@@ -112,15 +112,15 @@ export class ProjectSwitcher {
     });
   }
 
-  /** P13b: counter value already consumed — guards against double effect runs. */
+  /** Counter value already consumed — guards against double effect runs. */
   private lastHandledToggle = 0;
 
-  /** P13b: report open state to KeyboardShortcuts (wired in the template). */
+  /** Report open state to KeyboardShortcuts (wired in the template). */
   protected onMenuOpened(): void {
     this.shortcuts.projectMenuOpen.set(true);
   }
 
-  /** P13b: report closed state to KeyboardShortcuts (wired in the template). */
+  /** Report closed state to KeyboardShortcuts (wired in the template). */
   protected onMenuClosed(): void {
     this.shortcuts.projectMenuOpen.set(false);
   }

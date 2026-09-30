@@ -34,7 +34,7 @@ const TENANT_ID = '550e8400-e29b-41d4-a716-446655440000';
 const PROJECT_ID = '550e8400-e29b-41d4-a716-446655440010';
 const USER_ID = '550e8400-e29b-41d4-a716-446655440002';
 const mockStatus = {
-  id: 'status-1',
+  id: 'bbbbbbbb-0000-4000-8000-000000000001',
   projectId: PROJECT_ID,
   name: 'TODO',
   normalizedName: 'todo',
@@ -51,12 +51,16 @@ vi.mock('../services/status.service.js', () => ({
     updateStatus: vi
       .fn()
       .mockImplementation((id: string) =>
-        id === 'missing-status' ? Promise.reject(new NotFoundError('Status not found')) : Promise.resolve(mockStatus),
+        id === 'bbbbbbbb-0000-4000-8000-0000000000ff'
+          ? Promise.reject(new NotFoundError('Status not found'))
+          : Promise.resolve(mockStatus),
       ),
     deleteStatus: vi
       .fn()
       .mockImplementation((id: string) =>
-        id === 'missing-status' ? Promise.reject(new NotFoundError('Status not found')) : Promise.resolve(undefined),
+        id === 'bbbbbbbb-0000-4000-8000-0000000000ff'
+          ? Promise.reject(new NotFoundError('Status not found'))
+          : Promise.resolve(undefined),
       ),
   })),
 }));
@@ -66,19 +70,37 @@ vi.mock('../services/status.service.js', () => ({
 const TEST_ENV = { JWT_SECRET: 'test-secret', MONGODB_URI: '', ALLOWED_ORIGINS: '*' };
 const VALID_UUID = USER_ID;
 
-function createTestApp(tenantRole = 'OWNER', projectRole: string | null = null) {
+interface MockStatusService {
+  getStatusesByProject: ReturnType<typeof vi.fn>;
+  createStatus: ReturnType<typeof vi.fn>;
+  reorder: ReturnType<typeof vi.fn>;
+  updateStatus: ReturnType<typeof vi.fn>;
+  deleteStatus: ReturnType<typeof vi.fn>;
+}
+
+/**
+ * @param sink receives the service mock instance created for the request, so
+ *             the forwarded caller context can be asserted on.
+ */
+function createTestApp(
+  tenantRole = 'OWNER',
+  projectRole: string | null = null,
+  sink: { svc?: MockStatusService } = {},
+) {
   const app = new Hono<AppEnv>();
 
   app.onError(errorHandler);
 
   app.use('/api/*', async (c, next) => {
-    const MockStatuses = StatusService as unknown as new () => InstanceType<typeof StatusService>;
+    const MockStatuses = StatusService as unknown as new () => MockStatusService;
+    const svc = new MockStatuses();
 
+    sink.svc = svc;
     c.set('userId', VALID_UUID);
     c.set('tenantId', TENANT_ID);
     c.set('tenantRole', tenantRole as 'OWNER');
     c.set('projectRole', projectRole as never);
-    c.set('svc', { statuses: new MockStatuses() } as never);
+    c.set('svc', { statuses: svc } as never);
     await next();
   });
 
@@ -140,15 +162,18 @@ async function patchJson(app: Hono<AppEnv>, path: string, body: unknown) {
 }
 
 async function deleteJson(app: Hono<AppEnv>, path: string, body?: unknown) {
-  return app.request(
-    path,
-    {
-      method: 'DELETE',
-      body: body === undefined ? undefined : JSON.stringify(body),
-      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
-    },
-    TEST_ENV,
-  );
+  // `RequestInit` keys are `exactOptionalPropertyTypes` — an absent header
+  // must be an absent KEY, not `headers: undefined` (which is a different type).
+  const init: RequestInit =
+    body === undefined
+      ? { method: 'DELETE' }
+      : {
+          method: 'DELETE',
+          body: JSON.stringify(body),
+          headers: { 'Content-Type': 'application/json' },
+        };
+
+  return app.request(path, init, TEST_ENV);
 }
 
 // ─── GET /api/projects/:projectId/statuses ───────────────────────────────────
@@ -261,17 +286,17 @@ describe('PATCH /api/statuses/:statusId', () => {
   const app = createTestApp();
 
   it('returns 200 with the updated status', async () => {
-    const res = await patchJson(app, '/api/statuses/status-1', { name: 'Done' });
+    const res = await patchJson(app, '/api/statuses/bbbbbbbb-0000-4000-8000-000000000001', { name: 'Done' });
 
     expect(res.status).toBe(200);
 
     const body = (await res.json()) as { data: { id: string } };
 
-    expect(body.data.id).toBe('status-1');
+    expect(body.data.id).toBe('bbbbbbbb-0000-4000-8000-000000000001');
   });
 
   it('returns 404 when the status does not exist', async () => {
-    const res = await patchJson(app, '/api/statuses/missing-status', { name: 'Done' });
+    const res = await patchJson(app, '/api/statuses/bbbbbbbb-0000-4000-8000-0000000000ff', { name: 'Done' });
 
     expect(res.status).toBe(404);
 
@@ -281,7 +306,9 @@ describe('PATCH /api/statuses/:statusId', () => {
   });
 
   it('returns 400 for an invalid body', async () => {
-    const res = await patchJson(app, '/api/statuses/status-1', { position: 'not-a-number' });
+    const res = await patchJson(app, '/api/statuses/bbbbbbbb-0000-4000-8000-000000000001', {
+      position: 'not-a-number',
+    });
 
     expect(res.status).toBe(400);
 
@@ -297,7 +324,7 @@ describe('DELETE /api/statuses/:statusId', () => {
   const app = createTestApp();
 
   it('returns 200 with success envelope (no replacement)', async () => {
-    const res = await deleteJson(app, '/api/statuses/status-1', {});
+    const res = await deleteJson(app, '/api/statuses/bbbbbbbb-0000-4000-8000-000000000001', {});
 
     expect(res.status).toBe(200);
 
@@ -307,7 +334,7 @@ describe('DELETE /api/statuses/:statusId', () => {
   });
 
   it('returns 200 with a replacement status id', async () => {
-    const res = await deleteJson(app, '/api/statuses/status-1', {
+    const res = await deleteJson(app, '/api/statuses/bbbbbbbb-0000-4000-8000-000000000001', {
       replacementStatusId: '550e8400-e29b-41d4-a716-446655440099',
     });
 
@@ -319,7 +346,7 @@ describe('DELETE /api/statuses/:statusId', () => {
   });
 
   it('returns 404 when the status does not exist', async () => {
-    const res = await deleteJson(app, '/api/statuses/missing-status', {});
+    const res = await deleteJson(app, '/api/statuses/bbbbbbbb-0000-4000-8000-0000000000ff', {});
 
     expect(res.status).toBe(404);
 
@@ -329,13 +356,65 @@ describe('DELETE /api/statuses/:statusId', () => {
   });
 
   it('returns 400 for an invalid replacement id', async () => {
-    const res = await deleteJson(app, '/api/statuses/status-1', { replacementStatusId: 'not-a-uuid' });
+    const res = await deleteJson(app, '/api/statuses/bbbbbbbb-0000-4000-8000-000000000001', {
+      replacementStatusId: 'not-a-uuid',
+    });
 
     expect(res.status).toBe(400);
 
     const body = (await res.json()) as { error: { code: string } };
 
     expect(body.error.code).toBe('VALIDATION_ERROR');
+  });
+});
+
+// ─── Caller context forwarding ────────────────────────────────────────────────
+
+describe('caller context forwarding (M-001/M-006/M-034)', () => {
+  const expected = { tenantId: TENANT_ID, userId: VALID_UUID, userRole: 'OWNER' };
+
+  it('forwards tenantId + userId + role on every status route', async () => {
+    // Declared as an empty (not explicitly-`undefined`) object — the
+    // `provideServices` middleware assigns `svc` onto it in place.
+    const create: { svc?: MockStatusService } = {};
+
+    await postJson(createTestApp('OWNER', null, create), `/api/projects/${PROJECT_ID}/statuses`, {
+      name: 'In Review',
+      position: 3,
+    });
+    expect(create.svc?.createStatus).toHaveBeenCalledWith(PROJECT_ID, { name: 'In Review', position: 3 }, expected);
+
+    const list: { svc?: MockStatusService } = {};
+
+    await getJson(createTestApp('OWNER', null, list), `/api/projects/${PROJECT_ID}/statuses`);
+    expect(list.svc?.getStatusesByProject).toHaveBeenCalledWith(PROJECT_ID, expected);
+
+    const reorder: { svc?: MockStatusService } = {};
+
+    await patchJson(createTestApp('OWNER', null, reorder), `/api/projects/${PROJECT_ID}/statuses/reorder`, {
+      items: [{ id: '550e8400-e29b-41d4-a716-446655440091', position: 0 }],
+    });
+    expect(reorder.svc?.reorder).toHaveBeenCalledWith(
+      PROJECT_ID,
+      [{ id: '550e8400-e29b-41d4-a716-446655440091', position: 0 }],
+      expected,
+    );
+
+    const update: { svc?: MockStatusService } = {};
+
+    await patchJson(createTestApp('OWNER', null, update), '/api/statuses/bbbbbbbb-0000-4000-8000-000000000001', {
+      name: 'Done',
+    });
+    expect(update.svc?.updateStatus).toHaveBeenCalledWith(
+      'bbbbbbbb-0000-4000-8000-000000000001',
+      { name: 'Done' },
+      expected,
+    );
+
+    const remove: { svc?: MockStatusService } = {};
+
+    await deleteJson(createTestApp('OWNER', null, remove), '/api/statuses/bbbbbbbb-0000-4000-8000-000000000001', {});
+    expect(remove.svc?.deleteStatus).toHaveBeenCalledWith('bbbbbbbb-0000-4000-8000-000000000001', undefined, expected);
   });
 });
 

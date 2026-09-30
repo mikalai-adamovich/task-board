@@ -25,11 +25,12 @@
         id="support-name"
         type="text"
         [formField]="supportForm.name"
+        uiFieldControl
         autocomplete="name"
         [placeholder]="'support.namePlaceholder' | transloco"
       />
       @if (supportForm.name().touched() && supportForm.name().errors().length) {
-        <p hlm-field-error>{{ supportForm.name().errors()[0]?.message | transloco }}</p>
+        <hlm-field-error class="block">{{ supportForm.name().errors()[0]?.message | transloco }}</hlm-field-error>
       }
     </hlm-field>
 
@@ -40,11 +41,12 @@
         id="support-email"
         type="email"
         [formField]="supportForm.email"
+        uiFieldControl
         autocomplete="email"
         placeholder="you&#64;example.com"
       />
       @if (supportForm.email().touched() && supportForm.email().errors().length) {
-        <p hlm-field-error>{{ supportForm.email().errors()[0]?.message | transloco }}</p>
+        <hlm-field-error class="block">{{ supportForm.email().errors()[0]?.message | transloco }}</hlm-field-error>
       }
     </hlm-field>
 
@@ -55,10 +57,11 @@
         id="support-message"
         rows="5"
         [formField]="supportForm.message"
+        uiFieldControl
         [placeholder]="'support.messagePlaceholder' | transloco"
       ></textarea>
       @if (supportForm.message().touched() && supportForm.message().errors().length) {
-        <p hlm-field-error>{{ supportForm.message().errors()[0]?.message | transloco }}</p>
+        <hlm-field-error class="block">{{ supportForm.message().errors()[0]?.message | transloco }}</hlm-field-error>
       }
     </hlm-field>
 
@@ -68,7 +71,7 @@
       <input id="support-website" type="text" name="website" tabindex="-1" autocomplete="off" />
     </div>
 
-    <button hlmBtn type="submit" form="support-form" [disabled]="supportForm().invalid() || supportForm().submitting()">
+    <button hlmBtn type="submit" form="support-form" [disabled]="supportForm().submitting()">
       @if (supportForm().submitting()) {
         <hlm-spinner /> {{ 'support.submitting' | transloco }}
       } @else {

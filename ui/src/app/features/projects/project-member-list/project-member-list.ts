@@ -6,6 +6,7 @@ import { provideIcons, NgIcon } from '@ng-icons/core';
 import { lucideRows3, lucideUserPlus } from '@ng-icons/lucide';
 import { finalize, tap } from 'rxjs';
 import { form, FormRoot, FormField, schema, required } from '@angular/forms/signals';
+import { FieldControl } from '@app/shared/field-control/field-control';
 import { ProjectClient } from '@services/project-client';
 import { AuthStore } from '@stores/auth-store';
 import { ProjectStore } from '@stores/project-store';
@@ -37,6 +38,7 @@ interface AddMemberFormModel {
 @Component({
   selector: 'ui-project-member-list',
   imports: [
+    FieldControl,
     MemberTable,
     FormRoot,
     FormField,
@@ -66,25 +68,25 @@ export class ProjectMemberList implements OnInit, OnDestroy {
    * Resolved project UUID from the store (loaded by `projectGuard`) — never a raw route
    * param, so direct URL entry cannot produce an undefined id (V1-10/V2-1 family).
    */
-  protected readonly projectId = computed(() => this.projectStore.activeProject()?.id ?? '');
+  private readonly projectId = computed(() => this.projectStore.activeProject()?.id ?? '');
   /** Guard: until the context resolves, no requests fire and actions stay disabled. */
-  protected readonly hasContext = computed(() => this.projectId() !== '');
-  /** Q2 (F-05): Auto page-size preference (sentinel 0) shared with the tasks table. */
-  protected readonly preferencesStore = inject(PreferencesStore);
+  private readonly hasContext = computed(() => this.projectId() !== '');
+  /** Auto page-size preference (sentinel 0) shared with the tasks table. */
+  private readonly preferencesStore = inject(PreferencesStore);
   protected readonly isAutoMode = computed(() => this.preferencesStore.pageSize() === AUTO_PAGE_SIZE_SENTINEL);
-  /** Q9 (RQ-04 ⑤): device-local table density toggle for the member table. */
+  /** Device-local table density toggle for the member table. */
   private readonly density = useTableDensity();
   protected readonly isCompact = this.density.compact;
   protected readonly toggleDensity = this.density.toggle;
   /** Measured member-table wrapper height feeding the Auto page size. */
-  protected readonly autoHeight = signal(0);
+  private readonly autoHeight = signal(0);
   /** Measured row pitch feeding the Auto page size. */
-  protected readonly autoRowHeight = signal(0);
-  protected readonly members = signal<ProjectMember[]>([]);
-  protected readonly loading = signal(true);
-  protected readonly error = signal('');
-  protected readonly removingUserId = signal<string | null>(null);
-  protected readonly showAddMember = signal(false);
+  private readonly autoRowHeight = signal(0);
+  private readonly members = signal<ProjectMember[]>([]);
+  private readonly loading = signal(true);
+  private readonly error = signal('');
+  private readonly removingUserId = signal<string | null>(null);
+  private readonly showAddMember = signal(false);
   protected readonly projectRoles = Object.values(ProjectRole).filter((role) => role !== ProjectRole.PROJECT_ADMIN);
   /** Only PROJECT_ADMIN+ (project) / ADMIN+ (tenant) may manage members (mirrors server RBAC). */
   protected readonly canManage = computed(() => {
@@ -94,7 +96,7 @@ export class ProjectMemberList implements OnInit, OnDestroy {
    * Shared sort / column-filter / pagination machinery (see shared/member-list).
    * Filter and sort state is synced to URL query params.
    */
-  protected readonly table = useMemberTable<ProjectMember>({
+  private readonly table = useMemberTable<ProjectMember>({
     source: this.members,
     filters: {
       name: { matches: (m, q) => (m.displayName ?? m.userId).toLowerCase().includes(q) },
@@ -235,7 +237,7 @@ export class ProjectMemberList implements OnInit, OnDestroy {
       .subscribe({
         next: () => {
           this.loadMembers();
-          // Q11 (DEC-053): undo re-adds the member with their previous role.
+          // Undo re-adds the member with their previous role.
           this.notify.successWithUndo('toasts.deleted', () =>
             this.projectClient.addMember(this.projectId(), userId, previousRole).pipe(tap(() => this.loadMembers())),
           );

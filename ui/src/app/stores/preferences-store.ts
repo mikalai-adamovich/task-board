@@ -1,6 +1,7 @@
 import { Service, signal, computed, inject, effect, DestroyRef } from '@angular/core';
+import { rxResource } from '@angular/core/rxjs-interop';
 import { TranslocoService } from '@jsverse/transloco';
-import { firstValueFrom } from 'rxjs';
+import { firstValueFrom, of } from 'rxjs';
 import { DEFAULT_THEME_ID } from '@task-board/shared';
 import type {
   DateFormatPreference,
@@ -95,15 +96,15 @@ export class PreferencesStore {
   });
   readonly language = signal<string>('en');
   readonly pageSize = signal<number>(20);
-  /** R3-P8: preferred date display format (null = not set → ISO fallback). */
+  /** Preferred date display format (null = not set → ISO fallback). */
   readonly dateFormat = signal<DateFormatPreference | null>(null);
-  /** R3-P8: preferred time display format (null = not set → 24h fallback). */
+  /** Preferred time display format (null = not set → 24h fallback). */
   readonly timeFormat = signal<TimeFormatPreference | null>(null);
   /** DatePipe token for date-only rendering, derived from the preference. */
   readonly datePipeFormat = computed(() => toDatePipeDateFormat(this.dateFormat()));
   /** DatePipe token for timestamp rendering, derived from both preferences. */
   readonly dateTimePipeFormat = computed(() => toDatePipeDateTimeFormat(this.dateFormat(), this.timeFormat()));
-  /** R3-P4: per-project visible task-table columns. Map of projectId → column keys (or null = default). */
+  /** Per-project visible task-table columns. Map of projectId → column keys (or null = default). */
   private readonly projectTaskTableColumns = signal<Record<string, TaskTableColumnKey[] | null>>({});
   /**
    * Per-project preferences cache: projectId → resolved request promise.
@@ -113,6 +114,19 @@ export class PreferencesStore {
    * Refreshed in place by the mutation methods below.
    */
   private readonly projectPrefsCache = new Map<string, Promise<UserProjectBoardPreference | null>>();
+  /**
+   * The session-scoped preferences load is an `rxResource`, not an
+   * `effect` + hand-rolled promise. The request is cancelled when the session
+   * changes (no stale write after logout), and a failure lands in `error()`
+   * instead of becoming an unhandled promise rejection.
+   */
+  private readonly remotePrefsResource = rxResource({
+    params: () => ({ authenticated: this.authStore.isAuthenticated() }),
+    stream: ({ params }) => (params.authenticated ? this.client.getPreferences() : of(null)),
+    defaultValue: null as UserPreferences | null,
+  });
+  /** Last backend payload already handed to `applyPreferences` (dedupes re-applies). */
+  private lastAppliedRemote: UserPreferences | null = null;
   /** Tracks the last zoom applied locally but not yet persisted to the backend. */
   private pendingZoom: number | null = null;
   /** Tracks the pending theme-preferences partial to be flushed to the backend on commit. */
@@ -136,16 +150,28 @@ export class PreferencesStore {
       }
     });
 
-    // Load preferences from backend once the user is authenticated.
+    // Apply the fetched preferences once they arrive. This effect performs NO
+    // fetching: it only reads `remotePrefsResource` (the request lives in the
+    // resource, which cancels it on session change) and applies the payload.
     effect(() => {
-      if (this.authStore.isAuthenticated()) {
-        this.loadPreferences();
-      } else {
+      if (!this.authStore.isAuthenticated()) {
         // Session isolation: drop all per-user project preference state on logout
         // so a subsequent login as another user never sees the previous session's cache.
         this.projectPrefsCache.clear();
         this.projectTaskTableColumns.set({});
+        return;
       }
+
+      if (!this.remotePrefsResource.hasValue()) return;
+
+      const prefs = this.remotePrefsResource.value();
+
+      // `hasValue()` is false in the error state; a null payload means "no
+      // session payload" (the stream short-circuits when logged out).
+      if (!prefs || prefs === this.lastAppliedRemote) return;
+
+      this.lastAppliedRemote = prefs;
+      this.applyPreferences(prefs);
     });
   }
 
@@ -183,7 +209,7 @@ export class PreferencesStore {
 
   /** Write a fetched/updated per-project preference document into the signal map. */
   private applyProjectPreferences(projectId: string, prefs: UserProjectBoardPreference | null): void {
-    // R3-P4: task-table column visibility lives in the per-project document
+    // Task-table column visibility lives in the per-project document
     this.projectTaskTableColumns.update((map) => ({
       ...map,
       [projectId]: prefs?.taskTableColumns ?? null,
@@ -257,7 +283,11 @@ export class PreferencesStore {
     }
   }
 
-  /** Load preferences from the backend and apply all settings. */
+  /**
+   * Explicitly (re)load preferences from the backend and apply all settings.
+   * The automatic session-scoped load goes through `remotePrefsResource`; this
+   * stays the imperative entry point for a forced refresh.
+   */
   async loadPreferences(): Promise<void> {
     const prefs = await firstValueFrom(this.client.getPreferences());
 
@@ -328,13 +358,13 @@ export class PreferencesStore {
     this.saveToBackend({ pageSize: size });
   }
 
-  /** Set the preferred date display format (R3-P8) and persist to backend. */
+  /** Set the preferred date display format and persist to backend. */
   setDateFormat(format: DateFormatPreference | null): void {
     this.dateFormat.set(format);
     this.saveToBackend({ dateFormat: format });
   }
 
-  /** Set the preferred time display format (R3-P8) and persist to backend. */
+  /** Set the preferred time display format and persist to backend. */
   setTimeFormat(format: TimeFormatPreference | null): void {
     this.timeFormat.set(format);
     this.saveToBackend({ timeFormat: format });

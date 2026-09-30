@@ -2,7 +2,7 @@ import { Component } from '@angular/core';
 import { HlmToasterImports } from '@spartan-ng/helm/sonner';
 
 /**
- * P14 (item 32): render surface for toast notifications.
+ * Render surface for toast notifications.
  *
  * Exists solely so the heavy brn-sonner module (~49 kB) can be kept out of
  * the initial bundle: the root template wraps `<ui-app-toaster />` in an

@@ -1,6 +1,6 @@
 import { firstValueFrom } from 'rxjs';
 /**
- * Tests for the shared MemberTable component (U4).
+ * Tests for the shared MemberTable component.
  *
  * Covers:
  * - Variant rendering (project hides the status column, tenant shows it)
@@ -62,7 +62,7 @@ describe('MemberTable', () => {
   let el: HTMLElement;
 
   /**
-   * Q5 (F-07): native `[title]` was replaced by the Spartan `hlmTooltip` directive,
+   * Native `[title]` was replaced by the Spartan `hlmTooltip` directive,
    * which leaves no DOM attribute — action buttons are located via their icon instead.
    */
   function actionButton(iconName: string): HTMLButtonElement | null {
@@ -84,7 +84,7 @@ describe('MemberTable', () => {
           provide: PreferencesStore,
           useValue: {
             datePipeFormat: () => 'yyyy-MM-dd',
-            // P12 (item 28): active language used as the DatePipe locale
+            // Active language used as the DatePipe locale
             language: () => 'en',
           },
         },
@@ -111,7 +111,7 @@ describe('MemberTable', () => {
     el = fixtureRef.nativeElement as HTMLElement;
   }
 
-  // ── Layout (Q2/F-05: full-height flex column) ─────────────────
+  // ── Layout (full-height flex column) ─────────────────
 
   it('should put the full-height flex classes on the HOST element so the table stretches inside the page column', async () => {
     await create('tenant');
@@ -310,7 +310,7 @@ describe('MemberTable', () => {
     expect(el.querySelector('hlm-spinner')).toBeNull();
   });
 
-  // ── Role label i18n (Q2/F-06) ──────────────────────────────────
+  // ── Role label i18n ────────────────────────────────────────────
 
   it('maps project roles to their i18n keys (roleProjectAdmin/roleEditor/roleViewer)', async () => {
     await create('project');
@@ -325,7 +325,7 @@ describe('MemberTable', () => {
     expect(component.roleLabel('SOMETHING_ELSE')).toBe('SOMETHING_ELSE');
   });
 
-  // ── Auto page-size (Q2/F-05 — measured wrapper + row height) ───
+  // ── Auto page-size (measured wrapper + row height) ───
 
   describe('auto page-size (Q2/F-05)', () => {
     /**

@@ -1,5 +1,5 @@
 /**
- * Tests for the unified create-task page (U1).
+ * Tests for the unified create-task page.
  *
  * Covers:
  * - Default status preselected (project TODO status) once reference data loads
@@ -15,7 +15,7 @@ import { Location } from '@angular/common';
 import { firstValueFrom, of, throwError } from 'rxjs';
 import { submit } from '@angular/forms/signals';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
-import { Component, input, output } from '@angular/core';
+import { Component, input, output, signal, type WritableSignal } from '@angular/core';
 import { TaskCreate } from './create-task';
 import { MilkdownEditor } from '@app/shared/milkdown-editor/milkdown-editor';
 import { TaskClient } from '@services/task-client';
@@ -24,7 +24,10 @@ import { ProjectStore } from '@stores/project-store';
 import { ProjectRefStore, type SelectOption } from '@stores/project-ref-store';
 import { API_BASE_URL } from '@app/api-url.token';
 import { DEFAULT_TASK_PRIORITY_LEVEL, type Task } from '@task-board/shared';
-import { settle } from '@app/shared/testing/zoneless';
+import { clickUntil, settle } from '@app/shared/testing/zoneless';
+
+/** Spartan's `HlmFieldError` is a component carrying `data-slot="field-error"`. */
+const ERROR_SELECTOR = '[data-slot="field-error"]';
 
 /** Stub keeps the spec independent of the lazy-loaded Milkdown bundle */
 @Component({
@@ -77,6 +80,11 @@ const refOptions: Record<string, SelectOption[]> = {
 };
 /** Active project mock — mutable so specs can vary `defaultStatusId` */
 let mockProject: Record<string, string | null>;
+/**
+ * Reference-data mock backed by a signal so a spec can simulate a background
+ * refetch (new options array) and observe how the defaults effect reacts.
+ */
+let refOptionsState: WritableSignal<Record<string, SelectOption[]>>;
 
 describe('TaskCreate (U1 — unified create-task page)', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -97,6 +105,7 @@ describe('TaskCreate (U1 — unified create-task page)', () => {
     routerMock = { navigate: vi.fn().mockResolvedValue(true) };
     locationBack = vi.fn();
     mockProject = { id: 'p1', key: 'ABC', defaultStatusId: 'st-todo' };
+    refOptionsState = signal(refOptions);
 
     TestBed.configureTestingModule({
       imports: [TranslocoTestingModule.forRoot({ preloadLangs: true, langs: { en: {} } })],
@@ -115,7 +124,7 @@ describe('TaskCreate (U1 — unified create-task page)', () => {
           provide: ProjectRefStore,
           useValue: {
             ensure: vi.fn(),
-            options: (_pid: string, kind: string) => refOptions[kind] ?? [],
+            options: (_pid: string, kind: string) => refOptionsState()[kind] ?? [],
             invalidate: vi.fn(),
           },
         },
@@ -147,6 +156,45 @@ describe('TaskCreate (U1 — unified create-task page)', () => {
   }
 
   // V4-5 / R3-P1: preselection is ID-based (project.defaultStatusId), never name-based
+  // ── The defaults are applied ONCE and never fight the user ────────────────
+
+  it('should NOT re-apply the defaults after the user clears a field (F21)', async () => {
+    await setup();
+
+    expect(component.model().statusId).toBe('st-todo');
+    expect(component.model().typeId).toBe('type-task');
+
+    // The user clears both selects.
+    component.onFieldChange('statusId', '');
+    component.onFieldChange('typeId', '');
+    await settle(fixture);
+
+    // …and a background refetch delivers the reference data again, in a
+    // different order. The one-shot latch keeps the user's (empty) choice.
+    refOptionsState.set({
+      ...refOptions,
+      statuses: [
+        { id: 'st-done', name: 'Done' },
+        { id: 'st-todo', name: 'To Do' },
+      ],
+      types: [{ id: 'type-bug', name: 'Bug' }],
+    });
+    await settle(fixture);
+
+    expect(component.model().statusId).toBe('');
+    expect(component.model().typeId).toBe('');
+  });
+
+  it('should NOT overwrite a user-picked status when reference data refetches (F21)', async () => {
+    await setup();
+
+    component.onFieldChange('statusId', 'st-done');
+    refOptionsState.set({ ...refOptions, statuses: [{ id: 'st-todo', name: 'To Do' }] });
+    await settle(fixture);
+
+    expect(component.model().statusId).toBe('st-done');
+  });
+
   it('should preselect project.defaultStatusId and the first type by position', async () => {
     await setup();
 
@@ -237,6 +285,179 @@ describe('TaskCreate (U1 — unified create-task page)', () => {
     const alert = fixture.nativeElement.querySelector('[role="alert"]');
 
     expect(alert).toBeTruthy();
+  });
+
+  // ── Field error rendering + a11y wiring ───────────────────────────────────
+  //
+  // Regression cover: the runtime pass found zero visible
+  // validation errors and `aria-describedby: []`. Two independent defects caused
+  // it and both are asserted here:
+  //   1. the submit button was `[disabled]` while the form was invalid, so an
+  //      empty submit could never run `submit()` and never mark fields touched;
+  //   2. no control carried `brnFieldControl`, so Spartan's `HlmFieldError` had
+  //      no control state to gate on.
+  describe('field error display', () => {
+    function titleInput(): HTMLInputElement {
+      return fixture.nativeElement.querySelector('input#create-title') as HTMLInputElement;
+    }
+
+    function submitButton(): HTMLButtonElement {
+      return fixture.nativeElement.querySelector('button[type="submit"]') as HTMLButtonElement;
+    }
+
+    /** Error hosts that Spartan is actually showing (no `hidden` attribute). */
+    function visibleErrors(): HTMLElement[] {
+      const nodes: HTMLElement[] = Array.from(fixture.nativeElement.querySelectorAll(ERROR_SELECTOR));
+
+      return nodes.filter((el) => !el.hasAttribute('hidden'));
+    }
+
+    it('exposes a reachable, enabled submit button', async () => {
+      await setup();
+
+      const button = submitButton();
+
+      expect(button).toBeTruthy();
+      expect(button.hasAttribute('disabled')).toBe(false);
+    });
+
+    it('renders the error text in the DOM after an empty submit', async () => {
+      await setup();
+
+      await clickUntil(
+        () => submitButton().click(),
+        () => expect(visibleErrors().length).toBe(1),
+      );
+      await settle(fixture);
+
+      const text = visibleErrors().at(0)?.textContent?.trim();
+
+      expect(text).toBeTruthy();
+      expect(taskClientMock.create).not.toHaveBeenCalled();
+    });
+
+    it('marks the title control aria-invalid after an empty submit', async () => {
+      await setup();
+
+      await clickUntil(
+        () => submitButton().click(),
+        () => expect(titleInput().getAttribute('aria-invalid')).toBe('true'),
+      );
+      await settle(fixture);
+
+      expect(titleInput().getAttribute('aria-invalid')).toBe('true');
+    });
+
+    it('associates the title control with its error via aria-describedby', async () => {
+      await setup();
+
+      await clickUntil(
+        () => submitButton().click(),
+        () => expect(titleInput().getAttribute('aria-describedby')).toBeTruthy(),
+      );
+      await settle(fixture);
+
+      const describedBy = titleInput().getAttribute('aria-describedby') as string;
+      const error = fixture.nativeElement.querySelector(`#${CSS.escape(describedBy)}`) as HTMLElement;
+
+      expect(error).toBeTruthy();
+      expect(error.matches(ERROR_SELECTOR)).toBe(true);
+      expect(error.hasAttribute('hidden')).toBe(false);
+    });
+
+    it('shows no error once the title is valid', async () => {
+      await setup();
+
+      component.model.update((m: Record<string, unknown>) => ({ ...m, title: 'Created Task' }));
+      await settle(fixture);
+
+      await clickUntil(
+        () => submitButton().click(),
+        () => expect(titleInput().getAttribute('aria-invalid')).toBeNull(),
+      );
+      await settle(fixture);
+
+      expect(visibleErrors()).toHaveLength(0);
+      expect(titleInput().getAttribute('aria-invalid')).toBeNull();
+    });
+
+    // ── The three required `<hlm-select>`s are real form controls ────────────
+    //
+    // One row per field the schema marks required, so a fourth required select
+    // is a new row rather than a silently-uncovered control, and a differently
+    // written fix (a native select, a different element) still passes as long as
+    // the control is bound.
+    //
+    // The binding proof is `data-touched`: Spartan's `BrnSelectTrigger` publishes
+    // `data-touched` from the control state it gets from the enclosing
+    // `<hlm-select>`'s `BrnFieldControl`, which only exists once `[formField]`
+    // has wired the control to the form. Before this change the attribute was absent —
+    // the select was not a form control at all.
+    const REQUIRED_SELECTS: { field: string; triggerId: string; empty?: () => void }[] = [
+      { field: 'statusId', triggerId: 'create-status', empty: () => component.onFieldChange('statusId', '') },
+      { field: 'typeId', triggerId: 'create-type', empty: () => component.onFieldChange('typeId', '') },
+      // The priority select is seeded with the project default and is never
+      // empty in practice, so its row asserts the binding only.
+      { field: 'priorityLevel', triggerId: 'create-priority' },
+    ];
+
+    /**
+     * The control a user actually focuses: `buttonId` puts the id on the
+     * `<button brnSelectTrigger>` inside `<hlm-select-trigger>`, so this is the
+     * combobox, not the wrapper element.
+     */
+    function trigger(id: string): HTMLElement {
+      const el = fixture.nativeElement.querySelector(`#${CSS.escape(id)}`) as HTMLElement | null;
+
+      expect(el?.tagName).toBe('BUTTON');
+
+      return el as HTMLElement;
+    }
+
+    for (const row of REQUIRED_SELECTS) {
+      it(`binds the ${row.field} select into the form`, async () => {
+        await setup();
+
+        expect(trigger(row.triggerId).getAttribute('data-touched')).toBeNull();
+
+        await clickUntil(
+          () => submitButton().click(),
+          () => expect(trigger(row.triggerId).getAttribute('data-touched')).toBe('true'),
+        );
+        await settle(fixture);
+
+        expect(trigger(row.triggerId).getAttribute('data-touched')).toBe('true');
+      });
+    }
+
+    for (const row of REQUIRED_SELECTS.filter((r) => r.empty)) {
+      it(`renders and announces the ${row.field} error when the field is omitted`, async () => {
+        await setup();
+        row.empty?.();
+        await settle(fixture);
+
+        await clickUntil(
+          () => submitButton().click(),
+          () => expect(trigger(row.triggerId).getAttribute('aria-invalid')).toBe('true'),
+        );
+        await settle(fixture);
+
+        expect(component.createForm[row.field]().touched()).toBe(true);
+        expect(trigger(row.triggerId).getAttribute('aria-invalid')).toBe('true');
+
+        const describedBy = trigger(row.triggerId).getAttribute('aria-describedby') as string;
+
+        expect(describedBy).toBeTruthy();
+
+        const error = fixture.nativeElement.querySelector(`#${CSS.escape(describedBy.split(' ')[0] as string)}`);
+
+        expect(error).toBeTruthy();
+        expect((error as HTMLElement).matches(ERROR_SELECTOR)).toBe(true);
+        expect((error as HTMLElement).hasAttribute('hidden')).toBe(false);
+        expect((error as HTMLElement).textContent?.trim()).toBeTruthy();
+        expect(taskClientMock.create).not.toHaveBeenCalled();
+      });
+    }
   });
 
   it('should surface a server error inline instead of navigating', async () => {

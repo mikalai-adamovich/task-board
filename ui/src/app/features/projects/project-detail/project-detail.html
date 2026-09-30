@@ -23,7 +23,7 @@
     <div class="mb-6 flex items-start justify-between gap-4">
       <div class="min-w-0 flex-1">
         <div class="flex min-w-0 flex-wrap items-center gap-3">
-          <h2 class="text-2xl font-bold break-words text-foreground line-clamp-2">{{ p.name }}</h2>
+          <h1 class="text-2xl font-bold break-words text-foreground line-clamp-2">{{ p.name }}</h1>
           <span class="text-sm font-mono text-muted-foreground">[{{ p.key }}]</span>
           @if (p.status !== ProjectStatus.ACTIVE) {
             <span hlmBadge [variant]="statusBadgeVariant(p.status)">{{ p.status }}</span>
@@ -53,7 +53,7 @@
       <!-- Task summary by status -->
       <hlm-card class="h-full">
         <hlm-card-header>
-          <h3 hlmCardTitle>{{ 'projectDetail.taskSummary' | transloco }}</h3>
+          <h2 hlmCardTitle>{{ 'projectDetail.taskSummary' | transloco }}</h2>
         </hlm-card-header>
         <div hlmCardContent>
           @if (statusCounts().length === 0) {
@@ -88,7 +88,7 @@
       <!-- Active sprint -->
       <hlm-card class="h-full">
         <hlm-card-header>
-          <h3 hlmCardTitle>{{ 'projectDetail.activeSprint' | transloco }}</h3>
+          <h2 hlmCardTitle>{{ 'projectDetail.activeSprint' | transloco }}</h2>
         </hlm-card-header>
         <div hlmCardContent>
           @if (activeSprint(); as sprint) {
@@ -141,7 +141,7 @@
       <!-- Recent tasks -->
       <hlm-card class="h-full">
         <hlm-card-header>
-          <h3 hlmCardTitle>{{ 'projectDetail.recentTasks' | transloco }}</h3>
+          <h2 hlmCardTitle>{{ 'projectDetail.recentTasks' | transloco }}</h2>
         </hlm-card-header>
         <div hlmCardContent class="flex-1">
           @if (recentTasks().length === 0) {
@@ -178,7 +178,7 @@
       <!-- Members preview -->
       <hlm-card class="h-full">
         <hlm-card-header>
-          <h3 hlmCardTitle>{{ 'projectDetail.members' | transloco }}</h3>
+          <h2 hlmCardTitle>{{ 'projectDetail.members' | transloco }}</h2>
         </hlm-card-header>
         <div hlmCardContent class="flex-1">
           @if (membersPreview().length === 0) {

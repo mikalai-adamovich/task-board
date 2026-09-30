@@ -44,32 +44,6 @@ python3 tools/api-series.py --env /tmp/jitter.env --rounds 30 --interval 1.0 \
 Key technique: **keep-alive** separates reconnect spikes from network jitter — on a warm connection any remaining spikes
 are not network-related.
 
-## parse-dbev-tail.py — `wrangler tail` DBEV event parser
-
-Parses `wrangler tail --format json` output containing `DBEV {json}` log lines and correlates them with client-side
-JSONL rows from `api-series.py` by timestamp.
-
-> **The `DBEV` producer no longer exists.** The temporary `mongo.ts` diagnostic instrumentation that emitted these lines
-> was removed in `377917f` (`chore(server): remove Mongo lifecycle instrumentation`); `grep -rn DBEV server/src/` is
-> empty. The parser is retained for a re-instrumented run — **against the current tree it produces nothing**, so a
-> latency investigation that runs it will wait on an input nothing produces.
-
-```bash
-# 1. capture tail while running a series
-cd server && npx wrangler tail task-board-api --format json > /tmp/tail.json &
-python3 tools/api-series.py ... > /tmp/series.jsonl
-
-# 2. parse
-python3 tools/parse-dbev-tail.py --tail /tmp/tail.json --series /tmp/series.jsonl
-```
-
-Output: event type counts; connection lifetimes (created → closed) with close reasons; per-request segmentation
-`arrival → DO → dbmw → checkOutStarted → checkedOut → connCreated → connReady → cmdStarted/Succeeded (dur) → response`;
-spikes with in-window driver events.
-
-Known artifact: DO event `wallTime` in wrangler tail approximates the interval between events (polluted by request
-cadence) — do NOT use it as handler duration. Reliable: `stateless` wallTime (Worker waiting for the DO) and `cpuTime`.
-
 ## curl-timing.sh — single-request timing decomposition
 
 `total / connect / TLS / TTFB(starttransfer)` + remote IP + HTTP version for fresh-connection and keep-alive modes.
@@ -83,6 +57,14 @@ tools/curl-timing.sh ka     60 /api/ping   # 60 requests, one connection
 
 1. `curl-timing.sh fresh` vs `ka` — do spikes depend on connections?
 2. `api-series.py` on a no-Mongo endpoint (`/api/ping`, 401 probe) — spikes without Mongo?
-3. `api-series.py` on a Mongo endpoint + `parse-dbev-tail.py` — where the time goes: `connCreated→connReady`
-   (reconnect), `cmdSucceeded.dur` (slow operation), or before the first checkout (pre-DB, not Mongo).
-4. Cross-check driver events (`connectionClosed.reason`: `error` vs `idle`) against the client configuration.
+3. `api-series.py` on a Mongo endpoint — does the spike sit on a Mongo request at all, or on a non-Mongo one in the same
+   window?
+4. If the time must be attributed _inside_ the Worker (reconnect vs slow operation vs a pre-DB stall), instrument the
+   request path first: emit one structured log line per phase boundary, capture it with
+   `npx wrangler tail --format json`, and correlate those lines with the `api-series.py` JSONL by timestamp. There is no
+   such emitter in the tree today, so nothing parses a `wrangler tail` capture as-is.
+
+### Reading a `wrangler tail` capture
+
+Known artifact: DO event `wallTime` in wrangler tail approximates the interval between events (polluted by request
+cadence) — do NOT use it as handler duration. Reliable: `stateless` wallTime (Worker waiting for the DO) and `cpuTime`.

@@ -1,6 +1,6 @@
 import { BaseRepository } from './base.repository.js';
 import { randomUUID } from 'node:crypto';
-import type { Sprint, SprintStatus } from '@task-board/shared';
+import type { Sprint, SprintStatus, CreateSprint } from '@task-board/shared';
 
 // Required MongoDB indexes:
 // - { id: 1 } (unique)
@@ -49,7 +49,9 @@ export class SprintRepository extends BaseRepository<SprintDocument, Sprint> {
     return docs.map(toDomain);
   }
 
-  async create(projectId: string, input: { name: string; startDate?: string; endDate?: string }): Promise<Sprint> {
+  // The shared `CreateSprint` interface replaced a hand-copied inline shape
+  // (its optional dates are validated-but-absent, i.e. explicit `undefined`).
+  async create(projectId: string, input: CreateSprint): Promise<Sprint> {
     const now = new Date();
     const doc: SprintDocument = {
       id: randomUUID(),

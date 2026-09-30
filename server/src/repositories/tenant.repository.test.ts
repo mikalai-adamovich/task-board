@@ -72,19 +72,8 @@ describe('TenantRepository', () => {
     });
   });
 
-  describe('findAll', () => {
-    it('returns all tenants mapped to domain objects', async () => {
-      const toArray = vi.fn().mockResolvedValue([makeDoc(), makeDoc({ id: 'tenant-456', name: 'Tenant 2' })]);
-
-      collection.find.mockReturnValue({ toArray });
-
-      const result = await repo.findAll();
-
-      expect(result).toHaveLength(2);
-      expect(result[0]?.id).toBe('tenant-123');
-      expect(result[1]?.id).toBe('tenant-456');
-    });
-  });
+  // The `findAll` block moved with the method — `findAll()` was dead code
+  // (an unscoped cross-tenant `find()` with no caller).
 
   describe('create', () => {
     it('inserts a document with ACTIVE status and returns the domain tenant', async () => {
@@ -151,26 +140,8 @@ describe('TenantRepository', () => {
     });
   });
 
-  // ── DEC-032 slug lookups ─────────────────────────────────────────────────
-
-  describe('findBySlug', () => {
-    it('returns the tenant matching the slug', async () => {
-      collection.findOne.mockResolvedValue(makeDoc());
-
-      const result = await repo.findBySlug('test-tenant');
-
-      expect(collection.findOne).toHaveBeenCalledWith({ slug: 'test-tenant' });
-      expect(result?.id).toBe('tenant-123');
-    });
-
-    it('returns null when no tenant has the slug', async () => {
-      collection.findOne.mockResolvedValue(null);
-
-      const result = await repo.findBySlug('missing');
-
-      expect(result).toBeNull();
-    });
-  });
+  // The `findBySlug` block moved with the method — `findBySlug()` was dead
+  // code (a global lookup by a conventionally-unique value, no caller).
 
   describe('slugExists', () => {
     it('returns true when a tenant claims the slug', async () => {

@@ -6,7 +6,7 @@
   </div>
 } @else if (task(); as t) {
   <div class="mx-auto max-w-6xl">
-    <!-- Header (R3-P5): key never wraps, title clamps, priority badge on its own row -->
+    <!-- Header: key never wraps, title clamps, priority badge on its own row -->
     <div class="mb-6">
       <span class="whitespace-nowrap font-mono text-sm text-muted-foreground">{{ taskLabel() }}</span>
 
@@ -18,6 +18,7 @@
             id="inline-title-input"
             class="flex-1"
             type="text"
+            [attr.aria-label]="'taskDetail.editTitle' | transloco"
             [value]="titleDraft()"
             (input)="titleDraft.set($any($event.target).value)"
             (keydown.enter)="confirmTitleEdit()"
@@ -44,7 +45,7 @@
           </button>
         </div>
       } @else if (canEdit()) {
-        <!-- N-10: keyboard-operable — Enter and Space both activate -->
+        <!-- Keyboard-operable — Enter and Space both activate -->
         <div
           class="group relative mt-1 w-fit max-w-full cursor-pointer rounded px-1 py-0.5 transition-colors hover:bg-muted/50"
           role="button"
@@ -54,14 +55,14 @@
           (keydown.enter)="startTitleEdit()"
           (keydown.space)="$event.preventDefault(); startTitleEdit()"
         >
-          <h2 class="break-words pr-5 text-lg font-bold text-foreground line-clamp-2">{{ t.title }}</h2>
+          <h1 class="break-words pr-5 text-lg font-bold text-foreground line-clamp-2">{{ t.title }}</h1>
           <ng-icon
             name="lucidePencil"
             class="absolute top-1 right-1 size-3.5 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
           />
         </div>
       } @else {
-        <h2 class="mt-1 break-words text-lg font-bold text-foreground line-clamp-2">{{ t.title }}</h2>
+        <h1 class="mt-1 break-words text-lg font-bold text-foreground line-clamp-2">{{ t.title }}</h1>
       }
 
       <!-- Priority badge on its own row under the title -->
@@ -78,7 +79,7 @@
       </p>
     </div>
 
-    <!-- Content: flexible main column + compact side panel (DR-3) -->
+    <!-- Content: flexible main column + compact side panel -->
     <div class="grid gap-6 lg:grid-cols-3">
       <!-- Main column: description, comments, relationships -->
       <div class="flex flex-col gap-6 lg:col-span-2">
@@ -87,7 +88,7 @@
             <!-- Description edit view: explicit Save/Cancel, outside clicks never discard
                  (keepEditViewOpenOnBlur semantics, R3-P5) -->
             @if (canEdit() && editingDescription()) {
-              <h3 class="text-sm font-medium text-foreground">{{ 'taskDetail.description' | transloco }}</h3>
+              <h2 class="text-sm font-medium text-foreground">{{ 'taskDetail.description' | transloco }}</h2>
               <ui-milkdown-editor
                 class="mt-2 block"
                 [content]="descriptionDraft()"
@@ -103,7 +104,7 @@
               </div>
             } @else if (canEdit()) {
               <!-- Read view with hover pencil affordance (Editor+ only) -->
-              <!-- N-10: keyboard-operable — Enter and Space both activate -->
+              <!-- Keyboard-operable — Enter and Space both activate -->
               <div
                 class="group -m-2 cursor-pointer rounded-md border border-transparent p-2 transition-colors hover:border-border hover:bg-muted/40"
                 role="button"
@@ -113,13 +114,13 @@
                 (keydown.enter)="startDescriptionEdit()"
                 (keydown.space)="$event.preventDefault(); startDescriptionEdit()"
               >
-                <h3 class="flex items-center gap-2 text-sm font-medium text-foreground">
+                <h2 class="flex items-center gap-2 text-sm font-medium text-foreground">
                   {{ 'taskDetail.description' | transloco }}
                   <ng-icon
                     name="lucidePencil"
                     class="size-3 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
                   />
-                </h3>
+                </h2>
                 @if (t.description) {
                   <ui-milkdown-editor
                     class="mt-2 block text-sm text-muted-foreground"
@@ -132,7 +133,7 @@
               </div>
             } @else {
               <!-- Viewer: plain read-only rendering, no affordance -->
-              <h3 class="text-sm font-medium text-foreground">{{ 'taskDetail.description' | transloco }}</h3>
+              <h2 class="text-sm font-medium text-foreground">{{ 'taskDetail.description' | transloco }}</h2>
               @if (t.description) {
                 <ui-milkdown-editor
                   class="mt-2 block text-sm text-muted-foreground"
@@ -155,13 +156,13 @@
         <ui-task-relationships [taskId]="task()?.id ?? ''" [projectId]="t.projectId" />
       </div>
 
-      <!-- Side panel: ONE compact card with grouped fields (DR-3) -->
+      <!-- Side panel: ONE compact card with grouped fields -->
       <div>
         <hlm-card>
           <div hlmCardContent class="divide-y divide-border">
             <!-- Status -->
             <section class="py-3 first:pt-0">
-              <h4 class="text-xs font-medium uppercase text-muted-foreground">{{ 'taskDetail.status' | transloco }}</h4>
+              <h3 class="text-xs font-medium uppercase text-muted-foreground">{{ 'taskDetail.status' | transloco }}</h3>
               @if (canEdit() && statusOptions().length > 0) {
                 <hlm-select
                   [value]="t.statusId"
@@ -214,7 +215,7 @@
 
             <!-- Type -->
             <section class="py-3">
-              <h4 class="text-xs font-medium uppercase text-muted-foreground">{{ 'taskDetail.type' | transloco }}</h4>
+              <h3 class="text-xs font-medium uppercase text-muted-foreground">{{ 'taskDetail.type' | transloco }}</h3>
               @if (canEdit() && typeOptions().length > 0) {
                 <hlm-select
                   class="mt-1"
@@ -296,7 +297,7 @@
               </div>
             </section>
 
-            <!-- Labels: editable in place (R3-P5), same autocomplete flow as create page -->
+            <!-- Labels: editable in place, same autocomplete flow as create page -->
             <section class="py-3">
               <h4 class="text-xs font-medium uppercase text-muted-foreground">
                 {{ 'taskDetail.labels' | transloco }}
@@ -380,7 +381,7 @@
             </section>
           </div>
 
-          <!-- Subtle destructive action in the panel footer (DR-3) -->
+          <!-- Subtle destructive action in the panel footer -->
           @if (canDelete()) {
             <hlm-card-footer>
               <button

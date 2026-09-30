@@ -11,10 +11,10 @@
  * - isAdmin computed signal
  */
 import { TestBed } from '@angular/core/testing';
-import { provideHttpClient } from '@angular/common/http';
+import { HttpErrorResponse, provideHttpClient } from '@angular/common/http';
 import { provideHttpClientTesting } from '@angular/common/http/testing';
 import { provideRouter } from '@angular/router';
-import { firstValueFrom, of } from 'rxjs';
+import { firstValueFrom, of, throwError } from 'rxjs';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { ProjectDetail } from './project-detail';
 import { ProjectClient } from '@services/project-client';
@@ -123,10 +123,22 @@ async function until(condition: () => boolean): Promise<void> {
   await settle(fixture);
 }
 
-async function setup(options: { tenantRole?: string; projectStatus?: Project['status'] } = {}) {
-  const project = options.projectStatus ? { ...mockProject, status: options.projectStatus } : mockProject;
+async function setup(
+  options: {
+    tenantRole?: string;
+    projectStatus?: Project['status'];
+    withoutProject?: boolean;
+    statusSummaryError?: number;
+  } = {},
+) {
+  // `withoutProject` reproduces the window before the guard-loaded project
+  // reaches the store (projectId === ''), which is what the blank-param guards
+  // in the two task resources protect against.
+  const project: Project | null = options.withoutProject
+    ? null
+    : { ...mockProject, status: options.projectStatus ?? mockProject.status };
 
-  // F1: the overview does NOT fetch the project itself — getById is asserted
+  // The overview does NOT fetch the project itself — getById is asserted
   // to stay untouched; the store (fed by projectGuard) is the single source.
   projectClientMock = { getById: vi.fn().mockReturnValue(of(project)) };
   sprintClientMock = { list: vi.fn().mockReturnValue(of(mockSprints)) };
@@ -137,7 +149,7 @@ async function setup(options: { tenantRole?: string; projectStatus?: Project['st
 
       return paginated([]);
     }),
-    // S-05: per-status counts now come from one status-summary request
+    // Per-status counts now come from one status-summary request
     statusSummary: vi.fn().mockReturnValue(
       of([
         { statusId: 's1', count: 5 },
@@ -145,6 +157,24 @@ async function setup(options: { tenantRole?: string; projectStatus?: Project['st
       ]),
     ),
   };
+
+  // The status-summary aggregation is one of the endpoints most likely to
+  // fail for a member without project access (403), and a 500 for anything else.
+  // Both must leave the page rendering, not throw inside a computed.
+  const statusSummaryError = options.statusSummaryError ?? 0;
+
+  if (statusSummaryError > 0) {
+    taskClientMock.statusSummary = vi.fn().mockReturnValue(
+      throwError(
+        () =>
+          new HttpErrorResponse({
+            status: statusSummaryError,
+            statusText: 'Failed',
+            error: { error: { code: 'FORBIDDEN', message: 'nope' } },
+          }),
+      ),
+    );
+  }
 
   TestBed.resetTestingModule();
   TestBed.configureTestingModule({
@@ -159,13 +189,13 @@ async function setup(options: { tenantRole?: string; projectStatus?: Project['st
       { provide: StatusClient, useValue: statusClientMock },
       { provide: TaskClient, useValue: taskClientMock },
       { provide: AuthStore, useValue: { tenantRole: vi.fn().mockReturnValue(options.tenantRole ?? 'OWNER') } },
-      // R3-P8: format tokens consumed by recent tasks / sprint dates
+      // Format tokens consumed by recent tasks / sprint dates
       {
         provide: PreferencesStore,
         useValue: {
           datePipeFormat: () => 'yyyy-MM-dd',
           dateTimePipeFormat: () => 'yyyy-MM-dd HH:mm',
-          // P12 (item 28): active language used as the DatePipe locale
+          // Active language used as the DatePipe locale
           language: () => 'en',
         },
       },
@@ -193,6 +223,19 @@ async function setup(options: { tenantRole?: string; projectStatus?: Project['st
 }
 
 describe('ProjectDetail (overview)', () => {
+  // `projectId` is blank until the guard-loaded project reaches the store.
+  // The status-summary and recent-tasks resources used to run their streams in
+  // that window, i.e. `statusSummary('')` and `list('', { limit: 5 })`.
+  it('should NOT request status summary or recent tasks while the project is unresolved (F21)', async () => {
+    await setup({ withoutProject: true });
+    await settle(fixture);
+
+    expect(taskClientMock.statusSummary).not.toHaveBeenCalled();
+    expect(taskClientMock.list).not.toHaveBeenCalled();
+    expect(component.statusCounts()).toEqual([]);
+    expect(component.recentTasks()).toEqual([]);
+  });
+
   it('should use the guard-loaded project from ProjectStore WITHOUT a duplicate getById request (F1)', async () => {
     await setup();
     await until(() => component.project() !== null);
@@ -210,6 +253,21 @@ describe('ProjectDetail (overview)', () => {
     expect(sprintClientMock.list).toHaveBeenCalledWith(mockProject.id);
     expect(component.activeSprint()?.name).toBe('Sprint 1');
   });
+
+  // Reading `.value()` of an errored resource throws. A 403/500 on the
+  // status-summary aggregation must degrade to "no counts", never to a thrown
+  // computed — the guard is the property, the status is an input.
+  for (const status of [403, 500]) {
+    it(`should not throw when the status-summary request fails with ${status} (D-39)`, async () => {
+      await setup({ statusSummaryError: status });
+      await until(() => component.project() !== null);
+      await settle(fixture);
+
+      expect(() => component.statusCounts()).not.toThrow();
+      expect(component.statusCounts()).toEqual([]);
+      expect(component.totalTasks()).toBe(0);
+    });
+  }
 
   it('should compute per-status totals from the status-summary endpoint (S-05)', async () => {
     await setup();

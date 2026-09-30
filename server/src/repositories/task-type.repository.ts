@@ -56,7 +56,9 @@ export class TaskTypeRepository extends BaseRepository<TaskTypeDocument, TaskTyp
 
   async create(
     projectId: string,
-    input: { key: string; name: string; icon?: string | null; position: number },
+    // `| undefined` — mirrors the shared `CreateTaskType` (`icon` is a
+    // validated-but-absent optional); normalised with `?? null` below.
+    input: { key: string; name: string; icon?: string | null | undefined; position: number },
   ): Promise<TaskType> {
     const now = new Date();
     const doc: TaskTypeDocument = {
@@ -76,7 +78,10 @@ export class TaskTypeRepository extends BaseRepository<TaskTypeDocument, TaskTyp
 
   async createMany(
     projectId: string,
-    items: { key: string; name: string; icon?: string | null; position: number }[],
+    // `| undefined` because this mirrors the shared `CreateTaskType`, whose
+    // `icon` is a validated-but-absent optional (`z.string().optional()`), and
+    // the body normalises it with `?? null` immediately below.
+    items: { key: string; name: string; icon?: string | null | undefined; position: number }[],
   ): Promise<TaskType[]> {
     const now = new Date();
     const docs: TaskTypeDocument[] = items.map((item) => ({

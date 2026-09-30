@@ -1,119 +1,125 @@
 /**
- * E2E tests for the authentication flows: registration, sign in, sign out.
+ * E2E for the authentication journeys, driven through the real forms
+ * (Signal Forms + Spartan Helm fields) against the running API.
  *
- * These tests exercise the real register/login forms (Signal Forms + Spartan
- * Helm fields) against the running backend. Each run registers a unique user
- * so the suite is re-runnable against a shared database.
+ * These are the only tests that register through the UI on purpose: the register
+ * form itself must be covered. The workspace/tenant that the rest of the suite
+ * uses is created by the shared fixture instead (see `fixtures/test.ts`).
  *
- * Requires: Angular dev server (port 4200) + backend API (port 8787).
+ * Selectors are structural ids from `register.html` / `login.html`.
  */
-import { test, expect } from '@playwright/test';
-import { registerUser, loginUser, logoutUser, uniqueEmail, TEST_PASSWORD } from './helpers';
+import { anonTest as test, expect } from './fixtures/test';
+import {
+  apiCreateTenant,
+  apiRegister,
+  UI_URL,
+  loginThroughUi,
+  logoutUser,
+  registerThroughUi,
+  seedSession,
+  TEST_PASSWORD,
+  uniqueEmail,
+  uniqueSlug,
+} from './helpers';
 
-test.describe('Authentication', () => {
-  test.describe('Registration', () => {
-    test('shows the registration form with all required fields', async ({ page }) => {
-      await page.goto('/auth/register');
+test.describe('Registration', () => {
+  test('the form exposes every field the account needs', async ({ page }) => {
+    await page.goto('/auth/register');
 
-      await expect(page.getByPlaceholder('John Doe')).toBeVisible();
-      await expect(page.getByPlaceholder('you@example.com')).toBeVisible();
-      await expect(page.locator('input[type="password"]')).toHaveCount(2);
-      await expect(page.locator('button[type="submit"]')).toBeVisible();
-    });
-
-    test('prevents submission when passwords do not match', async ({ page }) => {
-      await page.goto('/auth/register');
-
-      await page.getByPlaceholder('John Doe').fill('E2E User');
-      await page.getByPlaceholder('you@example.com').fill(uniqueEmail('mismatch'));
-      await page.locator('input[type="password"]').nth(0).fill(TEST_PASSWORD);
-      await page.locator('input[type="password"]').nth(1).fill('Different123!');
-      await page.locator('button[type="submit"]').click();
-
-      // Validation keeps the user on the register page
-      await expect(page).toHaveURL(/\/auth\/register/);
-    });
-
-    test('registers a new user and lands on the authenticated area', async ({ page }) => {
-      const email = uniqueEmail('register');
-
-      await registerUser(page, email);
-
-      // Authenticated users leave the auth section (dashboard or workspace creation)
-      await expect(page).not.toHaveURL(/\/auth\//);
-    });
+    await expect(page.locator('#displayName')).toBeVisible();
+    await expect(page.locator('#email')).toBeVisible();
+    await expect(page.locator('#password')).toBeVisible();
+    await expect(page.locator('#confirmPassword')).toBeVisible();
+    await expect(page.locator('button[type="submit"][form="register-form"]')).toBeEnabled();
   });
 
-  test.describe('Sign in', () => {
-    test('shows the sign in form', async ({ page }) => {
-      await page.goto('/auth/login');
+  test('a mismatched confirmation blocks submission and shows the field error', async ({ page }) => {
+    await page.goto('/auth/register');
+    await page.locator('#displayName').fill('E2E User');
+    await page.locator('#email').fill(uniqueEmail('mismatch'));
+    await page.locator('#password').fill(TEST_PASSWORD);
+    await page.locator('#confirmPassword').fill('Different123!');
+    await page.locator('button[type="submit"][form="register-form"]').click();
 
-      await expect(page.getByPlaceholder('you@example.com')).toBeVisible();
-      await expect(page.locator('input[type="password"]')).toBeVisible();
-      await expect(page.locator('button[type="submit"]')).toBeVisible();
-    });
-
-    test('rejects a wrong password with a visible error', async ({ page }) => {
-      const email = uniqueEmail('badlogin');
-
-      await registerUser(page, email);
-      await logoutUser(page);
-
-      await page.goto('/auth/login');
-      await page.getByPlaceholder('you@example.com').fill(email);
-      await page.locator('input[type="password"]').fill('WrongPassword123!');
-      await page.locator('button[type="submit"]').click();
-
-      // The login card renders a destructive alert on failed sign-in
-      await expect(page.locator('hlm-alert, [data-slots="alert"], .destructive').first()).toBeVisible({
-        timeout: 10_000,
-      });
-      await expect(page).toHaveURL(/\/auth\/login/);
-    });
-
-    test('signs in a registered user', async ({ page }) => {
-      const email = uniqueEmail('login');
-
-      await registerUser(page, email);
-      await logoutUser(page);
-
-      await loginUser(page, email);
-
-      await expect(page).not.toHaveURL(/\/auth\//);
-    });
-
-    test('navigates to the register page from sign in', async ({ page }) => {
-      await page.goto('/auth/login');
-
-      const registerLink = page.locator('a[href="/auth/register"]');
-
-      await expect(registerLink).toBeVisible();
-      await registerLink.click();
-      await expect(page).toHaveURL(/\/auth\/register/);
-    });
+    // `register.ts` refuses a mismatch at submit time and renders the message in
+    // the card alert — the visible proof that no account was created.
+    await expect(page.locator('hlm-alert').first()).toBeVisible();
+    await expect(page).toHaveURL(/\/auth\/register/);
   });
 
-  test.describe('Sign out', () => {
-    test('returns to the sign in page after sign out', async ({ page }) => {
-      const email = uniqueEmail('logout');
+  test('registering authenticates the new account', async ({ page }) => {
+    await registerThroughUi(page, uniqueEmail('register'));
 
-      await registerUser(page, email);
+    // Out of the auth section…
+    await expect(page).not.toHaveURL(/\/auth\//);
+    // …and signed in: `header-actions.html` renders the user menu only for an
+    // authenticated session and the sign-in button only for an anonymous one.
+    await expect(page.locator('ui-user-menu')).toHaveCount(1);
+  });
+});
 
-      await logoutUser(page);
+test.describe('Sign in', () => {
+  test('the form exposes e-mail, password and a submit button', async ({ page }) => {
+    await page.goto('/auth/login');
+
+    await expect(page.locator('#email')).toBeVisible();
+    await expect(page.locator('#password')).toBeVisible();
+    await expect(page.locator('button[type="submit"][form="login-form"]')).toBeEnabled();
+  });
+
+  test('a wrong password is rejected with a visible error', async ({ page, request }) => {
+    const user = await apiRegister(request, 'badpassword');
+
+    await loginThroughUi(page, user.email, 'WrongPassword123!');
+
+    // The auth cards render a destructive alert on failure (hlm-alert + variant).
+    await expect(page.locator('hlm-alert').first()).toBeVisible();
+    await expect(page).toHaveURL(/\/auth\/login/);
+    await expect(page.locator('ui-user-menu')).toHaveCount(0);
+  });
+
+  test('signing in takes the user into their workspace', async ({ page, request }) => {
+    const user = await apiRegister(request, 'signin');
+    const tenant = await apiCreateTenant(request, user.token, 'Sign in workspace', uniqueSlug('si'));
+
+    await loginThroughUi(page, user.email, user.password);
+
+    // An authenticated user with an accessible workspace is forwarded into it.
+    await expect(page).toHaveURL(new RegExp(`/w/${tenant.slug}`));
+    await expect(page.locator('main h1')).toHaveText('Sign in workspace');
+  });
+});
+
+test.describe('Sign out', () => {
+  test('signing out returns to the sign-in page and drops the stored session', async ({ page, request }) => {
+    const user = await apiRegister(request, 'logout');
+    const tenant = await apiCreateTenant(request, user.token, 'Sign out workspace', uniqueSlug('so'));
+
+    await seedSession(page, { token: user.token, tenantId: tenant.id });
+    await page.goto(`/w/${tenant.slug}`);
+    await expect(page.locator('main h1')).toHaveText('Sign out workspace');
+
+    await logoutUser(page);
+
+    await expect(page.locator('ui-user-menu')).toHaveCount(0);
+    await expect(page.locator('ui-sign-in-button')).toHaveCount(1);
+    // The JWT is really gone from storage — not merely hidden by the header.
+    await expect.poll(() => page.evaluate(() => localStorage.getItem('taskboard_token'))).toBeNull();
+  });
+
+  test('a tenant route redirects to sign-in for an anonymous visitor', async ({ browser, request }) => {
+    const user = await apiRegister(request, 'guard');
+    const tenant = await apiCreateTenant(request, user.token, 'Guard workspace', uniqueSlug('gd'));
+    // A context with no injected session: the auth guard has nothing to work with.
+    const context = await browser.newContext({ baseURL: UI_URL });
+    const page = await context.newPage();
+
+    try {
+      await page.goto(`/w/${tenant.slug}`);
 
       await expect(page).toHaveURL(/\/auth\/login/);
-    });
-
-    test('protected areas redirect to sign in after sign out', async ({ page }) => {
-      const email = uniqueEmail('guard');
-
-      await registerUser(page, email);
-      await logoutUser(page);
-
-      // Workspace creation requires auth — the guard must bounce us to login
-      await page.goto('/workspace/create');
-
-      await expect(page).toHaveURL(/\/auth\/login/);
-    });
+    } finally {
+      await context.close();
+    }
   });
 });

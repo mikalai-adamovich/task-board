@@ -1,5 +1,5 @@
 /**
- * Tests for the ProjectDangerZone page (DEC-035).
+ * Tests for the ProjectDangerZone page.
  *
  * Covers:
  * - Archive / restore / cancel-deletion lifecycle actions
@@ -69,7 +69,7 @@ async function setup(projectStatus: Project['status'] = 'ACTIVE') {
         useValue: {
           activeProject: Object.assign(() => project, { set: vi.fn(), update: vi.fn() }),
           projectRole: vi.fn().mockReturnValue(null),
-          // F4: lifecycle mutations patch the shared tenant project-list cache
+          // Lifecycle mutations patch the shared tenant project-list cache
           upsertProject: vi.fn(),
         },
       },
@@ -173,7 +173,7 @@ describe('ProjectDangerZone', () => {
         activeProject: { set: ReturnType<typeof vi.fn> };
       };
 
-      // F1: the overview reads ProjectStore.activeProject() without re-fetching,
+      // The overview reads ProjectStore.activeProject() without re-fetching,
       // so the read-only banner would stay stale unless the store is updated here.
       expect(store.activeProject.set).toHaveBeenCalledWith(expect.objectContaining({ status: 'DELETION_PENDING' }));
     });

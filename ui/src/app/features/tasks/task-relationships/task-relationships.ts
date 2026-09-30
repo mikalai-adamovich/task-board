@@ -40,17 +40,17 @@ export class TaskRelationships implements OnInit {
   readonly taskId = input.required<string>();
   /** Current project ID */
   readonly projectId = input.required<string>();
-  protected readonly relationships = signal<TaskRelationship[]>([]);
-  protected readonly loading = signal(true);
-  protected readonly error = signal('');
+  private readonly relationships = signal<TaskRelationship[]>([]);
+  private readonly loading = signal(true);
+  private readonly error = signal('');
   // Create form
-  protected readonly targetTaskId = signal('');
-  protected readonly relationshipType = signal<string>(TaskRelationshipType.BLOCKS);
-  protected readonly creating = signal(false);
-  protected readonly showCreateForm = signal(false);
+  private readonly targetTaskId = signal('');
+  private readonly relationshipType = signal<string>(TaskRelationshipType.BLOCKS);
+  private readonly creating = signal(false);
+  private readonly showCreateForm = signal(false);
   // Delete confirmation
-  protected readonly showDeleteConfirm = signal(false);
-  protected readonly relationshipToDelete = signal<TaskRelationship | null>(null);
+  private readonly showDeleteConfirm = signal(false);
+  private readonly relationshipToDelete = signal<TaskRelationship | null>(null);
   protected readonly relationshipTypes = [
     TaskRelationshipType.BLOCKS,
     TaskRelationshipType.RELATES_TO,
@@ -61,7 +61,7 @@ export class TaskRelationships implements OnInit {
     this.loadRelationships();
   }
 
-  protected loadRelationships(): void {
+  private loadRelationships(): void {
     this.loading.set(true);
     this.relationshipClient
       .list(this.taskId())
@@ -131,7 +131,7 @@ export class TaskRelationships implements OnInit {
   }
 
   /** Whether the current task is the source of this relationship */
-  protected isSource(rel: TaskRelationship): boolean {
+  private isSource(rel: TaskRelationship): boolean {
     return rel.sourceTaskId === this.taskId();
   }
 
@@ -149,7 +149,6 @@ export class TaskRelationships implements OnInit {
     this.targetTaskId.set((event.target as HTMLInputElement).value);
   }
 
-  protected onTypeChange(event: Event): void {
-    this.relationshipType.set((event.target as HTMLSelectElement).value);
-  }
+  // `onTypeChange()` was removed as dead code — the relationship-type select
+  // binds through the signal's own `(change)`/model path, not this handler.
 }

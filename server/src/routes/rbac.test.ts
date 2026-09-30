@@ -134,12 +134,14 @@ describe('Project RBAC enforcement (V2-4)', () => {
     const body = (await res.json()) as { data: { id: string } };
 
     expect(body.data.id).toBe('task-1');
+    // The route now forwards the single required caller
+    // context object instead of loose userId/role/projectRole arguments. The
+    // projectRole is resolved server-side inside the service (fine-grained
+    // re-check); the coarse gate above still runs in the middleware.
     expect((svc.tasks as { createTask: ReturnType<typeof vi.fn> }).createTask).toHaveBeenCalledWith(
       PROJECT_ID,
-      USER_ID,
-      'MEMBER',
-      'EDITOR',
       expect.objectContaining({ title: 'New task' }),
+      { tenantId: TENANT_ID, userId: USER_ID, userRole: 'MEMBER' },
     );
   });
 
@@ -182,11 +184,13 @@ describe('Project RBAC enforcement (V2-4)', () => {
     });
 
     expect(res.status).toBe(201);
+    // The service always receives the full caller context
+    // (tenant + actor + role) — it is a required argument, never derived from
+    // the path/body, so a foreign tenant id can never be smuggled in.
     expect((svc.statuses as { createStatus: ReturnType<typeof vi.fn> }).createStatus).toHaveBeenCalledWith(
       PROJECT_ID,
       CREATE_STATUS_BODY,
-      USER_ID,
-      'MEMBER',
+      { tenantId: TENANT_ID, userId: USER_ID, userRole: 'MEMBER' },
     );
   });
 

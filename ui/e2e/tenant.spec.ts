@@ -1,13 +1,33 @@
 /**
- * E2E tests for workspace (tenant) creation.
+ * E2E for workspace (tenant) creation — the wizard a brand-new account is sent to.
  *
- * A freshly registered user has no workspace, so the full flow is:
- * register → /workspace/create → fill name/slug → land on the tenant home.
+ * `create-workspace.html` is a three-step flow (details → plan → mock checkout →
+ * confirmation); the earlier version of this spec asserted a single submit landed
+ * on `/w/:slug`, which the product has never done.
  *
- * Requires: Angular dev server (port 4200) + backend API (port 8787).
+ * Selectors: `#workspace-form` and its `#workspace-name` / `#workspace-slug` inputs
+ * plus the first button of the card footer, which is the forward action on every
+ * step (continue / confirm) and the submit on the first.
  */
-import { test, expect } from '@playwright/test';
-import { registerUser, uniqueEmail } from './helpers';
+import { anonTest as test, expect } from './fixtures/test';
+import { apiRegister, seedSession, uniqueSlug } from './helpers';
+
+/** The forward action of the current wizard step (submit / continue / confirm). */
+function wizardAction(page: import('@playwright/test').Page) {
+  return page.locator('hlm-card-footer button[hlmBtn]').first();
+}
+
+/**
+ * Wait until the debounced slug-availability check has resolved.
+ *
+ * `create-workspace.ts` refuses to advance while the check is in flight, so a
+ * test that clicks immediately only proves the guard works. The "available"
+ * confirmation is the only green element of the slug field, which is why the
+ * handle keys on that class — it is a state marker, not translatable copy.
+ */
+function slugAvailabilitySettled(page: import('@playwright/test').Page) {
+  return page.locator('#workspace-slug').locator('xpath=../following-sibling::p[contains(@class, "text-green")]');
+}
 
 test.describe('Workspace creation', () => {
   test('requires authentication', async ({ page }) => {
@@ -16,47 +36,61 @@ test.describe('Workspace creation', () => {
     await expect(page).toHaveURL(/\/auth\/login/);
   });
 
-  test('shows the creation form with name and slug fields', async ({ page }) => {
-    const email = uniqueEmail('tenant-form');
+  test('the details step exposes name, slug and a continue action', async ({ page, request }) => {
+    const user = await apiRegister(request, 'wsform');
 
-    await registerUser(page, email);
+    await seedSession(page, { token: user.token, tenantId: '' });
     await page.goto('/workspace/create');
 
-    await expect(page.getByPlaceholder('My Workspace')).toBeVisible();
-    await expect(page.getByPlaceholder('my-workspace')).toBeVisible();
-    await expect(page.locator('button[type="submit"]')).toBeVisible();
+    await expect(page.locator('#workspace-form')).toBeVisible();
+    await expect(page.locator('#workspace-name')).toBeVisible();
+    await expect(page.locator('#workspace-slug')).toBeVisible();
+    await expect(wizardAction(page)).toBeEnabled();
   });
 
-  test('creates a workspace and lands on its home page', async ({ page }) => {
-    const email = uniqueEmail('tenant-create');
+  test('walking the wizard creates the workspace and lands inside it', async ({ page, request }) => {
+    const user = await apiRegister(request, 'wsmagic');
+    const name = `E2E Workspace ${Date.now().toString(36)}`;
+    const slug = uniqueSlug('magic');
 
-    await registerUser(page, email);
+    await seedSession(page, { token: user.token, tenantId: '' });
     await page.goto('/workspace/create');
 
-    const workspaceName = `E2E Workspace ${Date.now()}`;
+    await page.locator('#workspace-name').fill(name);
+    await page.locator('#workspace-slug').fill(slug);
+    await expect(slugAvailabilitySettled(page)).toBeVisible();
 
-    await page.getByPlaceholder('My Workspace').fill(workspaceName);
-    await page.locator('button[type="submit"]').click();
+    // details → plan
+    await wizardAction(page).click();
+    await expect(page.locator('#workspace-form')).toHaveCount(0);
+    // plan → checkout
+    await wizardAction(page).click();
+    // checkout → tenant home
+    await wizardAction(page).click();
 
-    // After creation the user is taken into the tenant-scoped area (/w/:slug)
-    await expect(page).toHaveURL(/\/w\//, { timeout: 10_000 });
-    await expect(page).not.toHaveURL(/\/workspace\/create/);
+    await expect(page).toHaveURL(new RegExp(`/w/${slug}`));
+    await expect(page.locator('main h1')).toHaveText(name);
   });
 
-  test('created workspace appears on the dashboard', async ({ page }) => {
-    const email = uniqueEmail('tenant-list');
+  test('a created workspace is still reachable after a reload', async ({ page, request }) => {
+    const user = await apiRegister(request, 'wsreload');
+    const name = `E2E Reload ${Date.now().toString(36)}`;
+    const slug = uniqueSlug('reload');
 
-    await registerUser(page, email);
+    await seedSession(page, { token: user.token, tenantId: '' });
     await page.goto('/workspace/create');
+    await page.locator('#workspace-name').fill(name);
+    await page.locator('#workspace-slug').fill(slug);
+    await expect(slugAvailabilitySettled(page)).toBeVisible();
+    await wizardAction(page).click();
+    await wizardAction(page).click();
+    await wizardAction(page).click();
+    await expect(page).toHaveURL(new RegExp(`/w/${slug}`));
 
-    const workspaceName = `E2E Listed ${Date.now()}`;
+    // A hard reload proves the workspace was persisted, not just held in a store.
+    await page.reload();
 
-    await page.getByPlaceholder('My Workspace').fill(workspaceName);
-    await page.locator('button[type="submit"]').click();
-    await expect(page).toHaveURL(/\/w\//, { timeout: 10_000 });
-
-    // Back on the root dashboard the workspace is listed/active
-    await page.goto('/');
-    await expect(page.getByText(workspaceName).first()).toBeVisible({ timeout: 10_000 });
+    await expect(page).toHaveURL(new RegExp(`/w/${slug}`));
+    await expect(page.locator('main h1')).toHaveText(name);
   });
 });

@@ -2,6 +2,7 @@ import { Component, computed, inject, input, signal } from '@angular/core';
 import { Router, RouterLink } from '@angular/router';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { form, FormField, FormRoot, submit, schema, required, minLength, maxLength } from '@angular/forms/signals';
+import { FieldControl } from '@app/shared/field-control/field-control';
 import { AuthClient } from '@services/auth-client';
 import { injectToasts } from '@app/shared/utils/toast-utils';
 import { getErrorMessage } from '@app/shared/utils/error-utils';
@@ -19,6 +20,7 @@ interface ResetPasswordModel {
 
 @Component({
   imports: [
+    FieldControl,
     HlmAlertImports,
     RouterLink,
     TranslocoPipe,
@@ -37,13 +39,13 @@ export class ResetPassword {
   private readonly authClient = inject(AuthClient);
   private readonly router = inject(Router);
   private readonly notify = injectToasts();
-  protected readonly error = signal('');
-  protected readonly submitting = signal(false);
+  private readonly error = signal('');
+  private readonly submitting = signal(false);
   /** Reset token from the `?token=` query param (bound via withComponentInputBinding) */
   readonly token = input<string>();
   protected readonly missingToken = computed(() => !this.token());
   private readonly model = signal<ResetPasswordModel>({ newPassword: '', confirmPassword: '' });
-  protected readonly resetForm = form(
+  private readonly resetForm = form(
     this.model,
     schema<ResetPasswordModel>((field) => {
       required(field.newPassword, { message: 'validation.passwordRequired' });
@@ -60,7 +62,7 @@ export class ResetPassword {
     },
   );
 
-  protected async resetPassword(): Promise<void> {
+  private async resetPassword(): Promise<void> {
     const token = this.token();
 
     if (!token) return;

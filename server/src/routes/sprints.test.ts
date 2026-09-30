@@ -34,7 +34,7 @@ const TENANT_ID = '550e8400-e29b-41d4-a716-446655440000';
 const PROJECT_ID = '550e8400-e29b-41d4-a716-446655440010';
 const USER_ID = '550e8400-e29b-41d4-a716-446655440002';
 const mockSprint = {
-  id: 'sprint-1',
+  id: 'aaaaaaaa-0000-4000-8000-000000000001',
   projectId: PROJECT_ID,
   name: 'Sprint 1',
   goal: null,
@@ -52,13 +52,17 @@ vi.mock('../services/sprint.service.js', () => ({
     getSprint: vi
       .fn()
       .mockImplementation((id: string) =>
-        id === 'missing-sprint' ? Promise.reject(new NotFoundError('Sprint not found')) : Promise.resolve(mockSprint),
+        id === 'aaaaaaaa-0000-4000-8000-0000000000ff'
+          ? Promise.reject(new NotFoundError('Sprint not found'))
+          : Promise.resolve(mockSprint),
       ),
     updateSprint: vi.fn().mockResolvedValue(mockSprint),
     deleteSprint: vi
       .fn()
       .mockImplementation((id: string) =>
-        id === 'missing-sprint' ? Promise.reject(new NotFoundError('Sprint not found')) : Promise.resolve(undefined),
+        id === 'aaaaaaaa-0000-4000-8000-0000000000ff'
+          ? Promise.reject(new NotFoundError('Sprint not found'))
+          : Promise.resolve(undefined),
       ),
   })),
 }));
@@ -68,19 +72,37 @@ vi.mock('../services/sprint.service.js', () => ({
 const TEST_ENV = { JWT_SECRET: 'test-secret', MONGODB_URI: '', ALLOWED_ORIGINS: '*' };
 const VALID_UUID = USER_ID;
 
-function createTestApp(tenantRole = 'OWNER', projectRole: string | null = null) {
+interface MockSprintService {
+  getSprintsByProject: ReturnType<typeof vi.fn>;
+  createSprint: ReturnType<typeof vi.fn>;
+  getSprint: ReturnType<typeof vi.fn>;
+  updateSprint: ReturnType<typeof vi.fn>;
+  deleteSprint: ReturnType<typeof vi.fn>;
+}
+
+/**
+ * @param sink receives the service mock instance created for the request, so
+ *             the forwarded caller context can be asserted on.
+ */
+function createTestApp(
+  tenantRole = 'OWNER',
+  projectRole: string | null = null,
+  sink: { svc?: MockSprintService } = {},
+) {
   const app = new Hono<AppEnv>();
 
   app.onError(errorHandler);
 
   app.use('/api/*', async (c, next) => {
-    const MockSprints = SprintService as unknown as new () => InstanceType<typeof SprintService>;
+    const MockSprints = SprintService as unknown as new () => MockSprintService;
+    const svc = new MockSprints();
 
+    sink.svc = svc;
     c.set('userId', VALID_UUID);
     c.set('tenantId', TENANT_ID);
     c.set('tenantRole', tenantRole as 'OWNER');
     c.set('projectRole', projectRole as never);
-    c.set('svc', { sprints: new MockSprints() } as never);
+    c.set('svc', { sprints: svc } as never);
     await next();
   });
 
@@ -231,17 +253,17 @@ describe('GET /api/sprints/:sprintId', () => {
   const app = createTestApp();
 
   it('returns 200 with the sprint', async () => {
-    const res = await getJson(app, '/api/sprints/sprint-1');
+    const res = await getJson(app, '/api/sprints/aaaaaaaa-0000-4000-8000-000000000001');
 
     expect(res.status).toBe(200);
 
     const body = (await res.json()) as { data: { id: string } };
 
-    expect(body.data.id).toBe('sprint-1');
+    expect(body.data.id).toBe('aaaaaaaa-0000-4000-8000-000000000001');
   });
 
   it('returns 404 with error envelope when the sprint does not exist', async () => {
-    const res = await getJson(app, '/api/sprints/missing-sprint');
+    const res = await getJson(app, '/api/sprints/aaaaaaaa-0000-4000-8000-0000000000ff');
 
     expect(res.status).toBe(404);
 
@@ -257,7 +279,7 @@ describe('PATCH /api/sprints/:sprintId', () => {
   const app = createTestApp();
 
   it('returns 200 with the updated sprint', async () => {
-    const res = await patchJson(app, '/api/sprints/sprint-1', { name: 'Renamed Sprint' });
+    const res = await patchJson(app, '/api/sprints/aaaaaaaa-0000-4000-8000-000000000001', { name: 'Renamed Sprint' });
 
     expect(res.status).toBe(200);
 
@@ -267,7 +289,7 @@ describe('PATCH /api/sprints/:sprintId', () => {
   });
 
   it('returns 400 for an invalid status value', async () => {
-    const res = await patchJson(app, '/api/sprints/sprint-1', { status: 'NOT_A_STATUS' });
+    const res = await patchJson(app, '/api/sprints/aaaaaaaa-0000-4000-8000-000000000001', { status: 'NOT_A_STATUS' });
 
     expect(res.status).toBe(400);
 
@@ -283,7 +305,7 @@ describe('DELETE /api/sprints/:sprintId', () => {
   const app = createTestApp();
 
   it('returns 200 with success envelope', async () => {
-    const res = await deleteJson(app, '/api/sprints/sprint-1');
+    const res = await deleteJson(app, '/api/sprints/aaaaaaaa-0000-4000-8000-000000000001');
 
     expect(res.status).toBe(200);
 
@@ -293,7 +315,7 @@ describe('DELETE /api/sprints/:sprintId', () => {
   });
 
   it('returns 404 when the sprint does not exist', async () => {
-    const res = await deleteJson(app, '/api/sprints/missing-sprint');
+    const res = await deleteJson(app, '/api/sprints/aaaaaaaa-0000-4000-8000-0000000000ff');
 
     expect(res.status).toBe(404);
 
@@ -345,5 +367,44 @@ describe('auth', () => {
     );
 
     expect(res.status).toBe(200);
+  });
+});
+
+// ─── Caller context forwarding ────────────────────────────────────────────────
+
+describe('caller context forwarding (M-001/M-006/M-034)', () => {
+  const expected = { tenantId: TENANT_ID, userId: VALID_UUID, userRole: 'OWNER' };
+
+  it('forwards tenantId + userId + role on every sprint route', async () => {
+    const create = {} as { svc?: MockSprintService };
+
+    await postJson(createTestApp('OWNER', null, create), `/api/projects/${PROJECT_ID}/sprints`, { name: 'Sprint 1' });
+    expect(create.svc?.createSprint).toHaveBeenCalledWith(PROJECT_ID, { name: 'Sprint 1' }, expected);
+
+    const list = {} as { svc?: MockSprintService };
+
+    await getJson(createTestApp('OWNER', null, list), `/api/projects/${PROJECT_ID}/sprints`);
+    expect(list.svc?.getSprintsByProject).toHaveBeenCalledWith(PROJECT_ID, expected);
+
+    const one = {} as { svc?: MockSprintService };
+
+    await getJson(createTestApp('OWNER', null, one), '/api/sprints/aaaaaaaa-0000-4000-8000-000000000001');
+    expect(one.svc?.getSprint).toHaveBeenCalledWith('aaaaaaaa-0000-4000-8000-000000000001', expected);
+
+    const update = {} as { svc?: MockSprintService };
+
+    await patchJson(createTestApp('OWNER', null, update), '/api/sprints/aaaaaaaa-0000-4000-8000-000000000001', {
+      name: 'Renamed',
+    });
+    expect(update.svc?.updateSprint).toHaveBeenCalledWith(
+      'aaaaaaaa-0000-4000-8000-000000000001',
+      { name: 'Renamed' },
+      expected,
+    );
+
+    const remove = {} as { svc?: MockSprintService };
+
+    await deleteJson(createTestApp('OWNER', null, remove), '/api/sprints/aaaaaaaa-0000-4000-8000-000000000001');
+    expect(remove.svc?.deleteSprint).toHaveBeenCalledWith('aaaaaaaa-0000-4000-8000-000000000001', expected);
   });
 });

@@ -1,3 +1,4 @@
+import * as z from 'zod';
 import { createMiddleware } from 'hono/factory';
 import { MemberStatus, TenantRole } from '@task-board/shared';
 import type { TenantMember } from '@task-board/shared';
@@ -5,6 +6,8 @@ import { ForbiddenError, ValidationError } from './error-handler.js';
 import { getCollection } from '../db/mongo.js';
 import type { TenantMemberDocument } from '../repositories/tenant-member.repository.js';
 import type { AppEnv } from '../types/context.js';
+import { isTenantAdmin } from '../services/rbac.service.js';
+import { uuid, slug } from '../validators/common.js';
 
 // ─── Document Shapes ─────────────────────────────────────────────────────────
 
@@ -25,6 +28,19 @@ interface ProjectMemberDocument {
 const PROJECT_PATH_PATTERN = /^\/api\/projects\/([^/]+)(?:\/|$)/;
 /** Matches a canonical tenant id (UUID) — anything else is treated as a slug. */
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/**
+ * The shapes `X-Tenant-Id` may take — the SAME two `resolveTenantMembership`
+ * understands, expressed with the shared validators every path parameter uses.
+ * Stated as a union of the two shapes rather than a list of values, so a future
+ * tenant-id format is judged by the same rule.
+ */
+const TENANT_REF_SCHEMA = z.union([uuid(), slug()]);
+/**
+ * The ONE answer for "you may not use this tenant" — given for an unknown
+ * tenant and for a known one the caller does not belong to alike, so the header
+ * cannot be used to enumerate which workspace slugs exist.
+ */
+const TENANT_ACCESS_DENIED = 'You are not a member of this tenant';
 
 // ─── Tenant Context Middleware ────────────────────────────────────────────────
 
@@ -32,7 +48,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
  * Hono middleware that resolves the active tenant context.
  *
  * 1. Reads the `X-Tenant-Id` header. The value may be a tenant **id** or a
- *    tenant **slug** (DEC-032): if a membership exists for the raw value it is
+ *    tenant **slug**: if a membership exists for the raw value it is
  *    used directly (id path, backward compatible); otherwise the value is
  *    resolved as a slug to its tenant id.
  * 2. Validates the authenticated user has an ACTIVE membership in that tenant.
@@ -60,7 +76,7 @@ export async function resolveTenantMembership(userId: string, tenantRef: string)
     return tenantMembers.findOne({ userId, tenantId: tenantRef });
   }
 
-  // S-14 slug path: probe the raw value as an id (backward compatible with
+  // Slug path: probe the raw value as an id (backward compatible with
   // legacy non-UUID ids) and resolve the slug CONCURRENTLY — one parallel
   // round-trip instead of two sequential ones. The membership query for the
   // resolved tenant id is inherently dependent and stays sequential.
@@ -82,6 +98,17 @@ export const tenantContextMiddleware = createMiddleware<AppEnv>(async (c, next) 
     throw new ValidationError('Missing X-Tenant-Id header');
   }
 
+  // `X-Tenant-Id` was the only externally-supplied value that crossed NO
+  // schema boundary — every path parameter is parsed by `pathParamValidation`
+  // first, while this header went straight into two indexed queries as an
+  // arbitrary, unbounded, unnormalised string. A malformed value is now a 400
+  // here, not a 403 ten lines later.
+  const parsed = TENANT_REF_SCHEMA.safeParse(tenantRef);
+
+  if (!parsed.success) {
+    throw new ValidationError('Invalid X-Tenant-Id header', parsed.error.issues);
+  }
+
   const userId = c.get('userId');
 
   if (!userId) {
@@ -98,7 +125,10 @@ export const tenantContextMiddleware = createMiddleware<AppEnv>(async (c, next) 
   }
 
   if (!membership) {
-    throw new ForbiddenError('You are not a member of this tenant');
+    // The shared message is deliberate — an unknown tenant and a known one
+    // the caller is not a member of must be indistinguishable, or the header
+    // becomes a workspace-slug enumeration oracle.
+    throw new ForbiddenError(TENANT_ACCESS_DENIED);
   }
 
   // DEC-055 lazy revoke: an ACTIVE membership past its expiration is treated
@@ -151,22 +181,50 @@ export const tenantContextMiddleware = createMiddleware<AppEnv>(async (c, next) 
   // Tenant Owner/Admin bypass happens inside the RBAC matrix, so no special
   // casing here — but we can skip the lookup entirely for them.
   //
-  // F3 (perf audit #2): the resolved projectRole is consumed ONLY by
-  // `requirePermission(action, true)` coarse gates, and every such gate sits on
-  // a POST/PATCH route (create_task, manage_statuses, manage_labels,
-  // edit_project_config, create_sprint, manage_boards). No GET/HEAD handler or
-  // service reads `projectRole` from the context (comment/task services resolve
-  // roles themselves from the addressed resource). So for read-only requests
-  // the `project_members.findOne` is pure overhead — skip it (saves one Mongo
-  // round-trip on every project-scoped GET for tenant MEMBERs).
-  const isReadRequest = c.req.method === 'GET' || c.req.method === 'HEAD';
+  // The lookup used to be restricted to non-GET/HEAD requests
+  // (F3 "perf audit #2"), on the assumption that no read route consumes
+  // `projectRole`. That assumption is now known to be false: `GET
+  // /projects/:projectId/audit` gates on `requirePermission('view_audit_events',
+  // true)`, so on a GET the project-level permission was ALWAYS evaluated with
+  // `projectRole === null` — i.e. "tenant OWNER/ADMIN only", silently. Reads and
+  // writes must see the same authorization context, so GET/HEAD are treated like
+  // every other verb.
+  //
+  // Behavioural consequence (intended): a tenant MEMBER who is a PROJECT_ADMIN of
+  // the project now passes `view_audit_events` and can read that project's audit
+  // log. A tenant MEMBER who is NOT a project member is still denied (403), and
+  // the tenant-wide `/tenants/:tenantId/audit` route is unaffected (it passes
+  // `projectLevel = false` and has no project in the path).
+  //
+  // Cost: one indexed `project_members.findOne({ userId, projectId })` per
+  // project-scoped GET for tenant MEMBERs. The tenant OWNER/ADMIN shortcut below
+  // is unchanged, so admin traffic pays nothing.
   const tenantRole = membership.role as TenantRole;
 
-  if (!isReadRequest && tenantRole !== TenantRole.OWNER && tenantRole !== TenantRole.ADMIN) {
+  // The last ad-hoc allow-list on a request path outside the services. It
+  // asks the same question the matrix answers — "is this tenant role one that
+  // bypasses project-level checks?" — and it gates a pure optimisation: tenant
+  // admins skip the `project_members` lookup because the matrix would ignore the
+  // project role anyway. Answering it from the matrix keeps the bypass rule in
+  // ONE place, so a change to `manage_tenant` cannot leave this lookup firing (or
+  // wrongly skipping) for a role the matrix no longer exempts.
+  if (!isTenantAdmin(tenantRole)) {
     const projectMatch = PROJECT_PATH_PATTERN.exec(c.req.path);
 
     if (projectMatch) {
+      // `noUncheckedIndexedAccess` types the capture group as
+      // `string | undefined`. Under `exactOptionalPropertyTypes` that no longer
+      // silently becomes `{ userId, projectId: undefined }` — and it must not:
+      // in MongoDB a filter on `projectId: undefined` matches documents where
+      // the field is MISSING or null, i.e. it would match the membership row of
+      // an unrelated project and grant the wrong `projectRole`. Bail out unless
+      // the capture really produced a project id.
       const projectId = projectMatch[1];
+
+      if (!projectId) {
+        throw new ValidationError('Malformed project path');
+      }
+
       const projectMembers = getCollection<ProjectMemberDocument>('project_members');
       const projectMembership = await projectMembers.findOne({ userId, projectId });
 

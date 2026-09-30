@@ -300,7 +300,7 @@ describe('POST /api/auth/accept-invitation', () => {
   const app = createTestApp();
 
   it('should return 200 with { data } envelope for valid token-only acceptance', async () => {
-    const res = await postJson(app, '/api/auth/accept-invitation', { token: 'invite-token-abc123' });
+    const res = await postJson(app, '/api/auth/accept-invitation', { token: 'a1b2c3d4e5f60718293a4b5c6d7e8f90' });
 
     expect(res.status).toBe(200);
 
@@ -316,7 +316,7 @@ describe('POST /api/auth/accept-invitation', () => {
 
   it('should return 200 for acceptance with password and displayName', async () => {
     const res = await postJson(app, '/api/auth/accept-invitation', {
-      token: 'invite-token-abc123',
+      token: 'a1b2c3d4e5f60718293a4b5c6d7e8f90',
       password: 'securePass123',
       displayName: 'New User',
     });
@@ -338,7 +338,7 @@ describe('POST /api/auth/accept-invitation', () => {
 
   it('should return 422 for password shorter than 8 chars', async () => {
     const res = await postJson(app, '/api/auth/accept-invitation', {
-      token: 'invite-token-abc123',
+      token: 'a1b2c3d4e5f60718293a4b5c6d7e8f90',
       password: 'short',
     });
 
@@ -352,7 +352,11 @@ describe('GET /api/auth/invitations/:token', () => {
   const app = createTestApp();
 
   it('should return 200 with { data } envelope containing invitation details', async () => {
-    const res = await app.request('/api/auth/invitations/invite-token-abc123', { method: 'GET' }, TEST_ENV);
+    const res = await app.request(
+      '/api/auth/invitations/a1b2c3d4e5f60718293a4b5c6d7e8f90',
+      { method: 'GET' },
+      TEST_ENV,
+    );
 
     expect(res.status).toBe(200);
 

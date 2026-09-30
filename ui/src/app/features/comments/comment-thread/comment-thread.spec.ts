@@ -54,8 +54,8 @@ describe('CommentThread', () => {
     delete: ReturnType<typeof vi.fn>;
   };
 
-  async function setup(opts: { comments?: Comment[]; canEdit?: boolean } = {}) {
-    const { comments = mockComments, canEdit = false } = opts;
+  async function setup(opts: { comments?: Comment[]; canEdit?: boolean; taskId?: string } = {}) {
+    const { comments = mockComments, canEdit = false, taskId = 'tk1' } = opts;
 
     commentClientMock = {
       list: vi.fn().mockReturnValue(of(comments)),
@@ -106,7 +106,7 @@ describe('CommentThread', () => {
 
     const fixture = TestBed.createComponent(CommentThread);
 
-    fixture.componentRef.setInput('taskId', 'tk1');
+    fixture.componentRef.setInput('taskId', taskId);
     fixture.componentRef.setInput('currentUserId', 'u1');
     fixture.componentRef.setInput('canEdit', canEdit);
 
@@ -115,6 +115,15 @@ describe('CommentThread', () => {
   }
 
   // ── Loading ─────────────────────────────────────────────────────
+  // A blank taskId (the route segment is not bound yet) must not produce
+  // `commentClient.list('')` — that request returns the SPA-fallback HTML.
+  it('should NOT load comments while the task id is blank (F21)', async () => {
+    await setup({ taskId: '' });
+
+    expect(commentClientMock.list).not.toHaveBeenCalled();
+    expect(component.comments()).toEqual([]);
+  });
+
   it('should load comments on init', async () => {
     await setup();
     expect(commentClientMock.list).toHaveBeenCalledWith('tk1');

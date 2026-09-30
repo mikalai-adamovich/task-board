@@ -1,7 +1,7 @@
 <hlm-card>
   <div hlmCardContent>
     <div class="flex items-center justify-between mb-4">
-      <h3 class="text-sm font-medium text-foreground">{{ 'filters.title' | transloco }}</h3>
+      <h2 class="text-sm font-medium text-foreground">{{ 'filters.title' | transloco }}</h2>
       <button
         hlmBtn
         variant="outline"
@@ -144,11 +144,15 @@
               id="filter-name"
               type="text"
               [formField]="saveForm.name"
+              uiFieldControl
               [placeholder]="'filters.namePlaceholder' | transloco"
             />
+            @if (saveForm.name().touched() && saveForm.name().errors().length) {
+              <hlm-field-error class="block">{{ saveForm.name().errors()[0]?.message | transloco }}</hlm-field-error>
+            }
           </hlm-field>
           <div class="flex gap-2">
-            <button hlmBtn size="sm" type="button" (click)="submitSave()" [disabled]="saveForm().invalid() || saving()">
+            <button hlmBtn size="sm" type="button" (click)="submitSave()" [disabled]="saving()">
               @if (saving()) {
                 <hlm-spinner class="mr-1" /> {{ 'filters.saving' | transloco }}
               } @else {
@@ -209,12 +213,15 @@
     <form [formRoot]="renameForm" class="flex flex-col gap-4">
       <hlm-field>
         <label hlmFieldLabel for="rename-view-name">{{ 'filters.name' | transloco }}</label>
-        <input hlmInput id="rename-view-name" type="text" [formField]="renameForm.name" />
+        <input hlmInput id="rename-view-name" type="text" [formField]="renameForm.name" uiFieldControl />
+        @if (renameForm.name().touched() && renameForm.name().errors().length) {
+          <hlm-field-error class="block">{{ renameForm.name().errors()[0]?.message | transloco }}</hlm-field-error>
+        }
       </hlm-field>
     </form>
     <hlm-dialog-footer>
       <button hlmBtn variant="outline" (click)="closeRename()">{{ 'filters.cancel' | transloco }}</button>
-      <button hlmBtn (click)="confirmRename()" [disabled]="renameForm().invalid() || renaming()">
+      <button hlmBtn (click)="confirmRename()" [disabled]="renaming()">
         @if (renaming()) {
           <hlm-spinner class="mr-1" /> {{ 'filters.renaming' | transloco }}
         } @else {

@@ -347,7 +347,7 @@ describe('TenantMemberList', () => {
     });
   });
 
-  // ── Layout (Q2/F-05: full-height flex column, like the task table) ──
+  // ── Layout (full-height flex column, like the task table) ──
 
   describe('layout', () => {
     it('should lay out as a fixed-height flex column with a flexing member-table area', async () => {

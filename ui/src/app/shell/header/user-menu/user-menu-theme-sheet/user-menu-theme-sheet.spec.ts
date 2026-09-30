@@ -452,4 +452,38 @@ describe('UserMenuThemeSheet', () => {
     expect(merged).not.toContain('focus-visible:border-ring');
     expect(merged).toContain('focus-visible:ring-0');
   });
+
+  // ── Accessible name ───────────────────────────────────────────────────────
+
+  it('should mark the sheet title with the hlmSheetTitle ATTRIBUTE directive', () => {
+    // The sheet's `<h3 hlm-sheet-title>` was a dangling aria-labelledby.
+    // BrnDialog (the CDK layer behind HlmSheetContent) puts
+    // `aria-labelledby="brn-dialog-title-<id>"` on its container, and the id
+    // only exists if BrnDialogTitle instantiated — which requires the vendored
+    // `HlmSheetTitle`, and that is an ATTRIBUTE directive
+    // (`selector: '[hlmSheetTitle]'` in ui/libs/ui/sheet/src/lib/
+    // hlm-sheet-title.ts). There is no `<hlm-sheet-title>` element component,
+    // and the dash-case spelling left the id unset.
+    //
+    // The portal body is not rendered in unit tests (see above), so this is
+    // asserted on the template source — the same approach the focus-ring test
+    // above already uses.
+    // Comments are stripped: the explanatory comment above spells both
+    // spellings out, and a comment is not markup.
+    const template = readFileSync(join(__dirname, 'user-menu-theme-sheet.html'), 'utf8').replace(
+      /<!--[\s\S]*?-->/g,
+      '',
+    );
+
+    expect(template).toMatch(/<h[1-6]\s+hlmSheetTitle\b/);
+    expect(template).not.toMatch(/\bhlm-sheet-title\b/);
+  });
+
+  it('should keep a text name on the sheet content itself', () => {
+    // Belt and braces: even if the id link were lost again, the content element
+    // still carries aria-label, so the dialog is never unlabelled.
+    const template = readFileSync(join(__dirname, 'user-menu-theme-sheet.html'), 'utf8');
+
+    expect(template).toMatch(/hlm-sheet-content[\s\S]*?\[attr\.aria-label\]/);
+  });
 });

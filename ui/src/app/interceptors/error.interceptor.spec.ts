@@ -177,22 +177,66 @@ describe('errorInterceptor', () => {
     req.flush(errorBody, { status: 403, statusText: 'Forbidden' });
   });
 
-  it('should handle unknown error codes gracefully', () => {
+  // This case USED TO assert that an unknown code surfaces the server's
+  // English prose as the user-facing message. That is the defect: the string was
+  // handed to the translation pipeline, so the user saw untranslated English on
+  // exactly the conditions (two of them 5xx) an operator most wants read. The
+  // replacement asserts the correct behaviour — a transloco key — and that the
+  // server's prose is NOT what reaches the UI.
+  it('should map an unknown error code to a transloco key, never to the server prose', () => {
     const errorBody = {
       error: {
         code: 'UNKNOWN_CODE',
         message: 'Something went wrong',
       },
     };
+    // Asserted AFTER the flush, not inside the callback: an assertion inside an
+    // `error:` handler that never fires is a test that passes for the wrong
+    // reason — and this file's older cases have exactly that shape.
+    let userMessage: string | undefined;
+    let serverText: string | undefined;
 
     http.get('/api/boards').subscribe({
       error: (err) => {
-        expect(err.userMessage).toBe('Something went wrong');
+        userMessage = err.userMessage;
+        serverText = (err.error as typeof errorBody).error.message;
       },
     });
 
     const req = httpMock.expectOne('/api/boards');
 
     req.flush(errorBody, { status: 500, statusText: 'Internal Server Error' });
+
+    expect(userMessage).toBe('errors.unknown');
+    expect(userMessage).not.toBe(errorBody.error.message);
+    // The raw server text is still on the error for logging, not for display.
+    expect(serverText).toBe('Something went wrong');
+  });
+
+  it('should map each of the codes the client used to be missing (D-32)', () => {
+    const cases = [
+      { code: 'INVALID_RESET_TOKEN', key: 'errors.invalidResetToken', status: 400 },
+      { code: 'RATE_LIMITED', key: 'errors.rateLimited', status: 429 },
+      { code: 'QUERY_TIMEOUT', key: 'errors.queryTimeout', status: 503 },
+      { code: 'TASK_NUMBER_UNAVAILABLE', key: 'errors.taskNumberUnavailable', status: 503 },
+      // The body cap's own code. Without this entry a 413 would fall through to
+      // `errors.unknown` — a raw-code-shaped failure the user cannot act on.
+      { code: 'PAYLOAD_TOO_LARGE', key: 'errors.payloadTooLarge', status: 413 },
+    ];
+
+    for (const { code, key, status } of cases) {
+      let message = '';
+
+      http.get(`/api/case-${code}`).subscribe({
+        error: (err) => {
+          message = err.userMessage ?? '';
+        },
+      });
+      httpMock
+        .expectOne(`/api/case-${code}`)
+        .flush({ error: { code, message: 'server prose' } }, { status, statusText: 'Failed' });
+
+      expect(message, `${code} → ${key}`).toBe(key);
+    }
   });
 });

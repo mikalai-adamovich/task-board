@@ -108,6 +108,31 @@ describe('UserRepository', () => {
 
       expect(result).toBeNull();
     });
+
+    it('D-12: deliberately MATCHES a soft-deleted user — the uniqueness check it guards needs to see them', async () => {
+      // The counter-intuitive half of the fix, asserted so it cannot be "tidied
+      // up" later. `users.email` carries a plain (not partial) unique index, so
+      // a soft-deleted row is one a re-registration WOULD collide with. If this
+      // method filtered `deletedAt: null`, register would report the address as
+      // free and the insert would fail on E11000 instead of the intended
+      // "already taken" — a worse answer than the one it replaced.
+      collection.findOne.mockResolvedValue(makeDoc({ deletedAt: new Date('2025-06-01T00:00:00Z') }));
+
+      const result = await repo.findByEmail('test@example.com');
+
+      expect(collection.findOne).toHaveBeenCalledWith({ email: 'test@example.com' });
+      expect(result?.deletedAt).toBeInstanceOf(Date);
+    });
+  });
+
+  describe('D-12: the method authentication may use', () => {
+    it('findActiveByEmail filters deletedAt — the soft-delete predicate is the query, not the caller', async () => {
+      collection.findOne.mockResolvedValue(null);
+
+      await repo.findActiveByEmail('test@example.com');
+
+      expect(collection.findOne).toHaveBeenCalledWith({ email: 'test@example.com', deletedAt: null });
+    });
   });
 
   describe('create', () => {

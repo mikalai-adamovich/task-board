@@ -1,14 +1,14 @@
-<!-- R3-P3/Q6-F-13: full-height flex column — exactly viewport minus the app header
+<!-- Full-height flex column — exactly viewport minus the app header
      (--header-height: 2.5rem below lg, 4rem from lg) and the shell <main> vertical
      padding (p-3 → 1.5rem below lg, p-6 → 3rem from lg). Horizontal padding comes
-     from the shell (F-12). Toolbar / chips / table / pagination stack vertically;
+     from the shell. Toolbar / chips / table / pagination stack vertically;
      the table wrapper flexes to fill the rest so the table bottom aligns with the
      page bottom (no dead space, no page scroll). Toolbar wraps instead of
      overflowing on mobile. -->
 <div
   class="flex h-[calc(100dvh-var(--header-height)-1.5rem)] lg:h-[calc(100dvh-var(--header-height)-3rem)] w-full min-w-0 flex-col"
 >
-  <!-- M-13 (4.2): toolbar extracted to TaskTableHeader; the column-chooser child
+  <!-- Toolbar extracted to TaskTableHeader; the column-chooser child
        is projected through <ng-content /> so the flex layout is unchanged. -->
   <ui-task-table-header
     [searchValue]="searchInput()"
@@ -32,7 +32,7 @@
     />
   </ui-task-table-header>
 
-  <!-- M-13 (4.2): filters dialog + active-filter chips extracted to TaskTableFilters -->
+  <!-- Filters dialog + active-filter chips extracted to TaskTableFilters -->
   <ui-task-table-filters
     [dialogOpen]="showFilterDialog()"
     [projectId]="projectId()"
@@ -44,7 +44,7 @@
     (filterApplied)="onFilterApplied($event)"
   />
 
-  <!-- M-13 (4.2): bulk-action bar extracted to TaskBulkBar (presentational) -->
+  <!-- Bulk-action bar extracted to TaskBulkBar (presentational) -->
   @if (canCreateTasks() && selectedCount() > 0) {
     <ui-task-table-bulk-bar
       [selectedCount]="selectedCount()"
@@ -69,10 +69,10 @@
        to 0px whenever the fixed px widths of the other columns consumed the table
        width (sort button unclickable). Auto layout + per-cell `truncate` keeps
        widths stable while honoring the Title column's min-width. -->
-  <!-- R3-P3: `#tableWrap` is measured by a ResizeObserver to derive the Auto page size;
+  <!-- `#tableWrap` is measured by a ResizeObserver to derive the Auto page size;
        `min-h-0 flex-1` lets it shrink/grow inside the fixed-height page column. -->
   <div hlmTableContainer #tableWrap class="min-h-0 flex-1">
-    <!-- S-09: accessible table name for screen readers -->
+    <!-- Accessible table name for screen readers -->
     <table
       hlmTable
       class="w-full"
@@ -94,7 +94,11 @@
             <th hlmTableHead scope="col" [class]="col.width" (contextmenu)="onHeaderContextMenu($event, col)">
               <div class="flex items-center gap-1 whitespace-nowrap">
                 <button
-                  class="cursor-pointer flex items-center gap-1 hover:text-foreground"
+                  hlmBtn
+                  variant="ghost"
+                  size="sm"
+                  class="h-auto px-1.5 text-sm"
+                  type="button"
                   (click)="toggleSort(col.field)"
                 >
                   <span>{{ col.labelKey | transloco }}</span>
@@ -111,7 +115,14 @@
                   <!-- Round-4 F3: date columns sit at the right viewport edge — align
                        their popovers 'end' so they open leftward, not clipped. -->
                   <hlm-popover sideOffset="4" [align]="col.align ?? 'center'">
-                    <button hlmPopoverTrigger hlmBtn variant="ghost" size="icon" class="size-6 shrink-0">
+                    <button
+                      hlmPopoverTrigger
+                      hlmBtn
+                      variant="ghost"
+                      size="icon"
+                      class="size-6 shrink-0"
+                      [attr.aria-label]="'a11y.filterColumn' | transloco: { column: col.labelKey | transloco }"
+                    >
                       <ng-icon name="lucideFilter" class="text-sm" [class.text-primary]="col.getFilterValue()" />
                     </button>
                     <hlm-popover-content *hlmPopoverPortal [class]="col.popoverWidth ?? 'w-48'">
@@ -124,9 +135,10 @@
                             [value]="col.getFilterValue()"
                             (input)="col.setFilterValue!($any($event.target).value)"
                             [placeholder]="col.placeholder ?? '' | transloco"
+                            [attr.aria-label]="'a11y.filterColumn' | transloco: { column: col.labelKey | transloco }"
                           />
                         } @else if (col.filterType === 'date') {
-                          <!-- Q13/F-01: date-range filter — mode select + Spartan date-picker(s) -->
+                          <!-- Date-range filter — mode select + Spartan date-picker(s) -->
                           <!-- Round-4 F1: itemToString shows the translated mode label
                                instead of the raw value ('none'/'between'/…) -->
                           <hlm-select
@@ -161,7 +173,7 @@
                                 <span class="text-xs text-muted-foreground">{{
                                   'taskTable.dateFrom' | transloco
                                 }}</span>
-                                <!-- P12 (item 28): formatDate renders the selected date with the user's format + locale -->
+                                <!-- formatDate renders the selected date with the user's format + locale -->
                                 <hlm-date-picker
                                   [date]="isoToDate(col.getDateFrom!())"
                                   [formatDate]="dateFilterTriggerFormat"
@@ -248,18 +260,28 @@
                 />
               </td>
             }
-            <!-- R3-P4: each cell is guarded by the visible-field set — hidden columns
+            <!-- Each cell is guarded by the visible-field set — hidden columns
                  (and their filter popovers) are removed from the DOM entirely. -->
             @if (visibleFields().has('number')) {
               <td hlmTableCell class="truncate font-mono text-xs text-muted-foreground" [hlmTooltip]="taskKey(task)">
-                @if (projectKey()) {
-                  {{ projectKey() }}-{{ task.number }}
-                } @else {
-                  #{{ task.number }}
-                }
+                <!--
+                  the key cell is a REAL link, so opening a task is reachable
+                  with the keyboard (Enter on a focused link) and exposes the usual
+                  link affordances — middle-click, "open in new tab", a status-bar
+                  target. The row keeps its pointer click for the rest of the row;
+                  the link stops propagation so exactly one navigation happens.
+                  `taskLinkCommands` is the same source `goToTask` navigates to.
+                -->
+                <a
+                  [routerLink]="taskLinkCommands(task)"
+                  class="rounded hover:underline focus-visible:ring-ring focus-visible:ring-2 focus-visible:outline-none"
+                  (click)="$event.stopPropagation()"
+                  (auxclick)="$event.stopPropagation()"
+                  >{{ taskKey(task) }}</a
+                >
               </td>
             }
-            <!-- R3-P3: `max-w-0` + `truncate` — hard truncation so even a 500-char
+            <!-- `max-w-0` + `truncate` — hard truncation so even a 500-char
                  unbreakable title can never widen the column/table (no horizontal
                  scroll); the full title stays available via the hlmTooltip directive. -->
             @if (visibleFields().has('title')) {
@@ -327,7 +349,7 @@
               </td>
             }
             @if (visibleFields().has('labelIds')) {
-              <!-- DR-4: right padding so label chips do not crowd the cell edge -->
+              <!-- Right padding so label chips do not crowd the cell edge -->
               <td
                 hlmTableCell
                 class="truncate pr-4"

@@ -26,17 +26,25 @@ export interface Project {
   updatedAt: string;
 }
 
-/** Create project request body type */
+/**
+ * Create project request body type.
+ *
+ * Every field carries an explicit `| undefined` because these interfaces model
+ * the OUTPUT of a Zod schema (`z.string().optional()` parses to `string | undefined`
+ * with the key possibly absent), and `exactOptionalPropertyTypes` forbids assigning
+ * that to a bare `field?: T`. Writing `| undefined` documents "absent OR explicitly
+ * undefined" instead of hiding it behind a cast.
+ */
 export interface CreateProject {
   key: string;
   name: string;
-  description?: string;
+  description?: string | undefined;
 }
 
-/** Update project request body type */
+/** Update project request body type — see {@link CreateProject} for the `| undefined` rule */
 export interface UpdateProject {
-  name?: string;
-  description?: string;
+  name?: string | undefined;
+  description?: string | undefined;
 }
 
 /** Project membership type */
@@ -50,11 +58,11 @@ export interface ProjectMember {
   /** Role of the user within the project */
   role: ProjectRole;
   /** Display name of the user (resolved from users collection) */
-  displayName?: string;
+  displayName?: string | undefined;
   /** Email of the user (resolved from users collection) */
-  email?: string;
+  email?: string | undefined;
   /** Avatar URL of the user (resolved from users collection) */
-  avatarUrl?: string | null;
+  avatarUrl?: string | null | undefined;
   /** Creation timestamp (ISO 8601) */
   createdAt: string;
   /** Last update timestamp (ISO 8601) */

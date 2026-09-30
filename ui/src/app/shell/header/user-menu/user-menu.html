@@ -1,8 +1,12 @@
+<!-- data-testid: the avatar button and the sign-out item are the only E2E handles in
+     this menu (F13) — the whole menu is transloco-driven, so an E2E selector could
+     otherwise only be an English UI string. Nothing else in the app selects on them. -->
 <button
   hlmBtn
   variant="ghost"
   class="flex items-center gap-2 px-2"
   aria-haspopup="menu"
+  data-testid="user-menu-trigger"
   [hlmDropdownMenuTrigger]="userMenu"
   (hlmDropdownMenuOpened)="onMenuOpened()"
   (hlmDropdownMenuClosed)="onMenuClosed()"
@@ -50,7 +54,7 @@
     </a>
 
     <!-- Sign out -->
-    <button hlmDropdownMenuItem variant="destructive" (click)="logout()">
+    <button hlmDropdownMenuItem variant="destructive" data-testid="user-menu-sign-out" (click)="logout()">
       <ng-icon name="lucideLogOut" />
       <span>{{ 'userMenu.signOut' | transloco }}</span>
     </button>

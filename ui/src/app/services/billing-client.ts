@@ -2,7 +2,7 @@ import { Service } from '@angular/core';
 import { Observable, of } from 'rxjs';
 import { delay } from 'rxjs/operators';
 
-/** Id of the only plan offered during onboarding (DEC-022). */
+/** Id of the only plan offered during onboarding. */
 export const FREE_PLAN_ID = 'free';
 
 /** Result returned by the billing provider after a completed checkout. */
@@ -18,7 +18,7 @@ export interface CheckoutContext {
 }
 
 /**
- * Billing boundary (DEC-022).
+ * Billing boundary.
  *
  * Isolates the onboarding flow from any concrete billing provider: the mock
  * implementation collects no payment data and resolves locally after a short

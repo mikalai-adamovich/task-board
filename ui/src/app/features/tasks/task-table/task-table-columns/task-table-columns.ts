@@ -19,7 +19,7 @@ export interface ColumnToggle {
 }
 
 /**
- * M-13 (4.2): column-chooser UI extracted from the TaskTable composition root —
+ * Column-chooser UI extracted from the TaskTable composition root —
  * the toolbar chooser popover, the cursor-anchored chooser (opened from the
  * header context menu) and the header context menu itself.
  *
@@ -60,7 +60,7 @@ export class TaskTableColumns {
   /** Column-chooser popover visibility (toolbar instance) */
   readonly showColumnChooser = signal(false);
   /**
-   * Round-5 P9 (item 24): cursor-anchored chooser instance — opened from the
+   * Cursor-anchored chooser instance — opened from the
    * header context menu so the chooser appears near the cursor, not at the
    * toolbar button. Shares state/handlers with the toolbar instance.
    */
@@ -72,7 +72,7 @@ export class TaskTableColumns {
   private readonly ctxAnchorRef = viewChild<ElementRef<HTMLSpanElement>>('ctxAnchor');
   /** Hidden trigger button of the cursor-anchored chooser popover */
   private readonly ctxChooserAnchorRef = viewChild<ElementRef<HTMLButtonElement>>('ctxChooserAnchor');
-  /** P13b: the BrnPopover hosting the cursor-anchored chooser (for setOrigin). */
+  /** The BrnPopover hosting the cursor-anchored chooser (for setOrigin). */
   private readonly ctxChooserPopover = viewChild('ctxChooserAnchor', { read: BrnPopover });
   private readonly ctxMenuTrigger = viewChild(HlmDropdownMenuTrigger);
 
@@ -97,7 +97,7 @@ export class TaskTableColumns {
     anchor.style.left = `${x}px`;
     anchor.style.top = `${y}px`;
 
-    // Round-5 P9 (item 24): keep the cursor-anchored chooser trigger at the
+    // Keep the cursor-anchored chooser trigger at the
     // same coordinates so "Select columns" opens the popover at the cursor.
     const chooserAnchor = this.ctxChooserAnchorRef()?.nativeElement;
 
@@ -158,9 +158,9 @@ export class TaskTableColumns {
     if (col) this.hideColumn.emit(col.columnKey);
   }
 
-  /** Round-5 P9 (item 24): open the CURSOR-anchored instance, never the toolbar one */
+  /** Open the CURSOR-anchored instance, never the toolbar one */
   openChooserFromContextMenu(): void {
-    // P13b: the popover is opened via the `[state]` binding (not a trigger
+    // The popover is opened via the `[state]` binding (not a trigger
     // click), so BrnPopoverTrigger never runs `setOrigin` — without an origin
     // the overlay fell back to its default (mid-table) position. Point it at
     // the hidden cursor-anchored trigger button first.
@@ -173,7 +173,7 @@ export class TaskTableColumns {
   }
 
   onChooserStateChange(state: 'open' | 'closed'): void {
-    // P13b: when the toolbar popover is opened by CLICKING its trigger, the
+    // When the toolbar popover is opened by CLICKING its trigger, the
     // overlay's internal state goes 'open' but the `[state]` binding signal
     // stayed false — so the × button's `showColumnChooser.set(false)` was a
     // no-op (same value → input never changes → BrnOverlay's effect never
@@ -196,7 +196,7 @@ export class TaskTableColumns {
     }
   }
 
-  /** Round-5 P9 (item 25): × button in the shared chooser header — closes whichever instance is open */
+  /** × button in the shared chooser header — closes whichever instance is open */
   closeColumnChooser(): void {
     this.showColumnChooser.set(false);
     this.showContextColumnChooser.set(false);

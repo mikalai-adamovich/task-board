@@ -18,10 +18,34 @@ export interface SelectOption {
   key?: string;
 }
 
+/** Shared, frozen empty list — a fresh `[]` per call would break computed() equality. */
+const EMPTY_ENTITIES: readonly never[] = Object.freeze([]);
+/**
+ * Upper bound on the memoised derived views (see `derived()`), one per
+ * `${projectId}:${kind}`. A session visiting more projects than this evicts the
+ * oldest views instead of growing without limit — a Map iterates in insertion
+ * order, so the first key is always the oldest.
+ *
+ * Sizing: a view holds one option object and one name-map entry per entity, so
+ * the bound is a memory ceiling, not a correctness limit — eviction only costs a
+ * rebuild, and a rebuild happens on the next read anyway.
+ */
+const DERIVED_CACHE_LIMIT = 200;
+
+/** Memoised derived view of one cached DTO list (see `derived()` in the store). */
+interface DerivedView {
+  /** Identity of the DTO array the view was derived from (cache validity token). */
+  source: readonly unknown[];
+  /** Select-style options. */
+  options: SelectOption[];
+  /** id → display name. */
+  nameMap: Record<string, string>;
+}
+
 /**
  * Shared per-project reference data (statuses, task types, sprints, labels, members).
  *
- * F2: the cache stores FULL DTOs (Status[], Sprint[], …) per `${projectId}:${kind}`
+ * The cache stores FULL DTOs (Status[], Sprint[], …) per `${projectId}:${kind}`
  * — one fetch per kind per project session. The [`options`](#options) layer is
  * DERIVED from the DTO cache, so select-style consumers (task table, filters)
  * and full-entity consumers (overview, board, sprint pages) share the same
@@ -53,7 +77,7 @@ export class ProjectRefStore {
   private readonly sprintClient = inject(SprintClient);
   private readonly labelClient = inject(LabelClient);
   private readonly projectClient = inject(ProjectClient);
-  /** M-12: members of the active project come from the ProjectStore cache */
+  /** Members of the active project come from the ProjectStore cache */
   private readonly projectStore = inject(ProjectStore);
   /** key `${projectId}:${kind}` → full DTO list (F2 cache) */
   private readonly dtoState = signal<Record<string, unknown[]>>({});
@@ -61,10 +85,36 @@ export class ProjectRefStore {
   private readonly loadingState = signal<Record<string, boolean>>({});
   /** keys currently being fetched (dedupe guard) */
   private readonly inFlight = new Set<string>();
+  /**
+   * Key `${projectId}:${kind}` → memoised option/name views derived from the
+   * DTO list. The cached `source` array identity is the validity token: while the
+   * DTO cache holds the same array, the derived views are reused verbatim, so
+   * `options()` / `nameMap()` return a STABLE reference and no longer rebuild the
+   * whole map on every call (which defeated `computed()` equality and made every
+   * consuming computed re-run on every read).
+   */
+  private readonly derivedCache = new Map<string, DerivedView>();
 
   /** Reactive read of the cached FULL DTO list for a kind (empty while loading). */
   entities(projectId: string, kind: RefKind): unknown[] {
-    return this.dtoState()[`${projectId}:${kind}`] ?? [];
+    // The store-backed branch is OBSERVED, never snapshotted: the ProjectStore
+    // loads the active project's members in the background, so a value captured
+    // here can be the not-yet-loaded `[]` — and `[]` is truthy, which would pin
+    // that empty list in the cache for the rest of the session. Reading the
+    // signal keeps every consumer reactive and always current.
+    if (this.isStoreBacked(projectId, kind)) {
+      return this.projectStore.members() as unknown[];
+    }
+
+    return (this.dtoState()[`${projectId}:${kind}`] ?? EMPTY_ENTITIES) as unknown[];
+  }
+
+  /**
+   * Whether the ProjectStore — not this cache — is the source of truth for
+   * `kind` of `projectId` (today: the members of the active project).
+   */
+  private isStoreBacked(projectId: string, kind: RefKind): boolean {
+    return kind === 'members' && this.projectStore.activeProject()?.id === projectId;
   }
 
   /** Typed read of the cached statuses. */
@@ -84,22 +134,51 @@ export class ProjectRefStore {
 
   /** Reactive read of a cached option list (empty while loading) — derived from the DTO cache. */
   options(projectId: string, kind: RefKind): SelectOption[] {
-    return this.toOptions(kind, this.entities(projectId, kind));
+    return this.derived(projectId, kind).options;
   }
 
   /** Reactive id → name map for badges/tables. */
   nameMap(projectId: string, kind: RefKind): Record<string, string> {
-    const map: Record<string, string> = {};
-
-    for (const option of this.options(projectId, kind)) {
-      map[option.id] = option.name;
-    }
-    return map;
+    return this.derived(projectId, kind).nameMap;
   }
 
   /** Resolve an id to its display name (falls back to the raw id). */
   nameOf(projectId: string, kind: RefKind, id: string): string {
     return this.nameMap(projectId, kind)[id] ?? id;
+  }
+
+  /**
+   * Memoised derivation. Reads `dtoState()` (so the read stays reactive)
+   * and rebuilds the option list + name map ONLY when the underlying DTO array
+   * identity changed; otherwise the previously derived objects are returned as-is.
+   */
+  private derived(projectId: string, kind: RefKind): DerivedView {
+    const key = `${projectId}:${kind}`;
+    const dtos = this.entities(projectId, kind);
+    const cached = this.derivedCache.get(key);
+
+    if (cached && cached.source === dtos) return cached;
+
+    const options = this.toOptions(kind, dtos);
+    const nameMap: Record<string, string> = {};
+
+    for (const option of options) {
+      nameMap[option.id] = option.name;
+    }
+
+    const view: DerivedView = { source: dtos, options, nameMap };
+
+    this.derivedCache.set(key, view);
+    // Bounded: drop the oldest views rather than grow for every project visited.
+    while (this.derivedCache.size > DERIVED_CACHE_LIMIT) {
+      const oldest = this.derivedCache.keys().next();
+
+      if (oldest.done) break;
+
+      this.derivedCache.delete(oldest.value);
+    }
+
+    return view;
   }
 
   /**
@@ -111,6 +190,19 @@ export class ProjectRefStore {
 
     for (const kind of kinds) {
       const key = `${projectId}:${kind}`;
+
+      // Nothing is cached for the store-backed branch, so there is nothing to
+      // dedupe or short-circuit on — just make sure the owner has been asked for
+      // the data. `loadedMembersFor` (not `members().length`) decides that: an
+      // empty list is a legitimate answer, and re-requesting it on every ensure()
+      // would be a request per render.
+      if (this.isStoreBacked(projectId, kind)) {
+        if (this.projectStore.loadedMembersFor() !== projectId) {
+          void this.projectStore.loadMembers(projectId);
+        }
+
+        continue;
+      }
 
       if (this.inFlight.has(key) || this.dtoState()[key]) continue;
 
@@ -135,6 +227,20 @@ export class ProjectRefStore {
     const key = `${projectId}:${kind}`;
     const nextDtos: Record<string, unknown[]> = {};
     const nextLoading: Record<string, boolean> = {};
+
+    // The derived view is a memo of the DTO list: dropping one without dropping
+    // its view would leave the old options reachable for a key that no longer
+    // exists, and would keep it in the bounded cache for the whole session.
+    this.derivedCache.delete(key);
+
+    // The store-backed branch has no entry here — the owner of the data is the
+    // store, so invalidating means asking it for fresh data.
+    if (this.isStoreBacked(projectId, kind)) {
+      this.projectStore.loadedMembersFor.set(null);
+      void this.projectStore.loadMembers(projectId);
+
+      return;
+    }
 
     for (const [existingKey, value] of Object.entries(this.dtoState())) {
       if (existingKey !== key) {
@@ -197,18 +303,12 @@ export class ProjectRefStore {
       case 'labels':
         return firstValueFrom(this.labelClient.list(projectId));
 
-      case 'members': {
-        // M-12: for the active project, derive members from the ProjectStore
-        // cache instead of re-fetching the same list. Other project ids (not
-        // held by the store) still go through the client.
-        const activeProjectId = this.projectStore.activeProject()?.id;
-
-        if (activeProjectId === projectId) {
-          return Promise.resolve(this.projectStore.members());
-        }
-
+      case 'members':
+        // The active project's members come from the ProjectStore cache
+        // and never reach this path (`ensure()` handles that branch by observing
+        // the store). Project ids the store does not hold still go through the
+        // client, and ARE cached here like every other kind.
         return firstValueFrom(this.projectClient.listMembers(projectId));
-      }
     }
   }
 

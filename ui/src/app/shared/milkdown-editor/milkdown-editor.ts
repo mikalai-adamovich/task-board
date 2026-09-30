@@ -13,7 +13,8 @@ import {
   PLATFORM_ID,
 } from '@angular/core';
 import { isPlatformBrowser } from '@angular/common';
-import { TranslocoPipe } from '@jsverse/transloco';
+import { firstValueFrom } from 'rxjs';
+import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { NgIcon, provideIcons } from '@ng-icons/core';
 import {
   lucideBold,
@@ -36,6 +37,35 @@ import { HlmButtonImports } from '@spartan-ng/helm/button';
 import { HlmTooltipImports } from '@spartan-ng/helm/tooltip';
 import { injectToasts } from '@app/shared/utils/toast-utils';
 import { getErrorMessage } from '@app/shared/utils/error-utils';
+
+/**
+ * Milkdown schema ids of the four formatting toggles — read from the presets
+ * themselves (`strongSchema`, `emphasisSchema`, `inlineCodeSchema`,
+ * `strikethroughSchema` are `"strong" | "emphasis" | "inlineCode" |
+ * "strike_through"`), not from the toolbar's command names, which differ.
+ */
+const TOGGLE_MARKS = ['strong', 'emphasis', 'strike_through', 'inlineCode'] as const;
+
+type ToggleMark = (typeof TOGGLE_MARKS)[number];
+
+/**
+ * The slice of ProseMirror's `EditorState` this component reads. Declared
+ * structurally on purpose: `prosemirror-state` / `prosemirror-view` are Milkdown's
+ * transitive dependencies, not ours, so importing their types would mean adding a
+ * dependency this package does not declare. Method syntax keeps the real
+ * (stricter) signatures assignable.
+ */
+interface MarkState {
+  selection: {
+    from: number;
+    to: number;
+    empty: boolean;
+    $from: { marks(): readonly { type: { name: string } }[] };
+  };
+  storedMarks: readonly { type: { name: string } }[] | null;
+  doc: { rangeHasMark(from: number, to: number, markType: object): boolean };
+  schema: { marks: Readonly<Record<string, { name: string } | undefined>> };
+}
 
 /** Commands invocable from the toolbar */
 type ToolbarCommand =
@@ -109,6 +139,7 @@ export class MilkdownEditor implements OnInit, OnDestroy {
   private readonly elRef = inject(ElementRef<HTMLElement>);
   private readonly platformId = inject(PLATFORM_ID);
   private readonly notify = injectToasts();
+  private readonly transloco = inject(TranslocoService);
   /** Markdown content input */
   readonly content = input<string>('');
   /** Whether the editor is read-only (hides toolbar, disables editing) */
@@ -117,11 +148,11 @@ export class MilkdownEditor implements OnInit, OnDestroy {
   readonly contentChange = output<string>();
   /** Emits `true` once the editor (or its fallback) is ready to be shown */
   readonly readyChange = output<boolean>();
-  protected readonly editorReady = signal(false);
-  protected readonly fallbackMode = signal(false);
-  protected readonly fallbackContent = signal('');
+  private readonly editorReady = signal(false);
+  private readonly fallbackMode = signal(false);
+  private readonly fallbackContent = signal('');
   /** `'wysiwyg'` (Milkdown) or `'raw'` (markdown textarea) */
-  protected readonly mode = signal<'wysiwyg' | 'raw'>('wysiwyg');
+  private readonly mode = signal<'wysiwyg' | 'raw'>('wysiwyg');
   private editorInstance: EditorBundle | null = null;
   private callCommandFn: ((key: unknown, payload?: unknown) => unknown) | null = null;
   private commands: Record<string, { key: unknown }> = {};
@@ -133,6 +164,53 @@ export class MilkdownEditor implements OnInit, OnDestroy {
   private lastMarkdown = '';
   /** Flag to suppress the content-change effect when the editor itself is the source */
   private suppressContentEffect = false;
+  // ─── a11y: the formatting toggles' state ────────────────────────────────────
+  /**
+   * Which of the four formatting marks are active on the current selection.
+   * A toggle that cannot report its state is a toggle a screen-reader user has
+   * to guess at, so this is read from ProseMirror rather than assumed.
+   */
+  private readonly activeMarks = signal<Record<ToggleMark, boolean>>({
+    strong: false,
+    emphasis: false,
+    strike_through: false,
+    inlineCode: false,
+  });
+
+  /** `aria-pressed` source for the four formatting toggles. */
+  protected isMarkActive(mark: ToggleMark): boolean {
+    return this.activeMarks()[mark] ?? false;
+  }
+
+  /** Recompute the toggles' state from the editor's own selection. */
+  private syncActiveMarks(state: MarkState): void {
+    const { from, to, empty } = state.selection;
+    const isActive = (name: ToggleMark): boolean => {
+      const type = state.schema.marks[name];
+
+      if (!type) return false;
+      // A collapsed selection carries no range, so the marks that would be
+      // applied next live in `storedMarks` (or the marks at the cursor).
+      if (empty) {
+        const stored = state.storedMarks ?? state.selection.$from.marks();
+
+        return stored.some((mark) => mark.type.name === name);
+      }
+
+      return state.doc.rangeHasMark(from, to, type);
+    };
+    const next: Record<ToggleMark, boolean> = {
+      strong: isActive('strong'),
+      emphasis: isActive('emphasis'),
+      strike_through: isActive('strike_through'),
+      inlineCode: isActive('inlineCode'),
+    };
+    const current = this.activeMarks();
+
+    if (TOGGLE_MARKS.every((mark) => current[mark] === next[mark])) return;
+
+    this.activeMarks.set(next);
+  }
 
   constructor() {
     // Watch for external content changes (e.g., after form submit clears the value)
@@ -261,13 +339,14 @@ export class MilkdownEditor implements OnInit, OnDestroy {
 
     try {
       const [
-        { Editor, rootCtx, defaultValueCtx, editorViewOptionsCtx },
+        { Editor, rootCtx, defaultValueCtx, editorViewOptionsCtx, editorViewCtx, prosePluginsCtx },
         commonmarkPreset,
         gfmPreset,
         { listener, listenerCtx },
         { callCommand },
         { history },
         { highlight, highlightPluginConfig },
+        { Plugin },
       ] = await Promise.all([
         import('@milkdown/kit/core'),
         import('@milkdown/kit/preset/commonmark'),
@@ -277,6 +356,9 @@ export class MilkdownEditor implements OnInit, OnDestroy {
         import('@milkdown/kit/plugin/history'),
         // Not part of @milkdown/kit — kept as a direct dependency
         import('@milkdown/plugin-highlight'),
+        // A subpath of @milkdown/kit (it re-exports prosemirror-state), so this
+        // still resolves through the one dependency the UI already declares.
+        import('@milkdown/kit/prose/state'),
       ]);
 
       if (isStale()) return;
@@ -326,6 +408,16 @@ export class MilkdownEditor implements OnInit, OnDestroy {
         return;
       }
 
+      // The editable ProseMirror div carries no name, role or model of its
+      // own (re-read from prosemirror-view 1.42: it supplies `contenteditable`
+      // and nothing else), so the surface was announced inconsistently and unnamed.
+      // Named with `milkdownEditor.editor`, its own key in all 11 locales. It
+      // used to borrow the `wysiwyg` key — the string "WYSIWYG", which labels
+      // the button that switches TO the rich-text view, so a screen reader
+      // announced the editor by a mode name rather than by what it edits.
+      // (Written without the literal key name: the i18n gate reads key-shaped
+      // strings out of source comments and would report it as missing.)
+      const editorName = await firstValueFrom(this.transloco.selectTranslate('milkdownEditor.editor'));
       const editor = await Editor.make()
         .config((ctx) => {
           ctx.set(rootCtx, host);
@@ -340,10 +432,49 @@ export class MilkdownEditor implements OnInit, OnDestroy {
           });
           // Configure highlight plugin for syntax highlighting in code blocks
           ctx.set(highlightPluginConfig.key, { parser: highlightParser });
-          // Read-only mode at the ProseMirror level — no DOM hacks needed
-          if (this.readOnly()) {
-            ctx.update(editorViewOptionsCtx, (prev) => ({ ...prev, editable: () => false }));
-          }
+          // Publish the formatting state of the current selection so the
+          // four formatting toggles can report `aria-pressed`.
+          //
+          // A plugin's `view().update()` hook, NOT a `dispatchTransaction`
+          // override. It observes every applied transaction from the outside, so
+          // it cannot interfere with how the transaction is applied.
+          //
+          // The override it replaced read `view.props.dispatchTransaction` and
+          // called it — but `view.props` holds only the props the view was
+          // constructed with, and ProseMirror's default ("apply the transaction")
+          // is a branch inside `EditorView.prototype.dispatch`, not a prop
+          // (prosemirror-view 1.42.3, `dist/index.js:5913-5918`). Milkdown
+          // builds the view without that prop, so the captured value was
+          // `undefined` and the wrapper silently DISCARDED every transaction:
+          // typing, pasting and the toolbar commands all became no-ops, and
+          // because the document never changed, Milkdown's own
+          // `markdownUpdated` listener (guarded by `!prevDoc.eq(doc)`) never
+          // fired either — so `contentChange` never emitted and the comment
+          // submit button stayed disabled.
+          ctx.update(prosePluginsCtx, (prev) =>
+            prev.concat(
+              new Plugin({
+                view: () => ({
+                  update: (editorView) => this.syncActiveMarks(editorView.state),
+                }),
+              }),
+            ),
+          );
+          // One merge, not two: read-only mode and the a11y attributes both live
+          // in the same `editorViewOptionsCtx` slice.
+          ctx.update(editorViewOptionsCtx, (prev) => ({
+            ...prev,
+            // Read-only mode at the ProseMirror level — no DOM hacks needed
+            ...(this.readOnly() ? { editable: () => false } : {}),
+            // Re-read from prosemirror-view 1.42: `attributes` is a direct
+            // `EditorProps` member and may be an object OR a function of state.
+            attributes: (state) => ({
+              ...(typeof prev.attributes === 'function' ? prev.attributes(state) : prev.attributes),
+              role: 'textbox',
+              'aria-multiline': 'true',
+              'aria-label': editorName,
+            }),
+          }));
         })
         .use(commonmarkPreset.commonmark)
         .use(gfmPreset.gfm)
@@ -356,6 +487,13 @@ export class MilkdownEditor implements OnInit, OnDestroy {
         await editor.destroy();
         return;
       }
+
+      // The plugin above reads ProseMirror's own state on every transaction —
+      // typing, arrow keys and the pointer alike — rather than guessing from DOM
+      // events. Seed it once, because `update()` only runs on a state CHANGE.
+      const view = await editor.action((ctx) => ctx.get(editorViewCtx));
+
+      this.syncActiveMarks(view.state);
 
       this.commands = {
         strong: commonmarkPreset.toggleStrongCommand,

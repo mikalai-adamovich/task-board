@@ -4,18 +4,25 @@
     <div hlmAlertDescription>{{ 'members.contextError' | transloco }}</div>
   </hlm-alert>
 } @else {
-  <!-- Q2 (F-05): flex column so the table wrapper fills the host page's fixed-height
+  <!-- Flex column so the table wrapper fills the host page's fixed-height
        area and the pagination footer stays at the bottom (no page scroll, no dead space). -->
   <div class="flex min-h-0 w-full flex-1 flex-col">
     <div hlmTableContainer #tableWrap class="min-h-0 w-full flex-1">
-      <!-- S-09: accessible table name for screen readers -->
+      <!-- Accessible table name for screen readers -->
       <table hlmTable [class.table-density-compact]="isCompact()" [attr.aria-label]="'members.title' | transloco">
         <thead hlmTableHeader>
           <tr hlmTableRow>
             @for (col of columns(); track col.field) {
               <th hlmTableHead scope="col">
                 <div class="flex items-center gap-1">
-                  <button class="flex items-center gap-1 hover:text-foreground" (click)="sortToggle.emit(col.field)">
+                  <button
+                    hlmBtn
+                    variant="ghost"
+                    size="sm"
+                    class="h-auto px-1.5 text-sm"
+                    type="button"
+                    (click)="sortToggle.emit(col.field)"
+                  >
                     <span>{{ col.labelKey | transloco }}</span>
                     <span class="inline-flex size-3 shrink-0">
                       @if (sortField() === col.field) {
@@ -28,7 +35,14 @@
                   </button>
                   @if (col.filterType !== 'none') {
                     <hlm-popover sideOffset="4">
-                      <button hlmPopoverTrigger hlmBtn variant="ghost" size="icon" class="size-6 shrink-0">
+                      <button
+                        hlmPopoverTrigger
+                        hlmBtn
+                        variant="ghost"
+                        size="icon"
+                        class="size-6 shrink-0"
+                        [attr.aria-label]="'a11y.filterColumn' | transloco: { column: col.labelKey | transloco }"
+                      >
                         <ng-icon name="lucideFilter" class="text-sm" [class.text-primary]="getFilterValue(col.field)" />
                       </button>
                       <hlm-popover-content *hlmPopoverPortal [class]="col.popoverWidth">
@@ -39,6 +53,7 @@
                               type="text"
                               class="h-8 w-full"
                               [value]="getFilterValue(col.field)"
+                              [attr.aria-label]="'a11y.filterColumn' | transloco: { column: col.labelKey | transloco }"
                               (input)="filterChange.emit({ field: col.field, value: $any($event.target).value })"
                               [placeholder]="col.placeholderKey ? (col.placeholderKey | transloco) : ''"
                             />
@@ -173,7 +188,7 @@
                       </button>
 
                       @if (variant() === 'tenant') {
-                        <!-- Restore membership (revoked without pending invitation — BR-036) -->
+                        <!-- Restore membership (revoked without pending invitation) -->
                         @if (canRestore(row)) {
                           <button
                             hlmBtn
@@ -285,7 +300,7 @@
               }
             </tr>
           } @empty {
-            <!-- Q2 (F-05): no loading row/spinner — the empty state renders directly.
+            <!-- No loading row/spinner — the empty state renders directly.
                  data-table-empty-row: excluded from the Auto page-size row
                  measurement (much taller than a data row). -->
             <tr hlmTableRow data-table-empty-row>

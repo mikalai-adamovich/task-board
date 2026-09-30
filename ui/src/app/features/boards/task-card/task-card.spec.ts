@@ -187,7 +187,9 @@ describe('TaskCard', () => {
     it('clamps the title to 2 lines', async () => {
       await setup({ title: 'A very long title that would overflow the card' });
 
-      const title = fixture.nativeElement.querySelector('h4');
+      // The card title is an h3 so the board outline runs
+      // h1 → h2 (column) → h3 (card). The class under test is unchanged.
+      const title = fixture.nativeElement.querySelector('h3');
 
       expect(title.classList.contains('line-clamp-2')).toBe(true);
     });

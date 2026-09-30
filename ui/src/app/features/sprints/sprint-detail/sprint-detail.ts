@@ -64,13 +64,13 @@ export class SprintDetail implements OnInit {
   /** Shared badge-class helper (see constants/priority.ts) */
   protected readonly statusBadgeVariant = statusBadgeVariant;
   private readonly i18n = inject(TranslocoService);
-  /** Visual-only overdue flag (DEC-029) */
+  /** Visual-only overdue flag */
   protected readonly isSprintOverdue = isSprintOverdue;
   private readonly notify = injectToasts();
   private readonly preferencesStore = inject(PreferencesStore);
-  /** R3-P8: DatePipe token derived from the user's date format preference */
+  /** DatePipe token derived from the user's date format preference */
   protected readonly dateFmt = this.preferencesStore.datePipeFormat;
-  /** P12 (item 28): active language passed as the DatePipe locale for localized month names */
+  /** Active language passed as the DatePipe locale for localized month names */
   protected readonly lang = this.preferencesStore.language;
   private readonly sprintClient = inject(SprintClient);
   private readonly taskClient = inject(TaskClient);
@@ -81,21 +81,21 @@ export class SprintDetail implements OnInit {
   private readonly route = inject(ActivatedRoute);
   /** Bound via withComponentInputBinding() */
   readonly sprintId = input.required<string>();
-  protected readonly sprint = signal<Sprint | null>(null);
-  protected readonly tenantSlug = signal<string>('');
+  private readonly sprint = signal<Sprint | null>(null);
+  private readonly tenantSlug = signal<string>('');
   /** Project key of the active project (canonical task URLs, DEC-032) */
   protected readonly projectKey = computed(() => this.projectStore.activeProject()?.key ?? '');
   /** Resolved project UUID — reference-data key for statuses/sprints */
-  protected readonly projectId = computed(() => this.projectStore.activeProject()?.id ?? '');
-  protected readonly sprintTasks = signal<Task[]>([]);
-  protected readonly loading = signal(true);
-  protected readonly showDeleteConfirm = signal(false);
+  private readonly projectId = computed(() => this.projectStore.activeProject()?.id ?? '');
+  private readonly sprintTasks = signal<Task[]>([]);
+  private readonly loading = signal(true);
+  private readonly showDeleteConfirm = signal(false);
   // ─── V8 gap: dedicated start/end date edit dialog ──────────────────────────
-  protected readonly showEditDates = signal(false);
+  private readonly showEditDates = signal(false);
   /** `YYYY-MM-DD` buffers for the two date inputs (pre-filled from the sprint) */
-  protected readonly editStartDate = signal('');
-  protected readonly editEndDate = signal('');
-  protected readonly savingDates = signal(false);
+  private readonly editStartDate = signal('');
+  private readonly editEndDate = signal('');
+  private readonly savingDates = signal(false);
   // ─── V1-7: completion disposition ─────────────────────────────────────────
   /**
    * Future sprints offered as "Move to…" targets when completing with
@@ -104,10 +104,10 @@ export class SprintDetail implements OnInit {
   protected readonly futureSprints = computed(() =>
     this.refStore.sprintEntities(this.projectId()).filter((sp) => sp.status === SprintStatus.FUTURE),
   );
-  protected readonly showDispositionDialog = signal(false);
+  private readonly showDispositionDialog = signal(false);
   /** `''` = Move to Backlog (default); otherwise the target sprint id. */
-  protected readonly dispositionTarget = signal('');
-  protected readonly completing = signal(false);
+  private readonly dispositionTarget = signal('');
+  private readonly completing = signal(false);
   protected readonly canManage = computed(() => {
     return canManageProject(this.projectStore.projectRole(), this.authStore.tenantRole());
   });
@@ -120,7 +120,7 @@ export class SprintDetail implements OnInit {
     return priorityBadgeVariant(priorityLevel);
   }
 
-  /** P11: translated display label instead of the raw enum value; unknown values render verbatim. */
+  /** Translated display label instead of the raw enum value; unknown values render verbatim. */
   protected getPriorityLabel(priorityLevel: TaskPriorityLevel): string {
     const key = priorityLabelKey(priorityLevel);
 
@@ -159,7 +159,7 @@ export class SprintDetail implements OnInit {
     return done;
   });
   /** V1-7: sprint tasks whose status is not the project's final/DONE status. */
-  protected readonly unfinishedTasks = computed(() =>
+  private readonly unfinishedTasks = computed(() =>
     this.sprintTasks().filter((task) => !this.finalStatusIds().has(task.statusId)),
   );
 
@@ -186,7 +186,7 @@ export class SprintDetail implements OnInit {
    * Only the COMPLETED transition bulk-moves unfinished tasks first
    * (to the chosen disposition target, `''` = backlog).
    */
-  protected applyTransition(status: SprintStatus): void {
+  private applyTransition(status: SprintStatus): void {
     const s = this.sprint();
 
     if (!s || this.completing()) return;
@@ -212,7 +212,7 @@ export class SprintDetail implements OnInit {
         this.sprintClient.update(s.id, { status }).subscribe({
           next: (sprint) => {
             this.sprint.set(sprint);
-            // F2: keep the shared reference-data cache in sync
+            // Keep the shared reference-data cache in sync
             this.refStore.upsertEntity(s.projectId, 'sprints', sprint);
             this.loadSprintTasks(s.projectId); // reflect the moves in the task list
           },
@@ -244,7 +244,7 @@ export class SprintDetail implements OnInit {
     }
   }
 
-  /** V8: open the date-edit dialog pre-filled with the sprint's current dates */
+  /** Open the date-edit dialog pre-filled with the sprint's current dates */
   protected openEditDates(): void {
     const s = this.sprint();
 
@@ -256,7 +256,7 @@ export class SprintDetail implements OnInit {
   }
 
   /**
-   * V8: save the edited dates via SprintClient.update. Values are plain
+   * Save the edited dates via SprintClient.update. Values are plain
    * `YYYY-MM-DD` strings (server slices to 10 chars — V7-7); an empty input
    * sends `null` to clear the date.
    */
@@ -275,7 +275,7 @@ export class SprintDetail implements OnInit {
         next: (updated) => {
           this.savingDates.set(false);
           this.sprint.set(updated);
-          // F2: keep the shared reference-data cache in sync
+          // Keep the shared reference-data cache in sync
           this.refStore.upsertEntity(updated.projectId, 'sprints', updated);
           this.showEditDates.set(false);
           this.notify.success('toasts.updated');
@@ -300,7 +300,7 @@ export class SprintDetail implements OnInit {
 
     this.sprintClient.delete(s.id).subscribe({
       next: () => {
-        // F2: drop the deleted sprint from the shared reference-data cache
+        // Drop the deleted sprint from the shared reference-data cache
         this.refStore.invalidate(s.projectId, 'sprints');
 
         const projectKey = this.projectStore.activeProject()?.key ?? s.projectId;
@@ -311,7 +311,7 @@ export class SprintDetail implements OnInit {
     });
   }
 
-  /** Canonical task URL segment `KEY-NUMBER` for a sprint task (DEC-032) */
+  /** Canonical task URL segment `KEY-NUMBER` for a sprint task */
   protected taskNumber(task: Task): string {
     const key = this.projectStore.activeProject()?.key ?? '';
 
@@ -340,12 +340,12 @@ export class SprintDetail implements OnInit {
   private loadSprintTasks(projectId: string): void {
     // V1-7: statuses reference data drives the final/DONE detection
     this.refStore.ensure(projectId, ['statuses', 'sprints']);
-    // F5: the sprint task list never renders the description — omit it from the payload
+    // The sprint task list never renders the description — omit it from the payload
     this.taskClient.list(projectId, { sprintId: this.sprintId(), limit: 200, excludeDescription: true }).subscribe({
       next: (res) => this.sprintTasks.set(res.data),
       error: (err) => this.notify.error(getErrorMessage(err)),
     });
-    // F2: future sprints (the "Move to…" targets of the disposition dialog)
+    // Future sprints (the "Move to…" targets of the disposition dialog)
     // are derived from the shared ProjectRefStore cache — ensure() above
     // loads them; no separate request needed.
   }

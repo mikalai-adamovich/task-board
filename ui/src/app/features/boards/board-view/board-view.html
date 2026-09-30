@@ -5,11 +5,11 @@
 } @else if (board(); as b) {
   <div class="flex h-full flex-col">
     <!-- Board header -->
-    <!-- Q6 (F-13): header wraps on mobile instead of overflowing -->
+    <!-- Header wraps on mobile instead of overflowing -->
     <div class="mb-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
       <div class="flex min-w-0 flex-wrap items-center gap-3">
-        <h2 class="text-xl font-bold text-foreground">{{ projectName() }}</h2>
-        <!-- Sprint scope chip (DEC-038) -->
+        <h1 class="text-xl font-bold text-foreground">{{ projectName() }}</h1>
+        <!-- Sprint scope chip -->
         @if (sprintId()) {
           <span hlmBadge variant="secondary" class="gap-1 py-1 pl-2">
             {{ 'boardView.sprintChip' | transloco: { name: selectedSprintName() } }}
@@ -26,7 +26,7 @@
             </button>
           </span>
         }
-        <!-- F-08: active assignee filter chip -->
+        <!-- Active assignee filter chip -->
         @if (selectedAssigneeLabel()) {
           <span hlmBadge variant="secondary" class="gap-1 py-1 pl-2">
             {{ 'boardView.assigneeChip' | transloco: { name: selectedAssigneeLabel() } }}
@@ -43,7 +43,7 @@
             </button>
           </span>
         }
-        <!-- F-08: active priority filter chip -->
+        <!-- Active priority filter chip -->
         @if (selectedPriorityLabel()) {
           <span hlmBadge variant="secondary" class="gap-1 py-1 pl-2">
             {{ 'boardView.priorityChip' | transloco: { priority: selectedPriorityLabel() } }}
@@ -62,7 +62,7 @@
         }
       </div>
       <div class="flex w-full flex-wrap items-center gap-3 sm:w-auto">
-        <!-- Sprint selector (DEC-038): writes ?sprintId= which scopes the task query -->
+        <!-- Sprint selector: writes ?sprintId= which scopes the task query -->
         <hlm-select
           [value]="sprintId() ?? ''"
           (valueChange)="onSprintSelect($any($event))"
@@ -85,7 +85,7 @@
             </hlm-select-group>
           </hlm-select-content>
         </hlm-select>
-        <!-- F-08: assignee filter (All / Current user / Unassigned / member) -->
+        <!-- Assignee filter (All / Current user / Unassigned / member) -->
         <hlm-select
           [value]="assignee() ?? ''"
           (valueChange)="onAssigneeSelect($any($event))"
@@ -105,7 +105,7 @@
             </hlm-select-group>
           </hlm-select-content>
         </hlm-select>
-        <!-- F-08: priority filter (All + task priorities) -->
+        <!-- Priority filter (All + task priorities) -->
         <hlm-select
           [value]="priorityLevel() ?? ''"
           (valueChange)="onPrioritySelect($any($event))"
@@ -137,16 +137,16 @@
     <div class="flex min-w-0 flex-1 gap-4 overflow-x-auto pb-4">
       @for (column of b.columns; track column.id) {
         <div class="flex min-w-70 flex-1 flex-col rounded-lg border border-border bg-muted/30">
-          <!-- Q9 (RQ-04 ⑥): loaded-count next to the column title. Pagination
+          <!-- Loaded-count next to the column title. Pagination
                means the column holds a prefix, never a total — a trailing `+`
                marks more cards server-side. No `countDocuments` on this path. -->
           <div class="border-b border-border px-3 py-2">
-            <h3 class="flex items-center gap-1.5 text-sm font-semibold text-foreground">
+            <h2 class="flex items-center gap-1.5 text-sm font-semibold text-foreground">
               <span class="truncate">{{ columnNames().get(column.id) }}</span>
               <span class="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-xs font-normal text-muted-foreground">
                 {{ columnCountLabel(column.id) }}
               </span>
-            </h3>
+            </h2>
           </div>
           <div
             cdkDropList
@@ -166,6 +166,8 @@
                   [projectKey]="projectKey()"
                   [typeName]="typeMap()[task.typeId] ?? task.typeId"
                   (click)="goToTask(task)"
+                  (taskClick)="goToTask($event)"
+                  (moveRequested)="openMoveToColumn($event)"
                 />
               </div>
             }
@@ -189,6 +191,28 @@
       }
     </div>
   </div>
+
+  <!-- a11y: keyboard equivalent of a cross-column drag. Opens with `v` on a focused
+     card; the pick runs the SAME mutation as a drop (and still asks which
+     status to use when the target column spans several). -->
+  <hlm-dialog [state]="showMoveToColumn() ? 'open' : 'closed'" (stateChanged)="onMoveToColumnDialogStateChange($event)">
+    <hlm-dialog-content *hlmDialogPortal class="sm:max-w-md">
+      <hlm-dialog-header>
+        <h2 hlmDialogTitle>{{ 'boardView.moveTaskTitle' | transloco }}</h2>
+        <p hlmDialogDescription>{{ 'boardView.moveTaskDesc' | transloco }}</p>
+      </hlm-dialog-header>
+      <div class="flex flex-col gap-2">
+        @for (column of moveTargets(); track column.id) {
+          <button hlmBtn variant="outline" class="w-full justify-start" (click)="moveToColumn(column)">
+            {{ columnNames().get(column.id) }}
+          </button>
+        }
+      </div>
+      <hlm-dialog-footer>
+        <button hlmBtn variant="outline" hlmDialogClose>{{ 'boardView.cancel' | transloco }}</button>
+      </hlm-dialog-footer>
+    </hlm-dialog-content>
+  </hlm-dialog>
 
   <!-- Status Selection Dialog (for multi-status columns) -->
   <hlm-dialog [state]="showStatusSelect() ? 'open' : 'closed'" (stateChanged)="onStatusSelectDialogStateChange($event)">

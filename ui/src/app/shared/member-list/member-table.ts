@@ -24,7 +24,7 @@ export interface MemberTableConfig<T> {
   /** Load callback invoked whenever URL query params change. */
   load: () => void;
   /**
-   * Q2 (F-05): measured table-wrapper height enabling Auto page-size mode — when the
+   * Measured table-wrapper height enabling Auto page-size mode — when the
    * persisted preference is the Auto sentinel (0), the effective page size is derived
    * from this signal via `computeAutoPageSize`.
    */
@@ -62,6 +62,21 @@ export interface MemberTableState<T> {
  * column sorting, per-column filtering (synced to URL query params)
  * and client-side pagination with a persisted page size.
  *
+ * The DEFAULT order is the server's. `TenantMemberRepository`
+ * (`findByTenantWithUsers`) and its project-member twin order the result by
+ * lower-cased display name, then e-mail, then id, so the list a user sees
+ * before touching a header is the order every other reader sees too. With
+ * `sortField` unset this computed returns the source untouched, which is that
+ * server order.
+ *
+ * When the user DOES click a column header, the comparison below must agree
+ * with the server's. It previously used `localeCompare`, whose result depends on
+ * each browser's own locale data — so two readers could sort the same column
+ * and see different orders, which is the defect this rule exists to prevent.
+ * Code-unit comparison is locale-independent and matches Mongo's default binary
+ * collation on the lower-cased key, so both sides now produce the same order
+ * for the same data.
+ *
  * Must be called within an injection context.
  */
 export function useMemberTable<T>(config: MemberTableConfig<T>): MemberTableState<T> {
@@ -71,7 +86,7 @@ export function useMemberTable<T>(config: MemberTableConfig<T>): MemberTableStat
   const page = signal(1);
   // Raw persisted value; `0` is the shared Auto sentinel and is resolved below.
   const pageSize = signal(preferencesStore.pageSize());
-  /** Q2 (F-05): true when the persisted preference is the Auto sentinel. */
+  /** True when the persisted preference is the Auto sentinel. */
   const isAutoMode = computed(() => pageSize() === AUTO_PAGE_SIZE_SENTINEL);
   /** Effective numeric page size — derived from the measured height in Auto mode. */
   const effectivePageSize = computed(() =>
@@ -93,7 +108,25 @@ export function useMemberTable<T>(config: MemberTableConfig<T>): MemberTableStat
 
     if (!accessor) return list;
 
-    return list.sort((a, b) => accessor(a).localeCompare(accessor(b)) * dir);
+    // Case-insensitive first, then the raw value as the tie-break — the same
+    // two-key order the server pipeline applies. Code-unit comparison (`<`/`>`)
+    // rather than `localeCompare`: it is what Mongo's default binary collation
+    // does, so the two sides agree, and it does not consult the reader's ICU
+    // locale data, which is what made two browsers disagree.
+    const codeUnit = (a: string, b: string): number => {
+      if (a < b) return -1;
+      if (a > b) return 1;
+
+      return 0;
+    };
+
+    return list.sort((a, b) => {
+      const left = accessor(a);
+      const right = accessor(b);
+      const primary = codeUnit(left.toLowerCase(), right.toLowerCase());
+
+      return (primary !== 0 ? primary : codeUnit(left, right)) * dir;
+    });
   });
   const filtered = computed(() => {
     let list = sorted();

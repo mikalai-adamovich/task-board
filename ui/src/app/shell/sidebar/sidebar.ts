@@ -61,7 +61,7 @@ import { ProjectSwitcher } from '../project-switcher/project-switcher';
   templateUrl: './sidebar.html',
 })
 export class Sidebar {
-  /** localStorage key for the persisted collapsed state (D-47) */
+  /** localStorage key for the persisted collapsed state */
   private static readonly COLLAPSED_STORAGE_KEY = 'task-board.sidebar-collapsed';
   protected readonly tenantStore = inject(TenantStore);
   private readonly authStore = inject(AuthStore);
@@ -69,9 +69,9 @@ export class Sidebar {
   private readonly router = inject(Router);
   private readonly preferencesStore = inject(PreferencesStore);
   /** Spartan sidebar state service — single source of truth for expanded/collapsed */
-  protected readonly sidebarService = inject(HlmSidebarService);
+  private readonly sidebarService = inject(HlmSidebarService);
   /** Whether the desktop sidebar is currently collapsed (icon mode) */
-  protected readonly isCollapsed = computed(() => this.sidebarService.state() === 'collapsed');
+  private readonly isCollapsed = computed(() => this.sidebarService.state() === 'collapsed');
   /** Reactive signal of the current URL for project context detection */
   private readonly currentUrl = toSignal(
     this.router.events.pipe(

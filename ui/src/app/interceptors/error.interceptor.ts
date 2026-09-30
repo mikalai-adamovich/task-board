@@ -1,13 +1,25 @@
-import { HttpInterceptorFn, HttpErrorResponse } from '@angular/common/http';
+import { HttpInterceptorFn, HttpErrorResponse, HttpHeaders } from '@angular/common/http';
 import { inject } from '@angular/core';
 import { catchError, throwError } from 'rxjs';
 import { TranslocoService } from '@jsverse/transloco';
 import { AuthStore } from '@stores/auth-store';
-import type { ErrorResponse } from '@task-board/shared';
+import type { ErrorCode, ErrorResponse } from '@task-board/shared';
 
-/** Map of error codes (see `ErrorCode` in @task-board/shared) to message keys */
-const ERROR_CODE_MESSAGES: Record<string, string> = {
+/**
+ * Map of error codes (see `ErrorCode` in @task-board/shared) to message keys.
+ *
+ * Typed `Record<ErrorCode, string>`, not `Record<string, string>`: the type is
+ * the guardrail. A code added to the shared list and not mapped here is a
+ * COMPILE error in this file, so "four codes were missing and nothing said so"
+ * cannot recur. `shared-contract.spec.ts` asserts the second half — that every
+ * key here is actually translated in every locale.
+ */
+const ERROR_CODE_MESSAGES: Record<ErrorCode, string> = {
   VALIDATION_ERROR: 'errors.validation',
+  // A 413 is not a shape problem: the payload is legal, it is only too big, so
+  // the message says "send less" instead of "check your input". Present in all
+  // eleven locales — `shared-contract.spec.ts` fails the build otherwise.
+  PAYLOAD_TOO_LARGE: 'errors.payloadTooLarge',
   NOT_FOUND: 'errors.notFound',
   // V1-8: a failed login must show neutral invalid-credentials copy, not the
   // session-expired message mapped from the bare 401 status below.
@@ -22,6 +34,10 @@ const ERROR_CODE_MESSAGES: Record<string, string> = {
   DUPLICATE_STATUS: 'errors.duplicateStatus',
   INVALID_STATUS_REPLACEMENT: 'errors.invalidStatusReplacement',
   INVALID_SPRINT_DATES: 'errors.invalidSprintDates',
+  INVALID_RESET_TOKEN: 'errors.invalidResetToken',
+  RATE_LIMITED: 'errors.rateLimited',
+  QUERY_TIMEOUT: 'errors.queryTimeout',
+  TASK_NUMBER_UNAVAILABLE: 'errors.taskNumberUnavailable',
   INVITATION_EXPIRED: 'errors.invitationExpired',
   INVITATION_REVOKED: 'errors.invitationRevoked',
   INVITATION_ALREADY_ACCEPTED: 'errors.invitationAlreadyAccepted',
@@ -33,8 +49,36 @@ const ERROR_CODE_MESSAGES: Record<string, string> = {
   SLUG_TAKEN: 'errors.slugTaken',
 };
 
-/** Extract a user-friendly message from a structured error response */
-function extractErrorMessage(error: HttpErrorResponse): string {
+/**
+ * Extract a user-facing message from a structured error response.
+ *
+ * Every branch returns TRANSLATABLE TEXT: either a transloco key, or — where the
+ * text depends on a value the server sent (`Retry-After`) — the translated
+ * string itself. `getErrorMessage()` hands this to `notify.error()`, which
+ * translates; a value already translated is passed through unchanged, and a key
+ * that is missing from a locale degrades to the key rather than to English.
+ */
+function extractErrorMessage(error: HttpErrorResponse, transloco: TranslocoService): string {
+  return applyRetryAfter(error, transloco, resolveMessageKey(error));
+}
+
+/**
+ * A 429 tells the user WHEN to come back, and the `Retry-After` header the
+ * rate limiter already sends is the only place that says so. Reading it here
+ * rather than in the status switch matters: a throttled response usually carries
+ * a structured `RATE_LIMITED` body, so the code branch resolves first and a
+ * switch-only reader never sees the header at all.
+ */
+function applyRetryAfter(error: HttpErrorResponse, transloco: TranslocoService, key: string): string {
+  if (key !== 'errors.rateLimited' && key !== 'errors.tooManyRequests') return key;
+
+  const seconds = readRetryAfterSeconds(error.headers);
+
+  return seconds === null ? key : transloco.translate('errors.tooManyRequestsAfter', { seconds });
+}
+
+/** The transloco key for a response, with no value-dependent text. */
+function resolveMessageKey(error: HttpErrorResponse): string {
   // Network errors (no response received) — e.g. "Failed to fetch"
   if (error.status === 0) {
     return 'errors.networkError';
@@ -43,7 +87,12 @@ function extractErrorMessage(error: HttpErrorResponse): string {
   const body = error.error as ErrorResponse | undefined;
 
   if (body?.error?.code) {
-    return ERROR_CODE_MESSAGES[body.error.code] ?? body.error.message ?? 'errors.unknown';
+    // An UNKNOWN code gets a transloco key like every other case. It must never
+    // fall back to `body.error.message`: that is the server's English prose, and
+    // it was being handed to a translation pipeline, so the user saw untranslated
+    // English on exactly the conditions (two of them 5xx) an operator most wants
+    // read. The raw message is still available on the error object itself.
+    return ERROR_CODE_MESSAGES[body.error.code as ErrorCode] ?? 'errors.unknown';
   }
 
   if (body?.error?.message) {
@@ -75,6 +124,7 @@ function extractErrorMessage(error: HttpErrorResponse): string {
       return 'errors.validation';
 
     case 429:
+      // The `Retry-After` overlay is applied by `applyRetryAfter` above.
       return 'errors.tooManyRequests';
 
     case 500:
@@ -89,6 +139,24 @@ function extractErrorMessage(error: HttpErrorResponse): string {
     default:
       return 'errors.unexpected';
   }
+}
+
+/**
+ * Seconds to wait, from the `Retry-After` header the rate limiter sends.
+ *
+ * A missing, unparsable, negative or non-finite value yields null and the caller
+ * falls back to the plain message — a header is never rendered as text.
+ */
+function readRetryAfterSeconds(headers: HttpHeaders | null | undefined): number | null {
+  const raw = headers?.get('Retry-After')?.trim();
+
+  if (!raw) return null;
+
+  const seconds = Number(raw);
+
+  if (!Number.isFinite(seconds) || seconds < 0) return null;
+
+  return Math.ceil(seconds);
 }
 
 /**
@@ -108,14 +176,14 @@ export const errorInterceptor: HttpInterceptorFn = (req, next) => {
 
   return next(req).pipe(
     catchError((error: HttpErrorResponse) => {
-      const userMessage = extractErrorMessage(error);
+      const userMessage = extractErrorMessage(error, transloco);
 
       // Attach the user-friendly message for downstream error handlers
       (error as HttpErrorResponse & { userMessage?: string }).userMessage = userMessage;
 
       // Surface unexpected errors (network failures / server errors) as toasts.
       // Expected client errors (4xx) are handled inline by the calling component.
-      // P14 (item 32): brn-sonner is loaded via dynamic import — a static
+      // Brn-sonner is loaded via dynamic import — a static
       // import here would pin the whole ~49 kB module into the initial bundle
       // (the deferred <hlm-toaster> shares the same module file).
       if (error.status === 0 || error.status >= 500) {

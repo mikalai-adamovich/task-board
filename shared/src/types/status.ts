@@ -24,6 +24,6 @@ export interface CreateStatus {
 
 /** Update status request body type */
 export interface UpdateStatus {
-  name?: string;
-  position?: number;
+  name?: string | undefined;
+  position?: number | undefined;
 }

@@ -69,13 +69,3 @@ export const isoDateTime = () => z.iso.datetime();
  * Validates a nullable ISO 8601 datetime string.
  */
 export const nullableIsoDateTime = () => z.iso.datetime().nullable();
-
-/**
- * Validates a non-negative integer.
- */
-export const nonNegativeInt = () => z.number().int().nonnegative();
-
-/**
- * Validates a string array of IDs (UUID or ObjectId format).
- */
-export const uuidArray = () => z.array(uuid());

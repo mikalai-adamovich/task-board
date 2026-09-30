@@ -1,7 +1,7 @@
 <div class="mx-auto max-w-6xl">
   <!-- Page header -->
   <div class="mb-6">
-    <h2 class="text-2xl font-bold text-foreground">{{ 'projectSettings.title' | transloco }}</h2>
+    <h1 class="text-2xl font-bold text-foreground">{{ 'projectSettings.title' | transloco }}</h1>
     <p class="mt-1 text-sm text-muted-foreground">{{ 'projectSettings.subtitle' | transloco }}</p>
   </div>
 
@@ -13,7 +13,7 @@
     <div class="flex items-center gap-3">
       <ng-icon name="lucideUsers" class="size-5 text-muted-foreground" />
       <div>
-        <h3 class="font-medium text-foreground">{{ 'projectSettings.members' | transloco }}</h3>
+        <h2 class="font-medium text-foreground">{{ 'projectSettings.members' | transloco }}</h2>
         <p class="text-sm text-muted-foreground">{{ 'projectSettings.membersDesc' | transloco }}</p>
       </div>
     </div>
@@ -39,13 +39,13 @@
             [class.text-destructive]="link.destructive"
           />
           <div>
-            <h3
+            <h2
               class="font-medium"
               [class.text-foreground]="!link.destructive"
               [class.text-destructive]="link.destructive"
             >
               {{ link.labelKey | transloco }}
-            </h3>
+            </h2>
             <p class="text-sm text-muted-foreground">{{ link.descriptionKey | transloco }}</p>
           </div>
         </div>

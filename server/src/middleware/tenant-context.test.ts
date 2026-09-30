@@ -72,7 +72,7 @@ describe('tenantContextMiddleware', () => {
     mockMemberUpdateOne.mockClear();
   });
 
-  // ── DEC-032: resolution by slug (backward compatible with id) ────────────
+  // ── Resolution by slug (backward compatible with id) ─────────────────────
 
   it('resolves the tenant context by slug when the header value is not a tenant id', async () => {
     mockMemberFindOne
@@ -230,7 +230,7 @@ describe('tenantContextMiddleware', () => {
     expect(json.error.message).toBe('Your access to this tenant has been revoked');
   });
 
-  // DEC-055: an ACTIVE membership past its expiresAt is treated as revoked at
+  // An ACTIVE membership past its expiresAt is treated as revoked at
   // access time (lazy evaluation) and the stored status is flipped.
   it('returns 403 for an ACTIVE membership whose expiresAt has passed and flips the stored status', async () => {
     mockMemberFindOne.mockResolvedValue({
@@ -272,7 +272,7 @@ describe('tenantContextMiddleware', () => {
     expect(mockMemberUpdateOne).not.toHaveBeenCalled();
   });
 
-  // DEC-018: an invited-but-unaccepted member is stored as ACCESS_REVOKED + invitation PENDING;
+  // An invited-but-unaccepted member is stored as ACCESS_REVOKED + invitation PENDING;
   // the status gate alone must block them — no special-casing of "ACTIVE but pending invitation".
   it('blocks a member whose invitation is still PENDING (status ACCESS_REVOKED)', async () => {
     mockMemberFindOne.mockResolvedValue({
@@ -419,12 +419,14 @@ describe('tenantContextMiddleware', () => {
     expect(body.membership).toMatchObject({ userId: 'user-1', tenantId: 'tenant-1', role: 'OWNER' });
   });
 
-  // ── F3 (perf audit #2): project_members lookup only for WRITE requests ────
+  // ── The project_members lookup runs for EVERY verb, GET included ──
   //
-  // The context `projectRole` is consumed exclusively by requirePermission(...)
-  // coarse gates, all of which sit on POST/PATCH routes. GET/HEAD handlers and
-  // services resolve project roles themselves, so the middleware must skip the
-  // `project_members.findOne` for read-only requests.
+  // F3 ("perf audit #2") restricted it to non-GET/HEAD on the assumption that no
+  // read route consumes `projectRole`. That assumption is false: `GET
+  // /projects/:projectId/audit` gates on `requirePermission('view_audit_events',
+  // true)`, so on a GET the project-level permission was always evaluated with
+  // `projectRole === null` — i.e. reads silently fell back to the coarse tenant
+  // role. Reads and writes must see the same authorization context.
 
   function createProjectScopedTestApp() {
     const app = new Hono<AppEnv>();
@@ -440,29 +442,34 @@ describe('tenantContextMiddleware', () => {
 
     app.get('/api/projects/:projectId/tasks', (c) => c.json({ projectRole: echoRole(c) ?? null }));
     app.post('/api/projects/:projectId/tasks', (c) => c.json({ projectRole: echoRole(c) ?? null }));
+    // A tenant-scoped route with NO project in the path: the pre-existing
+    // behaviour (no project lookup) must be preserved verbatim.
+    app.get('/api/tasks/:taskId', (c) => c.json({ projectRole: echoRole(c) ?? null }));
 
     return app;
   }
 
   const ACTIVE_MEMBER = { userId: 'user-1', tenantId: 'tenant-1', role: 'MEMBER', status: 'ACTIVE' };
 
-  describe('F3: project role lookup by request method', () => {
-    it('skips the project_members lookup for a MEMBER GET on a project-scoped path', async () => {
+  describe('F5: project role lookup on read requests', () => {
+    it('resolves the project role for a MEMBER GET on a project-scoped path', async () => {
       mockMemberFindOne.mockResolvedValue(ACTIVE_MEMBER);
+      mockProjectMemberFindOne.mockResolvedValue({ userId: 'user-1', projectId: 'p1', role: 'EDITOR' });
 
       const app = createProjectScopedTestApp();
       const res = await app.request('/api/projects/p1/tasks', { headers: { 'X-Tenant-Id': 'tenant-1' } }, TEST_ENV);
 
       expect(res.status).toBe(200);
+      expect(mockProjectMemberFindOne).toHaveBeenCalledWith({ userId: 'user-1', projectId: 'p1' });
 
       const body = (await res.json()) as { projectRole: string | null };
 
-      expect(mockProjectMemberFindOne).not.toHaveBeenCalled();
-      expect(body.projectRole).toBeNull();
+      expect(body.projectRole).toBe('EDITOR');
     });
 
-    it('skips the project_members lookup for a HEAD request', async () => {
+    it('resolves the project role for a HEAD request too', async () => {
       mockMemberFindOne.mockResolvedValue(ACTIVE_MEMBER);
+      mockProjectMemberFindOne.mockResolvedValue({ userId: 'user-1', projectId: 'p1', role: 'VIEWER' });
 
       const app = createProjectScopedTestApp();
       const res = await app.request(
@@ -472,9 +479,75 @@ describe('tenantContextMiddleware', () => {
       );
 
       expect(res.status).toBe(200);
+      expect(mockProjectMemberFindOne).toHaveBeenCalledWith({ userId: 'user-1', projectId: 'p1' });
+    });
+
+    it('a project ADMIN gets PROJECT_ADMIN on a GET — the case the audit route needs', async () => {
+      mockMemberFindOne.mockResolvedValue(ACTIVE_MEMBER);
+      mockProjectMemberFindOne.mockResolvedValue({ userId: 'user-1', projectId: 'p1', role: 'PROJECT_ADMIN' });
+
+      const app = createProjectScopedTestApp();
+      const res = await app.request('/api/projects/p1/tasks', { headers: { 'X-Tenant-Id': 'tenant-1' } }, TEST_ENV);
+
+      expect(res.status).toBe(200);
+
+      const body = (await res.json()) as { projectRole: string | null };
+
+      expect(body.projectRole).toBe('PROJECT_ADMIN');
+    });
+
+    it('leaves the role unset for a tenant MEMBER who is NOT a project member (GET)', async () => {
+      mockMemberFindOne.mockResolvedValue(ACTIVE_MEMBER);
+      mockProjectMemberFindOne.mockResolvedValue(null);
+
+      const app = createProjectScopedTestApp();
+      const res = await app.request('/api/projects/p1/tasks', { headers: { 'X-Tenant-Id': 'tenant-1' } }, TEST_ENV);
+
+      expect(res.status).toBe(200);
+      expect(mockProjectMemberFindOne).toHaveBeenCalledWith({ userId: 'user-1', projectId: 'p1' });
+
+      const body = (await res.json()) as { projectRole: string | null };
+
+      // Authorization is left to requirePermission downstream — unchanged.
+      expect(body.projectRole).toBeNull();
+    });
+
+    it('performs NO project lookup when the route has no :projectId (GET)', async () => {
+      mockMemberFindOne.mockResolvedValue(ACTIVE_MEMBER);
+
+      const app = createProjectScopedTestApp();
+      const res = await app.request('/api/tasks/t1', { headers: { 'X-Tenant-Id': 'tenant-1' } }, TEST_ENV);
+
+      expect(res.status).toBe(200);
+      expect(mockProjectMemberFindOne).not.toHaveBeenCalled();
+
+      const body = (await res.json()) as { projectRole: string | null };
+
+      expect(body.projectRole).toBeNull();
+    });
+
+    it('does not look up project membership for a tenant ADMIN GET (RBAC bypass, unchanged)', async () => {
+      mockMemberFindOne.mockResolvedValue({ ...ACTIVE_MEMBER, role: 'ADMIN' });
+
+      const app = createProjectScopedTestApp();
+      const res = await app.request('/api/projects/p1/tasks', { headers: { 'X-Tenant-Id': 'tenant-1' } }, TEST_ENV);
+
+      expect(res.status).toBe(200);
       expect(mockProjectMemberFindOne).not.toHaveBeenCalled();
     });
 
+    it('does not look up project membership for a tenant OWNER GET (RBAC bypass, unchanged)', async () => {
+      mockMemberFindOne.mockResolvedValue({ ...ACTIVE_MEMBER, role: 'OWNER' });
+
+      const app = createProjectScopedTestApp();
+      const res = await app.request('/api/projects/p1/tasks', { headers: { 'X-Tenant-Id': 'tenant-1' } }, TEST_ENV);
+
+      expect(res.status).toBe(200);
+      expect(mockProjectMemberFindOne).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('F3 (write requests) — unchanged', () => {
     it('performs the project_members lookup for a MEMBER POST and exposes the role', async () => {
       mockMemberFindOne.mockResolvedValue(ACTIVE_MEMBER);
       mockProjectMemberFindOne.mockResolvedValue({ userId: 'user-1', projectId: 'p1', role: 'EDITOR' });
@@ -540,6 +613,76 @@ describe('tenantContextMiddleware', () => {
 
       expect(res.status).toBe(200);
       expect(mockProjectMemberFindOne).not.toHaveBeenCalled();
+    });
+  });
+  /**
+   * `X-Tenant-Id` crosses a schema boundary, and the "not a member"
+   * answer does not distinguish an unknown tenant from a known one.
+   *
+   * The property: an externally-supplied value is parsed by the same shared
+   * validators every path parameter uses, and a malformed one is refused BEFORE
+   * it reaches a query; and a caller cannot tell "no such workspace" from "not
+   * your workspace".
+   */
+  describe('D-26: the X-Tenant-Id header is validated and answers indistinguishably', () => {
+    async function request(tenantRef: string | null) {
+      const app = createTestApp();
+
+      return app.request(
+        '/tenant-protected/resource',
+        { headers: tenantRef === null ? {} : { 'X-Tenant-Id': tenantRef } },
+        TEST_ENV,
+      );
+    }
+
+    it('rejects a MALFORMED header with 400 before any query runs', async () => {
+      // The absent-input path: an unvalidated header used to travel into two
+      // indexed queries as an arbitrary string, and be refused 10 lines later.
+      for (const bad of ['../../etc', 'a'.repeat(200), 'has space', 'DROP TABLE', '-1']) {
+        mockMemberFindOne.mockClear();
+        mockTenantFindOne.mockClear();
+
+        const res = await request(bad);
+
+        expect(res.status, bad).toBe(400);
+        expect(mockMemberFindOne, bad).not.toHaveBeenCalled();
+        expect(mockTenantFindOne, bad).not.toHaveBeenCalled();
+      }
+    });
+
+    it('accepts both shapes the resolver understands (id and slug)', async () => {
+      mockMemberFindOne.mockResolvedValue({
+        id: 'm1',
+        userId: 'user-1',
+        tenantId: 'tenant-1',
+        role: 'OWNER',
+        status: 'ACTIVE',
+        expiresAt: null,
+      });
+      mockTenantFindOne.mockResolvedValue(null);
+
+      expect((await request('550e8400-e29b-41d4-a716-446655440099')).status).toBe(200);
+      expect((await request('acme-workspace')).status).toBe(200);
+    });
+
+    it('answers an UNKNOWN tenant and a FOREIGN one identically', async () => {
+      // The slug-enumeration oracle: a caller must not be able to learn which
+      // workspace slugs exist by reading the error.
+      mockMemberFindOne.mockResolvedValue(null);
+      mockTenantFindOne.mockResolvedValue(null);
+
+      const unknown = await (await request('no-such-workspace')).text();
+
+      mockMemberFindOne.mockResolvedValue(null);
+      mockTenantFindOne.mockResolvedValue({ id: 'tenant-2', slug: 'other-workspace' });
+
+      const foreign = await (await request('other-workspace')).text();
+
+      expect(unknown).toBe(foreign);
+    });
+
+    it('still refuses a missing header', async () => {
+      expect((await request(null)).status).toBe(400);
     });
   });
 });

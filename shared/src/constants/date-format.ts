@@ -14,7 +14,7 @@
  */
 export const DATE_FORMAT_PREFERENCES = ['DD/MM/YYYY', 'MM/DD/YYYY', 'YYYY-MM-DD'] as const;
 
-/** P12: a date format is any whitelisted-token string — presets are just well-known members. */
+/** A date format is any whitelisted-token string — presets are just well-known members. */
 export type DateFormatPreference = string;
 
 /** Allowed date-format tokens, longest first so greedy matching is correct. */
@@ -26,7 +26,7 @@ const DATE_FORMAT_SEPARATOR = /[\s/\-.,]/;
 export const DATE_FORMAT_MAX_LENGTH = 32;
 
 /**
- * P12 (DEC-056): validate a free-form date format against the token whitelist.
+ * Validate a free-form date format against the token whitelist.
  * Accepts any mix of `YYYY YY MM M DD D MMM MMMM` separated by spaces, `/ - . ,`
  * (separators may repeat). Rejects unknown tokens (e.g. `QQ`), lowercase
  * tokens, other punctuation and strings longer than {@link DATE_FORMAT_MAX_LENGTH}.

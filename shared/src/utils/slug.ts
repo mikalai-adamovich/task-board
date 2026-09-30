@@ -1,5 +1,5 @@
 /**
- * Tenant slug helpers (DEC-032).
+ * Tenant slug helpers.
  *
  * A tenant slug is a short, human-readable, URL-safe identifier generated
  * from the workspace name: lowercase `[a-z0-9-]`, no leading/trailing

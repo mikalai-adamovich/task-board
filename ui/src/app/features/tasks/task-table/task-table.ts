@@ -1,6 +1,6 @@
 import { Component, DestroyRef, ElementRef, inject, input, computed, effect, signal, viewChild } from '@angular/core';
 import { safeNumericParam } from '@app/shared/utils/numeric-param';
-import { NavigationEnd, Router, ActivatedRoute } from '@angular/router';
+import { NavigationEnd, Router, ActivatedRoute, RouterLink } from '@angular/router';
 import { filter, of } from 'rxjs';
 import { rxResource, takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ProjectStore } from '@stores/project-store';
@@ -10,6 +10,7 @@ import { getTenantSlug } from '@app/shared/utils/route-utils';
 import { AuthStore } from '@stores/auth-store';
 import { canWrite } from '@app/shared/utils/role-utils';
 import { DatePipe } from '@angular/common';
+import { HttpErrorResponse } from '@angular/common/http';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { NgIcon, provideIcons } from '@ng-icons/core';
 import { lucideArrowUp, lucideArrowDown, lucideFilter } from '@ng-icons/lucide';
@@ -41,7 +42,12 @@ import type {
 } from '@task-board/shared';
 import { injectToasts } from '@app/shared/utils/toast-utils';
 import { getErrorMessage } from '@app/shared/utils/error-utils';
-import { TASK_TABLE_COLUMN_KEYS, TASK_TABLE_PINNED_COLUMNS, DEFAULT_TASK_TABLE_COLUMNS } from '@task-board/shared';
+import {
+  TASK_TABLE_COLUMN_KEYS,
+  TASK_TABLE_PINNED_COLUMNS,
+  DEFAULT_TASK_TABLE_COLUMNS,
+  TASK_SEARCH_MIN_LENGTH,
+} from '@task-board/shared';
 import {
   taskTypeBadgeVariant,
   priorityBadgeVariant,
@@ -66,9 +72,25 @@ const EMPTY_TASK_PAGE: PaginatedResponse<Task> = {
   data: [],
   pagination: { page: 1, limit: 0, total: 0, totalPages: 0 },
 };
-// Q10: sentinels for the nullable bulk-select options — owned by TaskTableBulkBar
+// Sentinels for the nullable bulk-select options — owned by TaskTableBulkBar
 // (the select values), mapped to `null` here when building the request body.
 // (BULK_UNASSIGNED / BULK_NO_SPRINT are imported at the top.)
+
+/**
+ * Whether a failed request is the CALLER's to report.
+ *
+ * The global `errorInterceptor` toasts every 5xx and every network failure, so a
+ * component that also toasted those would show two toasts for one failure
+ * (AGENTS.md §UI). A 4xx — forbidden, conflict, validation — is the case the
+ * interceptor deliberately leaves to the caller. A value that is not an HTTP
+ * response at all has no status and belongs to whoever caught it.
+ *
+ * The same rule is applied in `board-view.ts`; it is a property of the
+ * interceptor contract, not of one component.
+ */
+function isCallerHandled(err: unknown): boolean {
+  return err instanceof HttpErrorResponse && err.status >= 400 && err.status < 500;
+}
 
 /** Case-insensitive name → id resolution against a loaded option list */
 function resolveNameToId(name: string, options: SelectOption[]): string {
@@ -87,6 +109,8 @@ function resolveNameToId(name: string, options: SelectOption[]): string {
   imports: [
     DatePipe,
     TranslocoPipe,
+    // The key cell is a real link, so the directive has to be in scope.
+    RouterLink,
     NgIcon,
     HlmButtonImports,
     HlmInputImports,
@@ -117,14 +141,14 @@ export class TaskTable {
   private readonly taskClient = inject(TaskClient);
   /** Round-4 F1: translates the date-mode select values for its trigger display */
   private readonly transloco = inject(TranslocoService);
-  /** Q10: bulk-update success/failure feedback */
+  /** Bulk-update success/failure feedback */
   private readonly notify = injectToasts();
   private readonly authStore = inject(AuthStore);
   private readonly projectStore = inject(ProjectStore);
   private readonly preferencesStore = inject(PreferencesStore);
-  /** R3-P8: DatePipe token derived from the user's date/time format preference */
+  /** DatePipe token derived from the user's date/time format preference */
   protected readonly dateTimeFmt = this.preferencesStore.dateTimePipeFormat;
-  /** P12 (item 28): active language passed as the DatePipe locale for localized month names */
+  /** Active language passed as the DatePipe locale for localized month names */
   protected readonly lang = this.preferencesStore.language;
   private readonly refStore = inject(ProjectRefStore);
   private readonly router = inject(Router);
@@ -142,7 +166,7 @@ export class TaskTable {
   readonly reporter = input('');
   readonly sprint = input('');
   readonly label = input('');
-  // Q12: date-range filter params (set via column-header popovers) — captured by saved views
+  // Date-range filter params (set via column-header popovers) — captured by saved views
   readonly createdFrom = input('');
   readonly createdTo = input('');
   readonly updatedFrom = input('');
@@ -151,14 +175,14 @@ export class TaskTable {
   readonly sort = input('');
   // ─── Derived state ─────────────────────────────────────────────────────────
   /** Resolved project UUID from the store (available after guard loads project) */
-  protected readonly projectId = computed(() => this.projectStore.activeProject()?.id ?? '');
+  private readonly projectId = computed(() => this.projectStore.activeProject()?.id ?? '');
   /**
    * True when the persisted preference is the Auto sentinel — the effective page size
    * is then derived from the measured table-wrapper height instead of a fixed number.
    */
-  protected readonly isAutoMode = computed(() => this.preferencesStore.pageSize() === AUTO_PAGE_SIZE_SENTINEL);
+  private readonly isAutoMode = computed(() => this.preferencesStore.pageSize() === AUTO_PAGE_SIZE_SENTINEL);
   /**
-   * Q9 (RQ-04 ⑤): device-local table density. Compact mode shrinks vertical cell
+   * Device-local table density. Compact mode shrinks vertical cell
    * padding via a class on the `<table>`; the Auto math below reacts through the
    * density-aware fallback row height.
    */
@@ -168,7 +192,7 @@ export class TaskTable {
   /** Density-aware fallback row height used by the Auto page-size math */
   private readonly rowHeightPx = computed(() => rowHeightForDensity(this.density.compact()));
   /**
-   * R3-P3: height available for table ROWS, measured from the table wrapper via a
+   * Height available for table ROWS, measured from the table wrapper via a
    * shared ResizeObserver (wrapper height minus its header row). No window/chrome
    * constants — the table bottom aligns with the page bottom at any viewport height.
    * The row height comes from the invisible probe row in the template (same cell
@@ -176,7 +200,7 @@ export class TaskTable {
    * page size.
    */
   private readonly measurement = useAutoRowMeasurement();
-  protected readonly availableRowsHeight = this.measurement.availableRowsHeight;
+  private readonly availableRowsHeight = this.measurement.availableRowsHeight;
   /**
    * Effective row height for the Auto math: the probe-row height when available,
    * otherwise the density-aware constant.
@@ -188,31 +212,31 @@ export class TaskTable {
    * recomputed from the measured wrapper height; otherwise it is the URL `limit`
    * or the stored preference.
    */
-  protected readonly pageSize = computed(() =>
+  private readonly pageSize = computed(() =>
     this.isAutoMode()
       ? computeAutoPageSize(this.availableRowsHeight(), this.effectiveRowHeightPx())
       : this.limit() || this.preferencesStore.pageSize(),
   );
   /** Safe page number — falls back to 1 when the query param is absent */
-  protected readonly safePage = computed(() => this.page() || 1);
+  private readonly safePage = computed(() => this.page() || 1);
   /** V2-10: the New Task control is hidden from VIEWER-role users */
-  protected readonly canCreateTasks = computed(() =>
+  private readonly canCreateTasks = computed(() =>
     canWrite(this.projectStore.projectRole(), this.authStore.tenantRole()),
   );
-  protected readonly sortField = computed(() => (this.sort() ?? '').split(':')[0] ?? '');
-  protected readonly sortDirection = computed<'asc' | 'desc'>(() =>
+  private readonly sortField = computed(() => (this.sort() ?? '').split(':')[0] ?? '');
+  private readonly sortDirection = computed<'asc' | 'desc'>(() =>
     (this.sort() ?? '').split(':')[1] === 'asc' ? 'asc' : 'desc',
   );
   // Reference data (reactive — empty until loaded)
-  protected readonly statusOptions = computed(() => this.refStore.options(this.projectId(), 'statuses'));
-  protected readonly typeOptions = computed(() => this.refStore.options(this.projectId(), 'types'));
-  protected readonly sprintOptions = computed(() => this.refStore.options(this.projectId(), 'sprints'));
-  protected readonly labelOptions = computed(() => this.refStore.options(this.projectId(), 'labels'));
-  protected readonly memberOptions = computed(() => this.refStore.options(this.projectId(), 'members'));
+  private readonly statusOptions = computed(() => this.refStore.options(this.projectId(), 'statuses'));
+  private readonly typeOptions = computed(() => this.refStore.options(this.projectId(), 'types'));
+  private readonly sprintOptions = computed(() => this.refStore.options(this.projectId(), 'sprints'));
+  private readonly labelOptions = computed(() => this.refStore.options(this.projectId(), 'labels'));
+  private readonly memberOptions = computed(() => this.refStore.options(this.projectId(), 'members'));
   protected readonly statusMap = computed(() => this.refStore.nameMap(this.projectId(), 'statuses'));
   protected readonly typeMap = computed(() => this.refStore.nameMap(this.projectId(), 'types'));
-  protected readonly sprintMap = computed(() => this.refStore.nameMap(this.projectId(), 'sprints'));
-  protected readonly labelMap = computed(() => this.refStore.nameMap(this.projectId(), 'labels'));
+  private readonly sprintMap = computed(() => this.refStore.nameMap(this.projectId(), 'sprints'));
+  private readonly labelMap = computed(() => this.refStore.nameMap(this.projectId(), 'labels'));
   protected readonly typeKeyMap = computed<Record<string, string>>(() => {
     const map: Record<string, string> = {};
 
@@ -235,8 +259,8 @@ export class TaskTable {
   protected readonly taskTypeBadgeVariant = taskTypeBadgeVariant;
   protected readonly priorityBadgeVariant = priorityBadgeVariant;
 
-  /** Translated priority label (P11); unknown values render verbatim. */
-  protected priorityLabel(priorityLevel: TaskPriorityLevel): string {
+  /** Translated priority label; unknown values render verbatim. */
+  private priorityLabel(priorityLevel: TaskPriorityLevel): string {
     const key = priorityLabelKey(priorityLevel);
 
     return key ? this.transloco.translate(key) : String(priorityLevel);
@@ -275,7 +299,7 @@ export class TaskTable {
     },
     defaultValue: EMPTY_TASK_PAGE,
   });
-  protected readonly tasks = computed(() => (this.tasksResource.hasValue() ? this.tasksResource.value().data : []));
+  private readonly tasks = computed(() => (this.tasksResource.hasValue() ? this.tasksResource.value().data : []));
   /**
    * Last non-empty pagination totals. During a refetch the resource resets to the
    * empty default (total 0), which would collapse the pagination to a single page
@@ -296,20 +320,20 @@ export class TaskTable {
 
     return this.lastKnownPagination().totalPages;
   });
-  // ─── Q10 (RQ-04 ③): multi-select + bulk actions ─────────────────────────────
+  // ─── Multi-select + bulk actions ────────────────────────────────────────────
   /** Page-scoped selection set — cleared whenever the table data reloads */
-  protected readonly selectedIds = signal<Set<string>>(new Set());
-  protected readonly selectedCount = computed(() => this.selectedIds().size);
+  private readonly selectedIds = signal<Set<string>>(new Set());
+  private readonly selectedCount = computed(() => this.selectedIds().size);
   protected readonly allSelected = computed(
     () => this.tasks().length > 0 && this.tasks().every((task) => this.selectedIds().has(task.id)),
   );
   /** Bulk-bar field buffers (empty string = untouched) */
-  protected readonly bulkStatus = signal('');
-  protected readonly bulkAssignee = signal('');
-  protected readonly bulkSprint = signal('');
-  protected readonly applyingBulk = signal(false);
+  private readonly bulkStatus = signal('');
+  private readonly bulkAssignee = signal('');
+  private readonly bulkSprint = signal('');
+  private readonly applyingBulk = signal(false);
   /** Mirrors the server's exactly-one-field contract client-side */
-  protected readonly canApplyBulk = computed(
+  private readonly canApplyBulk = computed(
     () => [this.bulkStatus(), this.bulkAssignee(), this.bulkSprint()].filter((v) => v !== '').length === 1,
   );
   /**
@@ -323,7 +347,7 @@ export class TaskTable {
   // column collapses to 0px and the adjacent Type header overlaps (and swallows
   // clicks on) the Title sort button. Fixed sums are trimmed AND the Title column
   // gets an explicit percentage width so it always keeps a proportional share.
-  protected readonly taskColumns: TaskColumnDef[] = [
+  private readonly taskColumns: TaskColumnDef[] = [
     {
       field: 'number',
       columnKey: 'key',
@@ -429,7 +453,7 @@ export class TaskTable {
       field: 'createdAt',
       columnKey: 'created',
       labelKey: 'taskTable.created',
-      // Q13/F-01: date-range filter (on/before/after/between) via header popover
+      // Date-range filter (on/before/after/between) via header popover
       filterType: 'date',
       width: 'w-25',
       // Round-4 F3: rightmost column — open the popover leftward (no viewport clipping)
@@ -454,7 +478,7 @@ export class TaskTable {
     },
   ];
   protected readonly COLUMN_COUNT = COLUMN_COUNT;
-  // ─── Column visibility (R3-P4) ─────────────────────────────────────────────
+  // ─── Column visibility ─────────────────────────────────────────────────────
   /**
    * Local override applied immediately on toggle; the debounced persist goes to
    * PreferencesStore afterwards. Null = fall through to the persisted preference.
@@ -464,7 +488,7 @@ export class TaskTable {
    * Effective visible column keys. Pinned columns (`key`, `title`) are always
    * included regardless of what was persisted; null preference = default set.
    */
-  protected readonly visibleColumnKeys = computed<ReadonlySet<TaskTableColumnKey>>(() => {
+  private readonly visibleColumnKeys = computed<ReadonlySet<TaskTableColumnKey>>(() => {
     const pid = this.projectId();
     const stored = pid ? this.preferencesStore.getTaskTableColumns(pid) : null;
     const keys = this.localColumns() ?? stored ?? DEFAULT_TASK_TABLE_COLUMNS;
@@ -472,15 +496,15 @@ export class TaskTable {
     return new Set<TaskTableColumnKey>([...TASK_TABLE_PINNED_COLUMNS, ...keys]);
   });
   /** Column definitions filtered by the visible set — drives header rendering. */
-  protected readonly visibleTaskColumns = computed(() =>
+  private readonly visibleTaskColumns = computed(() =>
     this.taskColumns.filter((col) => this.visibleColumnKeys().has(col.columnKey)),
   );
   /** Visible fields — guards body-cell rendering so hidden cells leave the DOM. */
   protected readonly visibleFields = computed(() => new Set(this.visibleTaskColumns().map((col) => col.field)));
   /** colspan for empty/spacer rows — follows the visible column count */
-  protected readonly visibleColumnCount = computed(() => this.visibleTaskColumns().length);
+  private readonly visibleColumnCount = computed(() => this.visibleTaskColumns().length);
   /**
-   * M-13 (4.2): the column-chooser popover, cursor-anchored chooser and header
+   * The column-chooser popover, cursor-anchored chooser and header
    * context menu live in the TaskTableColumns UI child. The visibility state
    * and persistence stay here (the table header/body render from it); the
    * accessors below delegate to the child for the chooser/context-menu state
@@ -491,7 +515,7 @@ export class TaskTable {
   private static readonly COLUMN_PERSIST_DEBOUNCE_MS = 400;
   private columnPersistHandle: ReturnType<typeof setTimeout> | null = null;
   // ─── Dialogs ───────────────────────────────────────────────────────────────
-  protected readonly showFilterDialog = signal(false);
+  private readonly showFilterDialog = signal(false);
   protected readonly currentFilters = computed<FilterCriteria>(() => {
     const filters: FilterCriteria = {};
 
@@ -500,7 +524,7 @@ export class TaskTable {
     if (this.filterType()) filters.typeIds = [this.filterType()];
     if (this.filterAssignee()) filters.assigneeIds = [this.filterAssignee()];
     if (this.search()) filters.search = this.search();
-    // Q12: date ranges participate in save/active-detection of saved views
+    // Date ranges participate in save/active-detection of saved views
     if (this.createdFrom()) filters.createdFrom = this.createdFrom();
     if (this.createdTo()) filters.createdTo = this.createdTo();
     if (this.updatedFrom()) filters.updatedFrom = this.updatedFrom();
@@ -512,9 +536,25 @@ export class TaskTable {
     field: this.sortField() || 'createdAt',
     direction: this.sortDirection(),
   }));
+  /**
+   * A free-text search shorter than `TASK_SEARCH_MIN_LENGTH` is never sent.
+   *
+   * The API rejects it (400 VALIDATION_ERROR) because a 1-character term matches
+   * virtually every task in the project and the server-side `$or` of five regexes
+   * has to evaluate it against every one of them. Committing such a value to the
+   * URL would therefore trade a 400 for a wasted request, so the buffer keeps the
+   * keystrokes (the input still shows what the user typed) and only a value at or
+   * above the minimum is written to the URL. An EMPTY value is always committed —
+   * that is how the search is cleared.
+   */
+  private readonly committedSearch = computed(() => {
+    const value = (this.search() ?? '').trim();
+
+    return value.length === 0 || value.length >= TASK_SEARCH_MIN_LENGTH ? this.search() : undefined;
+  });
   /** Query sent to the API — recomputed whenever any URL param changes */
   private readonly taskQuery = computed(() => ({
-    search: this.search() || undefined,
+    search: this.committedSearch() || undefined,
     statusId: this.filterStatus() || undefined,
     priorityLevel: this.priorityLevel() ?? undefined,
     typeId: this.filterType() || undefined,
@@ -522,7 +562,7 @@ export class TaskTable {
     reporterId: this.filterReporter() || undefined,
     sprintId: this.filterSprint() || undefined,
     labelId: this.filterLabel() || undefined,
-    // Q13/F-01: inclusive ISO date-range filters (server applies $gte/$lte)
+    // Inclusive ISO date-range filters (server applies $gte/$lte)
     createdFrom: this.createdFrom() || undefined,
     createdTo: this.createdTo() || undefined,
     updatedFrom: this.updatedFrom() || undefined,
@@ -530,7 +570,7 @@ export class TaskTable {
     sort: this.sortField() ? `${this.sortField()}:${this.sortDirection()}` : undefined,
     page: this.safePage(),
     limit: this.pageSize(),
-    // F5: the table never renders the description — drop it from the payload
+    // The table never renders the description — drop it from the payload
     excludeDescription: true,
   }));
   /**
@@ -549,7 +589,7 @@ export class TaskTable {
   private static readonly SEARCH_DEBOUNCE_MS = 300;
   private searchDebounceHandle: ReturnType<typeof setTimeout> | null = null;
   /** Local buffer for the search box — committed to the URL only after the debounce */
-  protected readonly searchInput = signal('');
+  private readonly searchInput = signal('');
   /**
    * V1-3: bumped when a router navigation completes while this table is alive
    * (e.g. browser-back from `tasks/new`). Included in the `tasksResource`
@@ -583,7 +623,7 @@ export class TaskTable {
       if (total > 0) this.lastKnownPagination.set({ total, totalPages });
     });
 
-    // R3-P4: load the per-project preferences (incl. taskTableColumns) for this table
+    // Load the per-project preferences (incl. taskTableColumns) for this table
     effect(() => {
       const pid = this.projectId();
 
@@ -614,10 +654,12 @@ export class TaskTable {
     });
 
     // Convention: a failed list load surfaces as a toast — never console-only.
+    // The global errorInterceptor already toasts 5xx and network failures, so
+    // this effect covers only the 4xx the global layer leaves to the caller.
     effect(() => {
       const err = this.tasksResource.error();
 
-      if (err) this.notify.error(getErrorMessage(err));
+      if (err && isCallerHandled(err)) this.notify.error(getErrorMessage(err));
     });
 
     // Keep the buffered search text in sync with external URL changes (back/forward, chip removal).
@@ -644,7 +686,7 @@ export class TaskTable {
         this.reloadTick.update((tick) => tick + 1);
       });
 
-    // R3-P3: measure the table wrapper via the shared ResizeObserver instead of
+    // Measure the table wrapper via the shared ResizeObserver instead of
     // deriving the Auto page size from window.innerHeight. The fetch effect depends
     // on `pageSize`, so a refetch only happens when the row count actually changes.
     effect(() => {
@@ -657,7 +699,7 @@ export class TaskTable {
     });
   }
 
-  // ─── Column visibility (R3-P4) ─────────────────────────────────────────────
+  // ─── Column visibility ─────────────────────────────────────────────────────
 
   /**
    * Toggle a column's visibility. Applies immediately via `localColumns`; the
@@ -676,7 +718,7 @@ export class TaskTable {
   }
 
   /**
-   * Round-5 P9 (item 25): bulk show/hide of ALL non-pinned columns at once.
+   * Bulk show/hide of ALL non-pinned columns at once.
    * Pinned Key/Title always stay; persistence goes through the same debounced
    * path as single toggles so rapid changes coalesce into one request.
    */
@@ -701,10 +743,8 @@ export class TaskTable {
     }, TaskTable.COLUMN_PERSIST_DEBOUNCE_MS);
   }
 
-  /** Round-5 P9 (item 25): Select-all state over the toggleable (non-pinned) columns */
-  protected readonly toggleableColumns = computed(() =>
-    this.taskColumns.filter((col) => !isPinnedColumn(col.columnKey)),
-  );
+  /** Select-all state over the toggleable (non-pinned) columns */
+  private readonly toggleableColumns = computed(() => this.taskColumns.filter((col) => !isPinnedColumn(col.columnKey)));
   protected readonly allColumnsSelected = computed(() =>
     this.toggleableColumns().every((col) => this.visibleColumnKeys().has(col.columnKey)),
   );
@@ -714,7 +754,7 @@ export class TaskTable {
     return selected > 0 && selected < this.toggleableColumns().length;
   });
 
-  // ─── Delegations to the TaskTableColumns UI child (M-13) ───────────────────
+  // ─── Delegations to the TaskTableColumns UI child ──────────────────────────
   // The chooser/context-menu interaction state lives in the child; these thin
   // accessors keep the composition-root template and handlers stable.
 
@@ -786,11 +826,28 @@ export class TaskTable {
     this.onSearchInput((event.target as HTMLInputElement).value);
   }
 
-  /** Buffer keystrokes and commit the search param after ~300 ms of inactivity */
-  protected onSearchInput(value: string): void {
+  /**
+   * Buffer keystrokes and commit the search param after ~300 ms of inactivity.
+   *
+   * A 1-character value (below `TASK_SEARCH_MIN_LENGTH`) is NOT committed —
+   * the API would reject it and the underlying query is a full-project scan. The
+   * input still shows the typed character, so the box is not frozen mid-word;
+   * as soon as the term reaches the minimum the normal debounced commit happens.
+   */
+  private onSearchInput(value: string): void {
     this.searchInput.set(value);
 
     if (this.searchDebounceHandle !== null) clearTimeout(this.searchDebounceHandle);
+
+    const trimmed = value.trim();
+
+    if (trimmed.length > 0 && trimmed.length < TASK_SEARCH_MIN_LENGTH) {
+      // Below the server's minimum — drop the pending commit and leave the URL
+      // (and therefore the request) untouched.
+      this.searchDebounceHandle = null;
+
+      return;
+    }
 
     this.searchDebounceHandle = setTimeout(() => {
       this.searchDebounceHandle = null;
@@ -807,7 +864,7 @@ export class TaskTable {
       }
       this.searchInput.set('');
     }
-    // Q13/F-01: date chips clear BOTH bounds of their range
+    // Date chips clear BOTH bounds of their range
     if (param === 'createdFrom' || param === 'createdTo') {
       const createdCol = this.taskColumns.find((c) => c.columnKey === 'created');
 
@@ -876,7 +933,7 @@ export class TaskTable {
       chips.push({ param: 'search', labelKey: 'taskTable.filterSearch', value: this.search() });
     }
     if (this.priorityLevel() !== null) {
-      // P11: translated display label instead of the raw level value
+      // Translated display label instead of the raw level value
       chips.push({
         param: 'priorityLevel',
         labelKey: 'taskTable.filterPriority',
@@ -926,7 +983,7 @@ export class TaskTable {
       });
     }
 
-    // Q13/F-01: date-range chips — one chip per bounded column
+    // Date-range chips — one chip per bounded column
     const dateChip = (param: 'createdFrom' | 'updatedFrom', from: string, to: string, labelKey: string): void => {
       if (!from && !to) return;
 
@@ -962,7 +1019,7 @@ export class TaskTable {
   }
 
   /** Handle column filter changes from popover dropdowns/inputs */
-  protected onColumnFilterChange(filterName: string, value: string): void {
+  private onColumnFilterChange(filterName: string, value: string): void {
     this.patchParams({ [filterName]: value || null, page: null });
   }
 
@@ -1005,18 +1062,26 @@ export class TaskTable {
     return (task.labelIds ?? []).map((id) => this.labelMap()[id] ?? id).join(', ');
   }
 
-  protected goToTask(task: Task): void {
+  /**
+   * The single source of the task URL, shared by the row's pointer click and the
+   * key cell's real `routerLink` so the two can never disagree.
+   */
+  private taskLinkCommands(task: Task): string[] {
     const tenantSlug = getTenantSlug(this.route);
     // The table only renders under projects/:projectKey — prefer the route param
     // so the link is correct even before ProjectStore is hydrated.
     const projectKey =
       this.route.snapshot.paramMap.get('projectKey') ?? this.projectStore.activeProject()?.key ?? task.projectId;
 
-    // Canonical task URL uses the project key + task number (DEC-032)
-    this.router.navigate(['/w', tenantSlug, 'projects', projectKey, 'tasks', `${projectKey}-${task.number}`]);
+    // Canonical task URL uses the project key + task number
+    return ['/w', tenantSlug, 'projects', projectKey, 'tasks', `${projectKey}-${task.number}`];
   }
 
-  /** Q13/F-03: middle-click (auxclick, button 1) opens the task in a new tab */
+  protected goToTask(task: Task): void {
+    this.router.navigate(this.taskLinkCommands(task));
+  }
+
+  /** Middle-click (auxclick, button 1) opens the task in a new tab */
   protected openTaskInNewTab(event: MouseEvent, task: Task): void {
     if (event.button !== 1) return;
 
@@ -1032,7 +1097,7 @@ export class TaskTable {
     window.open(url, '_blank');
   }
 
-  // ─── Q13/F-01: date-range filter helpers ───────────────────────────────────
+  // ─── Date-range filter helpers ─────────────────────────────────────────────
 
   private static toIsoDate(date: Date): string {
     const y = date.getFullYear();
@@ -1053,7 +1118,7 @@ export class TaskTable {
   }
 
   /**
-   * P12 (item 28): trigger label formatter for the date-filter pickers — the
+   * Trigger label formatter for the date-filter pickers — the
    * selected date renders with the user's date format + active locale via
    * DatePipe (no weekday), instead of the picker's raw default. Passed as
    * `formatDate` to the `hlm-date-picker` instances in the template.
@@ -1086,7 +1151,7 @@ export class TaskTable {
   }
 
   /** Derive the popover's mode select value from the current from/to bounds */
-  protected dateMode(col: TaskColumnDef): 'none' | 'on' | 'before' | 'after' | 'between' {
+  private dateMode(col: TaskColumnDef): 'none' | 'on' | 'before' | 'after' | 'between' {
     // Round-4 F2: an explicit user choice wins over the derived mode
     const override = this.dateModeOverrides()[col.columnKey];
 
@@ -1184,7 +1249,7 @@ export class TaskTable {
     }
   }
 
-  // ─── Q10 (RQ-04 ③): multi-select + bulk actions ────────────────────────────
+  // ─── Multi-select + bulk actions ───────────────────────────────────────────
 
   /** Toggle a single row's checkbox */
   protected toggleRowSelection(taskId: string, checked: boolean): void {
@@ -1203,7 +1268,7 @@ export class TaskTable {
     this.selectedIds.set(checked ? new Set(this.tasks().map((task) => task.id)) : new Set());
   }
 
-  protected clearSelection(): void {
+  private clearSelection(): void {
     this.selectedIds.set(new Set());
   }
 
@@ -1295,7 +1360,7 @@ export class TaskTable {
       reporter: this.idToName('members', criteria.reporterIds?.[0] ?? ''),
       sprint: this.idToName('sprints', criteria.sprintIds?.[0] ?? ''),
       label: this.idToName('labels', criteria.labelIds?.[0] ?? ''),
-      // Q12: re-apply saved date ranges like any other criterion
+      // Re-apply saved date ranges like any other criterion
       createdFrom: criteria.createdFrom ?? null,
       createdTo: criteria.createdTo ?? null,
       updatedFrom: criteria.updatedFrom ?? null,

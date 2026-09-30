@@ -1,5 +1,5 @@
 /**
- * Tests for the CreateWorkspace onboarding wizard (DEC-022).
+ * Tests for the CreateWorkspace onboarding wizard.
  *
  * Covers:
  * - Signal form field validation (name, slug)
@@ -21,6 +21,7 @@ import { AuthStore } from '@stores/auth-store';
 import { BillingClient, CheckoutContext, FREE_PLAN_ID } from '@services/billing-client';
 import { API_BASE_URL } from '@app/api-url.token';
 import type { TenantWithRole } from '@app/types/frontend';
+import { TENANT_NAME_MAX_LENGTH } from '@task-board/shared';
 
 const NOW = '2025-01-01T00:00:00Z';
 const mockTenant: TenantWithRole = {
@@ -139,13 +140,27 @@ describe('CreateWorkspace', () => {
       expect(component.workspaceForm.name().valid()).toBe(true);
     });
 
-    it('should be invalid when exceeding 100 characters', () => {
-      component.model.update((m: { name: string; description: string }) => ({ ...m, name: 'a'.repeat(101) }));
+    it('should be invalid when exceeding the shared name bound', () => {
+      component.model.update((m: { name: string; description: string }) => ({
+        ...m,
+        name: 'a'.repeat(TENANT_NAME_MAX_LENGTH + 1),
+      }));
       expect(component.workspaceForm.name().invalid()).toBe(true);
     });
 
-    it('should be valid at 100 characters', () => {
-      component.model.update((m: { name: string; description: string }) => ({ ...m, name: 'a'.repeat(100) }));
+    it('should be valid at the shared name bound', () => {
+      component.model.update((m: { name: string; description: string }) => ({
+        ...m,
+        name: 'a'.repeat(TENANT_NAME_MAX_LENGTH),
+      }));
+      expect(component.workspaceForm.name().valid()).toBe(true);
+    });
+
+    // The create form used to hard-code 100 while the server and the rename
+    // form used TENANT_NAME_MAX_LENGTH (200): one field, two limits, one
+    // session. A 150-character name is legal everywhere except here.
+    it('should accept a 150-character name, the same bound the server and the rename form use', () => {
+      component.model.update((m: { name: string; description: string }) => ({ ...m, name: 'a'.repeat(150) }));
       expect(component.workspaceForm.name().valid()).toBe(true);
     });
   });
@@ -322,6 +337,42 @@ describe('CreateWorkspace', () => {
 
       expect(component.step()).toBe('checkout');
       expect(routerMock.navigateByUrl).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── The debounce timer does not outlive the component ────────────────────
+  describe('teardown', () => {
+    beforeEach(() => setup());
+
+    it('should issue no availability request when destroyed inside the debounce window', async () => {
+      // A valid slug arms the 300 ms debounce timer…
+      component.markSlugEdited();
+      component.model.update((m: { name: string }) => ({ ...m, slug: 'acme' }));
+      await settle(fixture);
+
+      // …the user navigates away before it fires…
+      fixture.destroy();
+
+      // …and the timer must never reach the client.
+      await waitForSlugDebounce();
+
+      httpMock.expectNone((r) => r.url.includes('/tenants/slug-available'));
+    });
+
+    it('should tear down an in-flight availability request on destroy', async () => {
+      component.markSlugEdited();
+      component.model.update((m: { name: string }) => ({ ...m, slug: 'acme' }));
+      await settle(fixture);
+      await waitForSlugDebounce();
+
+      const req = httpMock.expectOne((r) => r.url.includes('/tenants/slug-available'));
+
+      fixture.destroy();
+
+      // The subscription died with the component, so the response can neither
+      // arrive nor be written to a destroyed component's state.
+      expect(req.cancelled).toBe(true);
+      expect(component.slugAvailability()).toBe('checking');
     });
   });
 });

@@ -1,4 +1,4 @@
-<!-- Q2 (F-05): full-height flex column — exactly viewport minus the app header
+<!-- Full-height flex column — exactly viewport minus the app header
      (--header-height: 2.5rem below lg, 4rem from lg) and the shell <main> vertical
      padding (p-3 → 1.5rem below lg, p-6 → 3rem from lg); the member table fills the
      rest so its pagination stays at the page bottom. -->
@@ -9,10 +9,10 @@
   <div class="mb-6 flex items-center justify-between">
     <div class="flex items-center gap-3">
       <ng-icon name="lucideShield" class="size-6 text-foreground" />
-      <h2 class="text-2xl font-bold text-foreground">{{ 'members.title' | transloco }}</h2>
+      <h1 class="text-2xl font-bold text-foreground">{{ 'members.title' | transloco }}</h1>
     </div>
     <div class="flex items-center gap-2">
-      <!-- Q9 (RQ-04 ⑤): compact/comfortable density toggle (device-local preference) -->
+      <!-- Compact/comfortable density toggle (device-local preference) -->
       <button
         hlmBtn
         variant="outline"
@@ -30,7 +30,7 @@
     </div>
   </div>
 
-  <!-- Shared member table (U4) — full-height + Auto rows-per-page (Q2/F-05) -->
+  <!-- Shared member table — full-height + Auto rows-per-page -->
   <div class="flex min-h-0 flex-1 flex-col">
     <ui-member-table
       variant="tenant"
@@ -89,32 +89,28 @@
             id="invite-email"
             type="email"
             [formField]="inviteForm.email"
+            uiFieldControl
             placeholder="user@example.com"
           />
           @if (inviteForm.email().touched() && inviteForm.email().errors().length) {
-            <p hlm-field-error>{{ inviteForm.email().errors()[0]?.message | transloco }}</p>
+            <hlm-field-error class="block">{{ inviteForm.email().errors()[0]?.message | transloco }}</hlm-field-error>
           }
         </hlm-field>
         <hlm-field>
           <label hlmFieldLabel for="invite-role">{{ 'members.role' | transloco }}</label>
-          <hlm-native-select id="invite-role" [formField]="inviteForm.role">
+          <hlm-native-select id="invite-role" [formField]="inviteForm.role" uiFieldControl>
             @for (role of roles; track role) {
               <option hlmNativeSelectOption [value]="role">{{ role }}</option>
             }
           </hlm-native-select>
           @if (inviteForm.role().touched() && inviteForm.role().errors().length) {
-            <p hlm-field-error>{{ inviteForm.role().errors()[0]?.message | transloco }}</p>
+            <hlm-field-error class="block">{{ inviteForm.role().errors()[0]?.message | transloco }}</hlm-field-error>
           }
         </hlm-field>
       </form>
       <hlm-dialog-footer>
         <button hlmBtn variant="outline" hlmDialogClose>{{ 'members.cancel' | transloco }}</button>
-        <button
-          hlmBtn
-          type="submit"
-          form="invite-form"
-          [disabled]="inviteForm().invalid() || inviteForm().submitting()"
-        >
+        <button hlmBtn type="submit" form="invite-form" [disabled]="inviteForm().submitting()">
           @if (inviteForm().submitting()) {
             <hlm-spinner /> {{ 'members.inviting' | transloco }}
           } @else {

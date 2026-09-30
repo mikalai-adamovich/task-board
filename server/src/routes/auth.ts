@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
 import type { AppEnv } from '../types/context.js';
-import { validateBody } from '../middleware/validation.js';
+import { param, pathParamValidation, validateBody } from '../middleware/validation.js';
 import { authMiddleware } from '../middleware/auth.js';
+import { clientIdentifier } from '../middleware/rate-limit.js';
 import {
   RegisterRequestSchema,
   LoginRequestSchema,
@@ -21,13 +22,19 @@ import {
 export function createAuthRoutes(): Hono<AppEnv> {
   const router = new Hono<AppEnv>();
 
+  // `:token` (the invitation token) is opaque, so it is shape-validated
+  // rather than UUID-validated — see PATH_PARAM_SCHEMAS.token.
+  router.use('*', pathParamValidation());
+
   /**
    * POST /register — Register a new user account.
    * Returns 201 with { data: { id, email, displayName, avatarUrl } }.
    */
   router.post('/register', validateBody(RegisterRequestSchema), async (c) => {
     const body = c.req.valid('json');
-    const clientIp = c.req.header('x-forwarded-for')?.split(',')[0]?.trim();
+    // The edge-set `CF-Connecting-IP`, NOT the client-settable
+    // `X-Forwarded-For` — see `clientIdentifier()` for the trust boundary.
+    const clientIp = clientIdentifier(c);
     const result = await c.get('svc').auth.register(body, clientIp);
 
     return c.json({ data: result }, 201);
@@ -39,7 +46,7 @@ export function createAuthRoutes(): Hono<AppEnv> {
    */
   router.post('/login', validateBody(LoginRequestSchema), async (c) => {
     const body = c.req.valid('json');
-    const clientIp = c.req.header('x-forwarded-for')?.split(',')[0]?.trim();
+    const clientIp = clientIdentifier(c);
     const result = await c.get('svc').auth.login(body, clientIp);
 
     return c.json({ data: result }, 200);
@@ -63,7 +70,7 @@ export function createAuthRoutes(): Hono<AppEnv> {
    * Returns 200 with { data: invitationDetails }.
    */
   router.get('/invitations/:token', async (c) => {
-    const token = c.req.param('token');
+    const token = param(c, 'token');
     const result = await c.get('svc').auth.getInvitationDetails(token);
 
     return c.json({ data: result }, 200);
@@ -72,13 +79,13 @@ export function createAuthRoutes(): Hono<AppEnv> {
   /**
    * POST /forgot-password — Request a password reset link.
    * Public endpoint — no auth required.
-   * Anti-enumeration (DEC-023): always responds with the same neutral message,
+   * Anti-enumeration: always responds with the same neutral message,
    * whether or not the email belongs to an existing account.
    * Returns 200 with { data: { message } }.
    */
   router.post('/forgot-password', validateBody(ForgotPasswordSchema), async (c) => {
     const body = c.req.valid('json');
-    const clientIp = c.req.header('x-forwarded-for')?.split(',')[0]?.trim();
+    const clientIp = clientIdentifier(c);
     const result = await c.get('svc').auth.requestPasswordReset(body, clientIp);
 
     return c.json({ data: result }, 200);

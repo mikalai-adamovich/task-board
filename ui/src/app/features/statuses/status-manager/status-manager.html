@@ -1,6 +1,6 @@
 <div class="mx-auto max-w-6xl">
   <div class="mb-6 flex items-center justify-between">
-    <h2 class="text-2xl font-bold text-foreground">{{ 'statusManager.title' | transloco }}</h2>
+    <h1 class="text-2xl font-bold text-foreground">{{ 'statusManager.title' | transloco }}</h1>
     @if (canManage()) {
       <button hlmBtn (click)="showCreateDialog.set(true)">
         <ng-icon name="lucidePlus" class="mr-1" />
@@ -60,6 +60,7 @@
                   hlmInput
                   type="text"
                   class="h-8 w-48"
+                  [attr.aria-label]="'statusManager.name' | transloco"
                   [value]="editingName()"
                   (input)="editingName.set($any($event.target).value)"
                   (keydown.enter)="saveEdit(status)"
@@ -131,17 +132,22 @@
       <form id="create-status-form" [formRoot]="createForm" class="flex flex-col gap-4">
         <hlm-field>
           <label hlmFieldLabel for="status-name">{{ 'statusManager.name' | transloco }}</label>
-          <input hlmInput id="status-name" type="text" [formField]="createForm.name" placeholder="TODO" />
+          <input
+            hlmInput
+            id="status-name"
+            type="text"
+            [formField]="createForm.name"
+            uiFieldControl
+            placeholder="TODO"
+          />
+          @if (createForm.name().touched() && createForm.name().errors().length) {
+            <hlm-field-error class="block">{{ createForm.name().errors()[0]?.message | transloco }}</hlm-field-error>
+          }
         </hlm-field>
       </form>
       <hlm-dialog-footer>
         <button hlmBtn variant="outline" hlmDialogClose>{{ 'statusManager.cancel' | transloco }}</button>
-        <button
-          hlmBtn
-          type="submit"
-          form="create-status-form"
-          [disabled]="createForm().invalid() || createForm().submitting()"
-        >
+        <button hlmBtn type="submit" form="create-status-form" [disabled]="createForm().submitting()">
           @if (createForm().submitting()) {
             <hlm-spinner /> {{ 'statusManager.creating' | transloco }}
           } @else {

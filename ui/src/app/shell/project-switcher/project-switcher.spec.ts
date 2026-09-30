@@ -1,5 +1,5 @@
 /**
- * Tests for the ProjectSwitcher component (F-10 / D-47).
+ * Tests for the ProjectSwitcher component.
  *
  * Verifies creation, placeholder rendering without projects, active-project
  * detection and navigation on select.

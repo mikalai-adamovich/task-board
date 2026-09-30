@@ -6,6 +6,7 @@ import { provideIcons, NgIcon } from '@ng-icons/core';
 import { lucideRows3, lucideShield, lucideUserPlus } from '@ng-icons/lucide';
 import { finalize, tap } from 'rxjs';
 import { form, FormRoot, FormField, schema, required } from '@angular/forms/signals';
+import { FieldControl } from '@app/shared/field-control/field-control';
 import { TenantClient } from '@services/tenant-client';
 import { AuthStore } from '@stores/auth-store';
 import { TenantStore } from '@stores/tenant-store';
@@ -37,6 +38,7 @@ interface InviteFormModel {
 @Component({
   selector: 'ui-tenant-member-list',
   imports: [
+    FieldControl,
     MemberTable,
     FormRoot,
     FormField,
@@ -64,27 +66,27 @@ export class TenantMemberList implements OnInit, OnDestroy {
    * Resolved tenant id — always derived from the tenant context (slug → tenant via the
    * `tenantGuard` + {@link TenantStore}), never from a raw route param (V1-10/V2-1).
    */
-  protected readonly tenantId = computed(() => this.tenantStore.activeTenant()?.id ?? '');
+  private readonly tenantId = computed(() => this.tenantStore.activeTenant()?.id ?? '');
   /** Guard: until the context resolves, no requests fire and actions stay disabled. */
-  protected readonly hasContext = computed(() => this.tenantId() !== '');
-  /** Q2 (F-05): Auto page-size preference (sentinel 0) shared with the tasks table. */
-  protected readonly preferencesStore = inject(PreferencesStore);
+  private readonly hasContext = computed(() => this.tenantId() !== '');
+  /** Auto page-size preference (sentinel 0) shared with the tasks table. */
+  private readonly preferencesStore = inject(PreferencesStore);
   protected readonly isAutoMode = computed(() => this.preferencesStore.pageSize() === AUTO_PAGE_SIZE_SENTINEL);
-  /** Q9 (RQ-04 ⑤): device-local table density toggle for the member table. */
+  /** Device-local table density toggle for the member table. */
   private readonly density = useTableDensity();
   protected readonly isCompact = this.density.compact;
   protected readonly toggleDensity = this.density.toggle;
   /** Measured member-table wrapper height feeding the Auto page size. */
-  protected readonly autoHeight = signal(0);
+  private readonly autoHeight = signal(0);
   /** Measured row pitch feeding the Auto page size. */
-  protected readonly autoRowHeight = signal(0);
-  protected readonly members = signal<TenantMember[]>([]);
-  protected readonly loading = signal(true);
-  protected readonly error = signal('');
-  protected readonly showInviteDialog = signal(false);
+  private readonly autoRowHeight = signal(0);
+  private readonly members = signal<TenantMember[]>([]);
+  private readonly loading = signal(true);
+  private readonly error = signal('');
+  private readonly showInviteDialog = signal(false);
   protected readonly TenantRole = TenantRole;
   protected readonly roles = Object.values(TenantRole).filter((role) => role !== TenantRole.OWNER);
-  protected readonly model = signal<InviteFormModel>({ email: '', role: TenantRole.MEMBER });
+  private readonly model = signal<InviteFormModel>({ email: '', role: TenantRole.MEMBER });
   protected readonly inviteForm = form(
     this.model,
     schema<InviteFormModel>((field) => {
@@ -115,15 +117,15 @@ export class TenantMemberList implements OnInit, OnDestroy {
       },
     },
   );
-  protected readonly removingUserId = signal<string | null>(null);
-  protected readonly actioningUserId = signal<string | null>(null);
+  private readonly removingUserId = signal<string | null>(null);
+  private readonly actioningUserId = signal<string | null>(null);
   /** Only Owner/Tenant Admin may manage members (mirrors server RBAC). */
   protected readonly canManage = computed(() => hasMinTenantRole(this.authStore.tenantRole(), TenantRole.ADMIN));
   /**
    * Shared sort / column-filter / pagination machinery (see shared/member-list).
    * Filter and sort state is synced to URL query params.
    */
-  protected readonly table = useMemberTable<TenantMember>({
+  private readonly table = useMemberTable<TenantMember>({
     source: this.members,
     filters: {
       name: { matches: (m, q) => (m.displayName ?? m.email ?? m.userId ?? '').toLowerCase().includes(q) },
@@ -208,7 +210,7 @@ export class TenantMemberList implements OnInit, OnDestroy {
   }
 
   /**
-   * DEC-055: full member edit (role + name/email/expiration). The response is
+   * Full member edit (role + name/email/expiration). The response is
    * the enriched member — it replaces the local row so profile changes show up.
    */
   protected onMemberChange(change: MemberEditChange): void {
@@ -292,7 +294,7 @@ export class TenantMemberList implements OnInit, OnDestroy {
     request$.pipe(finalize(() => this.actioningUserId.set(null))).subscribe({
       next: () => {
         this.loadMembers();
-        // Q11 (DEC-053): undo restores a revoked ACTIVE membership. A revoked
+        // Undo restores a revoked ACTIVE membership. A revoked
         // PENDING invitation has no compensating restore op — re-sending it is
         // the separate reinvite flow — so no undo is offered there.
         if (!isPendingInvitation) {

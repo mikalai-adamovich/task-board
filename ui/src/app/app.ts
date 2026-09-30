@@ -6,7 +6,7 @@ import { AppToaster } from './app-toaster/app-toaster';
 
 @Component({
   selector: 'ui-root',
-  // P14 (item 32): AppToaster is referenced ONLY inside an `@defer (on idle)`
+  // AppToaster is referenced ONLY inside an `@defer (on idle)`
   // block in the template, so the compiler extracts it — together with the
   // whole brn-sonner dependency chain — into a lazy chunk (toasts queue in
   // module state until the block hydrates).

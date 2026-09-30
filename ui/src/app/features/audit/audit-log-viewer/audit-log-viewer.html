@@ -1,23 +1,23 @@
-<!-- Q2 (F-05)/Q6 (F-13): full-height flex column — exactly viewport minus the app header
+<!-- Full-height flex column — exactly viewport minus the app header
      (--header-height: 2.5rem below lg, 4rem from lg) and the shell <main> vertical
      padding (p-3 → 1.5rem below lg, p-6 → 3rem from lg). Horizontal padding comes
-     from the shell (F-12). Header / table / pagination stack vertically; the table
+     from the shell. Header / table / pagination stack vertically; the table
      wrapper flexes to fill the rest so the table bottom aligns with the page bottom
      (no dead space). Toolbar wraps instead of overflowing on mobile. -->
 <div
   class="flex h-[calc(100dvh-var(--header-height)-1.5rem)] lg:h-[calc(100dvh-var(--header-height)-3rem)] w-full min-w-0 flex-col"
 >
-  <!-- R3-P7: heading + icon aligned via flex items-center -->
+  <!-- Heading + icon aligned via flex items-center -->
   <div class="mb-6 flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
-    <h2 class="flex items-center gap-2 text-2xl font-bold text-foreground">
+    <h1 class="flex items-center gap-2 text-2xl font-bold text-foreground">
       <ng-icon name="lucideHistory" class="inline-block" />
       <span>{{ 'auditLog.title' | transloco }}</span>
-    </h2>
+    </h1>
 
     <!-- Filters: action · entity type · actor (URL-synced); wrap below sm -->
     <div class="flex w-full flex-wrap items-center gap-2 sm:w-auto">
       <ng-icon name="lucideFilter" class="text-muted-foreground" />
-      <!-- Q9 (RQ-04 ⑤): compact/comfortable density toggle (device-local preference) -->
+      <!-- Compact/comfortable density toggle (device-local preference) -->
       <button
         hlmBtn
         variant="outline"
@@ -78,11 +78,11 @@
     </hlm-alert>
   }
 
-  <!-- Q2 (F-05): no loading spinner — the resource carries a defaultValue, so the
+  <!-- No loading spinner — the resource carries a defaultValue, so the
        empty state renders directly; `#tableWrap` is measured by a ResizeObserver to
        derive the Auto page size; `min-h-0 flex-1` lets it fill the fixed-height column. -->
   <div hlmTableContainer #tableWrap class="min-h-0 w-full flex-1">
-    <!-- S-09: accessible table name for screen readers -->
+    <!-- Accessible table name for screen readers -->
     <table
       hlmTable
       class="w-full"
@@ -93,7 +93,7 @@
         <tr hlmTableRow>
           <!-- Time — sortable asc/desc toggle, default desc -->
           <th hlmTableHead scope="col" class="w-45 whitespace-nowrap">
-            <button class="flex items-center gap-1 hover:text-foreground" (click)="toggleSort()">
+            <button hlmBtn variant="ghost" size="sm" class="h-auto px-1.5 text-sm" type="button" (click)="toggleSort()">
               <span>{{ 'auditLog.time' | transloco }}</span>
               <span class="inline-flex size-3 shrink-0">
                 @if (sort() === 'asc') {
@@ -112,11 +112,23 @@
       </thead>
       <tbody hlmTableBody>
         @for (event of events(); track event.id) {
+          <!--
+            the row is a disclosure, so it declares the disclosure contract:
+            a tab stop, Enter/Space activation, and `aria-expanded` + `aria-controls`
+            pointing at the cell that holds the full change list. Before this the row
+            responded to the pointer only, and no assistive technology could tell
+            that it was expandable at all.
+          -->
           <tr
             hlmTableRow
             class="cursor-pointer"
+            tabindex="0"
             [class.bg-muted/40]="expandedEventId() === event.id"
+            [attr.aria-expanded]="expandedEventId() === event.id"
+            [attr.aria-controls]="'audit-changes-' + event.id"
             (click)="toggleExpand(event.id)"
+            (keydown.enter)="toggleExpand(event.id)"
+            (keydown.space)="$event.preventDefault(); toggleExpand(event.id)"
           >
             <td hlmTableCell class="whitespace-nowrap text-xs text-muted-foreground">
               {{ event.createdAt | date: dateTimeFmt() : undefined : lang() }}
@@ -157,7 +169,7 @@
                 </span>
               </span>
             </td>
-            <td hlmTableCell class="max-w-0">
+            <td hlmTableCell class="max-w-0" [attr.id]="'audit-changes-' + event.id">
               @if (event.changes.length > 0) {
                 <div class="flex flex-col gap-0.5">
                   @for (

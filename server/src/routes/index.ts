@@ -38,7 +38,7 @@ export const routeRegistry = {
    * Project routes — requires any tenant member role.
    * Per-action authorization is enforced inside the project service:
    * reads are allowed for all roles; writes/mutations require tenant admin+
-   * (DEC-017 — no router-level `create_project` gate).
+   * No router-level `create_project` gate).
    */
   projects: (() => {
     const router = new Hono<AppEnv>();

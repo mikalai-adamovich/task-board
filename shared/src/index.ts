@@ -44,6 +44,9 @@ export {
   type TaskPriorityLevel,
 } from './constants/priority.js';
 export { BOARD_PAGE_SIZE } from './constants/board.js';
+export { TASK_SEARCH_MIN_LENGTH, TASK_SEARCH_MAX_LENGTH } from './constants/task-search.js';
+// Bounds the server enforces and the client mirrors, in one place.
+export { TENANT_NAME_MAX_LENGTH, TENANT_DESCRIPTION_MAX_LENGTH } from './constants/tenant-bounds.js';
 export { ExpandState } from './constants/expand-state.js';
 export {
   TASK_TABLE_COLUMN_KEYS,
@@ -121,6 +124,9 @@ export type { Comment, CreateComment, UpdateComment } from './types/comment.js';
 export type { TaskRelationship, CreateTaskRelationship } from './types/task-relationship.js';
 
 export type { Filter, FilterCriteria, FilterSort, CreateFilter, UpdateFilter } from './types/filter.js';
+// Shared sort-direction contract — `SortDirection` for TS positions,
+// `SortDirectionValues` for `z.enum(...)` in the server schemas.
+export { SortDirection, SortDirectionValues } from './types/filter.js';
 
 export type { AuditEvent, AuditActor, AuditChange } from './types/audit.js';
 
@@ -137,3 +143,6 @@ export type {
   ErrorResponse,
   SupportRequest,
 } from './types/common.js';
+// The error-code list is a runtime value so the client can DERIVE its
+// message map from it (`Record<ErrorCode, string>` is exhaustive by type).
+export { ERROR_CODES } from './types/common.js';

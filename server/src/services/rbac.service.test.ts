@@ -1,5 +1,44 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { RbacService } from './rbac.service.js';
+import { TenantRole } from '@task-board/shared';
+import { RbacService, isTenantAdmin } from './rbac.service.js';
+
+/**
+ * F24, TASK 2 — `isTenantAdmin` replaced twelve hand-written
+ * `role !== OWNER && role !== ADMIN` guards. The whole point of the swap is that
+ * the allow-list is no longer a second copy of the rule, so these specs assert
+ * that the predicate is exactly the matrix row and nothing else: the twelve call
+ * sites kept their own 403 messages, and the set of admitted roles must not have
+ * moved by even one member.
+ */
+describe('isTenantAdmin (F24)', () => {
+  it('admits exactly the manage_tenant allow-list of the matrix', () => {
+    expect(isTenantAdmin(TenantRole.OWNER)).toBe(true);
+    expect(isTenantAdmin(TenantRole.ADMIN)).toBe(true);
+  });
+
+  it('refuses every non-admin tenant role, including the project roles', () => {
+    for (const role of ['MEMBER', 'VIEWER', 'EDITOR', 'PROJECT_ADMIN', 'GUEST', '', 'owner', 'ADMIN ']) {
+      expect(isTenantAdmin(role)).toBe(false);
+    }
+  });
+
+  it('agrees with the matrix on every tenant role, by construction', () => {
+    const service = new RbacService();
+
+    for (const role of Object.values(TenantRole)) {
+      expect(isTenantAdmin(role)).toBe(service.can(role, null, 'manage_tenant'));
+    }
+  });
+
+  it('ignores the project role — a project PROJECT_ADMIN is not a tenant admin', () => {
+    // This is the load-bearing property of the project.service guard: it is
+    // called with `projectRole: null`, so a project seat can never satisfy it.
+    const service = new RbacService();
+
+    expect(service.can('MEMBER', 'PROJECT_ADMIN', 'manage_project')).toBe(true);
+    expect(isTenantAdmin('MEMBER')).toBe(false);
+  });
+});
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
@@ -247,27 +286,8 @@ describe('RbacService', () => {
     });
   });
 
-  // ── getEffectiveRole ─────────────────────────────────────────────────────
-
-  describe('getEffectiveRole', () => {
-    it('returns OWNER for tenant owner', () => {
-      expect(service.getEffectiveRole('OWNER')).toBe('OWNER');
-    });
-
-    it('returns ADMIN for tenant admin', () => {
-      expect(service.getEffectiveRole('ADMIN')).toBe('ADMIN');
-    });
-
-    it('returns project role for tenant member', () => {
-      expect(service.getEffectiveRole('MEMBER', 'PROJECT_ADMIN')).toBe('PROJECT_ADMIN');
-    });
-
-    it('returns MEMBER when tenant member has no project role', () => {
-      expect(service.getEffectiveRole('MEMBER')).toBe('MEMBER');
-    });
-
-    it('returns MEMBER when tenant member has null project role', () => {
-      expect(service.getEffectiveRole('MEMBER', null)).toBe('MEMBER');
-    });
-  });
+  // The `getEffectiveRole` block moved with the method — it was a dead
+  // descriptive helper duplicating the "tenant Owner/Admin supersedes the project
+  // role" rule. The authoritative copy of that rule is the RBAC matrix exercised
+  // by the `can()` blocks above, which are unchanged.
 });

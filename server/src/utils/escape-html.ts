@@ -1,6 +1,6 @@
 /**
  * Escape a value for safe interpolation into HTML text content and
- * double-quoted attribute values (N-13: email templates).
+ * double-quoted attribute values (email templates).
  *
  * Escapes `&`, `<`, `>`, `"` and `'` — the minimal set that prevents both
  * markup injection and attribute breakout.

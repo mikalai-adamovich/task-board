@@ -49,24 +49,26 @@ MongoDB Atlas M0 (replica set, eu-central-1). Typical warm API request ~70-90ms;
 - User lookup ∥ tenant membership lookup (membership depends only on the JWT sub + header). `tenantMembership` reused
   from the Hono context (`requireMembership(prechecked)`) — eliminated a duplicate query. /tasks DB phase: 47→18ms.
 
-### 2.7 ROOT CAUSE of latency spikes: connectTimeoutMS as an idle-socket timeout
+### 2.7 Latency spikes: cause UNKNOWN (the earlier explanation was refuted)
 
 - **Symptom:** periodic 200-700ms spikes on any Mongo endpoint, at any cadence (250ms/1s/5s/10s), no correlation with
   query/sort/data size.
-- **Mechanism (proven via driver events + mongodb 7.6.0 sources):** `connectTimeoutMS` is passed to
-  `socket.setTimeout()` (cmap/connect.js:303) — a Node socket timeout fires after **inactivity**. A connection idle ≥5s
-  (our non-default `connectTimeoutMS: 5000`) was killed with `reason='error'`; the next request paid a full TLS+auth
-  handshake (~90-190ms, outliers to 2.4s). Monitor sockets (idle 10s between heartbeats) died every time →
-  `serverHeartbeatFailed` ×3 → topology Unknown → `poolCleared` → reconnect.
-- **Causal proof:** A/B 5000→30000→60000→120000 — the threshold moved exactly with the setting (at 30000: idle 29s
-  survives/80ms, idle 31s dies/256ms; min lifetime 30283ms). With `connectTimeoutMS: 0` (`socket.setTimeout(0)` =
-  timeout disabled) a connection survived 180s of idle without a single reconnect; the failure case is bounded by
-  `serverSelectionTimeoutMS` (5018ms, no hang).
-- **Fix:** the non-default `connectTimeoutMS` was removed (driver default 30000). See the comment in
-  [`server/src/db/mongo.ts`](../server/src/db/mongo.ts).
-- **Excluded hypotheses** (all experimentally): maxIdleTimeMS=30s, readPreference, replica-set member, query/sort/data
-  size, app CPU, Cloudflare edge (ping clean), per-request client (worse), Atlas-side reap (not needed as an
-  explanation).
+- **Earlier explanation, now WITHDRAWN.** This section previously claimed a root cause: that a non-default
+  `connectTimeoutMS: 5000` acted as an **idle-socket** timeout, that it killed idle pooled connections with
+  `reason='error'` at ~5s, and that removing it (leaving the driver default of 30 000) fixed the spikes. That mechanism
+  does not exist in the driver this application ships. In `mongodb@7.6.0`, `lib/cmap/connect.js:303` applies
+  `socket.setTimeout(connectTimeoutMS)` only while a connection is being **established**, and `:337` clears it with
+  `socket.setTimeout(0)` in the `finally` — so the timeout is removed the moment the connection is up and cannot kill an
+  already-established pooled connection. The A/B series quoted below (threshold "moving exactly with the setting") is
+  therefore not evidence of the claimed mechanism; it is not re-published here as a cause.
+- **What is actually true:** the spikes are real and their cause is **unexplained**. `connectTimeoutMS` is left at the
+  driver default — not as a fix, but because there is no demonstrated effect to remove. The A/B numbers from the
+  original investigation are kept in the git history of this file; the honest state is "not root-caused".
+- **Settings that are NOT the cause** (all experimentally excluded): maxIdleTimeMS=30s, readPreference, replica-set
+  member, query/sort/data size, app CPU, Cloudflare edge (ping clean), per-request client (worse), Atlas-side reap.
+- **Where the current position is written down:** the comment above the client construction in
+  [`server/src/db/mongo.ts`](../server/src/db/mongo.ts) (which also states the refuted mechanism explicitly) and
+  `AGENTS.md` §Performance forensics. `maxIdleTimeMS: 30_000` is retained on its own merits and is uncredited.
 
 ### 2.8 Audit #2/#4: project_members lookup skipped for read-only requests (F3)
 
@@ -229,9 +231,10 @@ MongoDB Atlas M0 (replica set, eu-central-1). Typical warm API request ~70-90ms;
 
 ### 4.6 maxIdleTimeMS interplay
 
-- connectTimeoutMS is now 30s and maxIdleTimeMS is 30s: the effective idle threshold is min(both) = 30s. If reconnects
-  after 30-60s pauses become a complaint, raise maxIdleTimeMS (close reasons 'idle' vs 'error' are distinguishable in
-  driver events).
+- maxIdleTimeMS is 30s, and that is the only idle threshold in play: `connectTimeoutMS` bounds connection ESTABLISHMENT
+  and is cleared the moment the connection is up (see 2.7), so it is not part of an "effective idle threshold" and no
+  min(both) arithmetic applies. If reconnects after 30-60s pauses become a complaint, raise maxIdleTimeMS (close reasons
+  'idle' vs 'error' are distinguishable in driver events).
 
 ### 4.7 Atlas M0 → M10+
 
@@ -347,15 +350,15 @@ MongoDB Atlas M0 (replica set, eu-central-1). Typical warm API request ~70-90ms;
   still showed `connectionClosed(reason=error)` and new connections; extra-latency distribution statistically unchanged
   (A extra p50 ≈ 140 ms, B ≈ 135 ms; benefit ≈ 0 ms). **NO ACTION** — `maxIdleTimeMS` is not an effective lever for this
   reconnect path.
-- **connectTimeoutMS — semantics vs implementation (careful wording):** the MongoDB documentation defines
-  `connectTimeoutMS` as the timeout for establishing a connection (and `socketTimeoutMS` as a separate socket-related
-  option). For the installed **mongodb@7.6.0** implementation, source inspection additionally showed that the connection
-  path applies `connectTimeoutMS` to the underlying socket via `socket.setTimeout(...)`
-  ([cmap/connect.js:269,303](../node_modules/mongodb/lib/cmap/connect.js)). In this specific production workload that
-  implementation detail correlates with the ~30 s idle socket closure observed as `connectionClosed(reason=error)`. This
-  is an observed implementation detail of one driver version, not a general statement about the MongoDB API. Changing
-  `connectTimeoutMS` was not investigated as an optimization and is not recommended here (it also governs connection
-  establishment).
+- **connectTimeoutMS — semantics, and the refuted correlation:** the MongoDB documentation defines `connectTimeoutMS` as
+  the timeout for establishing a connection (and `socketTimeoutMS` as a separate socket-related option). For the
+  installed **mongodb@7.6.0**, the connection path applies it to the socket via `socket.setTimeout(...)`
+  ([cmap/connect.js:303](../node_modules/mongodb/lib/cmap/connect.js)) while ESTABLISHING and clears it with
+  `socket.setTimeout(0)` in the `finally` (:337) — so it cannot act on an established pooled connection. An earlier
+  version of this file used that detail to claim a correlation with the ~30 s idle socket closure seen as
+  `connectionClosed(reason=error)`; that correlation is WITHDRAWN as refuted (see 2.7) and the ~30 s closure remains
+  unexplained. Changing `connectTimeoutMS` was never investigated as an optimization and is not recommended here (it
+  governs connection establishment).
 - **Verdict: NO ACTION** — the ~100-150 ms cost occurs only once per idle gap >~30 s (warm request ~90 ms);
   `maxIdleTimeMS 30 s → 300 s` did not reduce the penalty; for this personal-scale product the measured benefit does not
   justify changing timeout semantics. A `connectTimeoutMS`-based mitigation remains a possible future hypothesis ONLY if
@@ -774,5 +777,6 @@ scans and COLLSCANs the collection).
 ## 5. Tooling
 
 Diagnostic scripts used during the investigation: [`tools/README.md`](../tools/README.md) (api-series — keep-alive
-series with phases/pauses; parse-dbev — `wrangler tail` DBEV event parser correlated with client timestamps; curl-timing
-— single-request decomposition).
+series with phases/pauses; curl-timing — single-request decomposition). The `wrangler tail` DBEV parser that correlated
+driver events with client timestamps went with the instrumentation that produced those events, so attributing time
+inside the Worker now requires re-instrumenting the request path first.

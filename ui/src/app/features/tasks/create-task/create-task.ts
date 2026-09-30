@@ -4,6 +4,7 @@ import { ActivatedRoute, Router } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { form, FormField, FormRoot, schema, required, maxLength } from '@angular/forms/signals';
+import { FieldControl } from '@app/shared/field-control/field-control';
 import { HlmButtonImports } from '@spartan-ng/helm/button';
 import { HlmSpinnerImports } from '@spartan-ng/helm/spinner';
 import { HlmCardImports } from '@spartan-ng/helm/card';
@@ -37,7 +38,7 @@ interface CreateTaskFormModel {
 }
 
 /**
- * Unified create-task page (U1) — same layout as task detail, rendered in
+ * Unified create-task page — same layout as task detail, rendered in
  * create mode at `…/tasks/new`. Replaces the board and task-table dialogs.
  *
  * P13b (Fix 4): implements {@link PendingChanges} — while the form is dirty
@@ -48,6 +49,7 @@ interface CreateTaskFormModel {
 @Component({
   selector: 'ui-task-create',
   imports: [
+    FieldControl,
     TranslocoPipe,
     FormField,
     FormRoot,
@@ -76,20 +78,25 @@ export class TaskCreate implements PendingChanges {
   private readonly route = inject(ActivatedRoute);
   private readonly location = inject(Location);
   /** Resolved project UUID (projectGuard hydrates the store before activation) */
-  protected readonly projectId = computed(() => this.projectStore.activeProject()?.id ?? '');
+  private readonly projectId = computed(() => this.projectStore.activeProject()?.id ?? '');
   // ─── Reference data via the shared per-project store ───────────────────────
-  protected readonly statusOptions = computed(() => this.refStore.options(this.projectId(), 'statuses'));
-  protected readonly typeOptions = computed(() => this.refStore.options(this.projectId(), 'types'));
-  protected readonly sprintOptions = computed(() => this.refStore.options(this.projectId(), 'sprints'));
-  protected readonly labelOptions = computed(() => this.refStore.options(this.projectId(), 'labels'));
-  protected readonly memberOptions = computed(() => this.refStore.options(this.projectId(), 'members'));
+  private readonly statusOptions = computed(() => this.refStore.options(this.projectId(), 'statuses'));
+  private readonly typeOptions = computed(() => this.refStore.options(this.projectId(), 'types'));
+  private readonly sprintOptions = computed(() => this.refStore.options(this.projectId(), 'sprints'));
+  private readonly labelOptions = computed(() => this.refStore.options(this.projectId(), 'labels'));
+  private readonly memberOptions = computed(() => this.refStore.options(this.projectId(), 'members'));
   /** itemToString helpers for hlm-select to display human-readable labels */
   protected readonly statusItemToString = (id: string) => this.statusOptions().find((o) => o.id === id)?.name ?? id;
   protected readonly typeItemToString = (id: string) => this.typeOptions().find((o) => o.id === id)?.name ?? id;
   protected readonly assigneeItemToString = (id: string) => this.memberOptions().find((o) => o.id === id)?.name ?? id;
   protected readonly sprintItemToString = (id: string) => this.sprintOptions().find((o) => o.id === id)?.name ?? id;
   // ─── Form ──────────────────────────────────────────────────────────────────
-  protected readonly model = signal<CreateTaskFormModel>({
+  /**
+   * One-shot latch for the status/type defaults applied in the constructor.
+   * A plain field, not a signal: the defaults effect must not re-trigger on it.
+   */
+  private defaultsApplied = false;
+  private readonly model = signal<CreateTaskFormModel>({
     title: '',
     description: '',
     statusId: '',
@@ -98,8 +105,8 @@ export class TaskCreate implements PendingChanges {
     assigneeId: '',
     sprintId: '',
   });
-  protected readonly error = signal('');
-  protected readonly createForm = form(
+  private readonly error = signal('');
+  private readonly createForm = form(
     this.model,
     schema<CreateTaskFormModel>((field) => {
       required(field.title, { message: 'validation.titleRequired' });
@@ -151,11 +158,11 @@ export class TaskCreate implements PendingChanges {
       },
     },
   );
-  // ─── Labels (case-insensitive autocomplete, BR-019) ────────────────────────
+  // ─── Labels (case-insensitive autocomplete) ────────────────────────
   /** Free-text search buffer for the label autocomplete */
-  protected readonly labelSearch = signal('');
+  private readonly labelSearch = signal('');
   /** Selected labels; `id === ''` marks a label that will be created on submit */
-  protected readonly selectedLabels = signal<SelectOption[]>([]);
+  private readonly selectedLabels = signal<SelectOption[]>([]);
   /** Existing labels matching the search, excluding already-selected ones */
   protected readonly filteredLabelOptions = computed(() => {
     const search = this.labelSearch().toLowerCase();
@@ -208,31 +215,28 @@ export class TaskCreate implements PendingChanges {
 
     // V4-5 / R3-P1: preselect by ID — `project.defaultStatusId` when present among
     // the loaded statuses, otherwise the first status by position. No name matching.
+    // The two defaults below are applied EXACTLY ONCE, by a single effect
+    // that reads only the reference data and NEVER reads the form model. The
+    // previous pair of effects read the very model they wrote, so they re-ran on
+    // every keystroke and re-filled the field as soon as the user cleared it:
+    // the form fought the user. The `defaultsApplied` latch turns this into an
+    // initialisation step, so a later refetch (invalidate and re-ensure) can no
+    // longer overwrite a value the user already chose.
     effect(() => {
       const statuses = this.statusOptions();
+      const types = this.typeOptions();
 
-      if (statuses.length === 0 || this.model().statusId) return;
+      if (this.defaultsApplied || statuses.length === 0 || types.length === 0) return;
 
       const defaultStatusId = this.projectStore.activeProject()?.defaultStatusId;
       const preselect =
         defaultStatusId && statuses.some((s) => s.id === defaultStatusId) ? defaultStatusId : statuses[0]?.id;
+      const firstTypeId = types[0]?.id;
 
-      if (!preselect) return;
+      if (!preselect || !firstTypeId) return;
 
-      this.model.update((m) => ({ ...m, statusId: preselect }));
-    });
-
-    // R3-P1: default type = first type by position (no name matching)
-    effect(() => {
-      const types = this.typeOptions();
-
-      if (this.model().typeId) return;
-
-      const firstType = types[0];
-
-      if (!firstType) return;
-
-      this.model.update((m) => ({ ...m, typeId: firstType.id }));
+      this.defaultsApplied = true;
+      this.model.update((m) => ({ ...m, statusId: preselect, typeId: firstTypeId }));
     });
   }
 
@@ -244,10 +248,11 @@ export class TaskCreate implements PendingChanges {
   /** Priority selector options — derived from the shared TASK_PRIORITY_CONFIG. */
   protected readonly PRIORITY_OPTIONS = PRIORITY_OPTIONS;
 
-  /** Select values arrive as strings — coerce to the numeric priority level. */
-  protected onPriorityLevelChange(value: unknown): void {
-    this.onFieldChange('priorityLevel', Number(value) as TaskPriorityLevel);
-  }
+  // `onPriorityLevelChange` is gone. The priority `<hlm-select>` is
+  // now bound with `[formField]`, so the `BrnSelect` control-value accessor
+  // delivers the item's own `value` — a `TaskPriorityLevel` number, because
+  // `PRIORITY_OPTIONS` is typed `value: TaskPriorityLevel`. The old handler
+  // existed only to re-coerce a `$any($event)` string; nothing coerces now.
 
   protected onFieldChange<K extends keyof CreateTaskFormModel>(field: K, value: CreateTaskFormModel[K]): void {
     this.model.update((m) => ({ ...m, [field]: value }));
@@ -285,7 +290,7 @@ export class TaskCreate implements PendingChanges {
 
   /**
    * Resolve selected labels to ids. Existing ids pass through; pending names are
-   * resolved case-insensitively against project labels first (BR-019) and only
+   * resolved case-insensitively against project labels first and only
    * created when no match exists.
    */
   private async resolveLabelIds(): Promise<string[]> {

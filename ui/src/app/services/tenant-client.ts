@@ -33,7 +33,7 @@ export class TenantClient {
     return this.http.post<{ data: Tenant }>(`${this.apiBaseUrl}/tenants`, data).pipe(map((res) => res.data));
   }
 
-  /** Check whether a tenant slug is available (DEC-032). */
+  /** Check whether a tenant slug is available. */
   isSlugAvailable(slug: string): Observable<boolean> {
     return this.http
       .get<{ data: { available: boolean } }>(`${this.apiBaseUrl}/tenants/slug-available`, { params: { slug } })
@@ -97,7 +97,7 @@ export class TenantClient {
   }
 
   /**
-   * Update a member — role, expiration date (DEC-055) and the underlying
+   * Update a member — role, expiration date and the underlying
    * user's profile (name/email). Only provided fields are applied.
    */
   updateMember(

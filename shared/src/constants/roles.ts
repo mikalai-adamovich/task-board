@@ -112,6 +112,20 @@ export const AuditActionValues = valuesOf(AuditAction);
 export const AuditEntityType = {
   TASK: 'TASK',
   PROJECT: 'PROJECT',
+  /**
+   * The workspace itself. A tenant creation used to be logged as `PROJECT`,
+   * which put a tenant id into the project-labelled column of the audit log
+   * The enrichment service already resolved a `TENANT` label, nothing
+   * could produce one.
+   */
+  TENANT: 'TENANT',
+  /**
+   * A workspace membership — the dataset whose purpose is "who may see what".
+   * Every grant, revoke, expiry and role change writes one event of this type
+   * The enrichment service already resolves a membership to its user's
+   * display name; without this member nothing could produce one.
+   */
+  MEMBERSHIP: 'MEMBERSHIP',
   SPRINT: 'SPRINT',
   STATUS: 'STATUS',
   BOARD: 'BOARD',

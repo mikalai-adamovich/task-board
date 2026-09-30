@@ -1,5 +1,5 @@
 /**
- * Tests for the AuditLogViewer table (R3-P7).
+ * Tests for the AuditLogViewer table.
  *
  * Covers:
  * - Table columns render (Time · Actor · Action · Entity · Changes)
@@ -99,7 +99,7 @@ describe('AuditLogViewer (R3-P7 table)', () => {
   /** Current persisted rows-per-page preference (0 = Auto sentinel) — mutable per test. */
   let preferencesPageSize = 20;
 
-  async function setup(listFn?: ReturnType<typeof vi.fn>, persistedPageSize = 20) {
+  async function setup(listFn?: ReturnType<typeof vi.fn>, persistedPageSize = 20, withoutProject = false) {
     preferencesPageSize = persistedPageSize;
     auditClientMock = {
       listByProject: listFn ?? vi.fn().mockReturnValue(of(mockPaginatedResponse)),
@@ -123,13 +123,16 @@ describe('AuditLogViewer (R3-P7 table)', () => {
           useValue: {
             datePipeFormat: () => 'yyyy-MM-dd',
             dateTimePipeFormat: () => 'yyyy-MM-dd HH:mm',
-            // P12 (item 28): active language used as the DatePipe locale
+            // Active language used as the DatePipe locale
             language: () => 'en',
             pageSize: () => preferencesPageSize,
             setPageSize: vi.fn(),
           },
         },
-        { provide: ProjectStore, useValue: { activeProject: () => ({ id: 'p1' }), projectRole: () => null } },
+        {
+          provide: ProjectStore,
+          useValue: { activeProject: () => (withoutProject ? null : { id: 'p1' }), projectRole: () => null },
+        },
         { provide: Router, useValue: routerMock },
         {
           provide: ActivatedRoute,
@@ -148,6 +151,16 @@ describe('AuditLogViewer (R3-P7 table)', () => {
     component = fixture.componentInstance;
     await settle(fixture);
   }
+
+  // A blank projectId (store not hydrated yet) must not produce
+  // `listByProject('')` — that request returns the SPA-fallback HTML.
+  it('does NOT request the audit log while the project is unresolved (F21)', async () => {
+    await setup(undefined, 20, true);
+    await settle(fixture);
+
+    expect(auditClientMock.listByProject).not.toHaveBeenCalled();
+    expect(component.events()).toEqual([]);
+  });
 
   it('renders the five table columns', async () => {
     await setup();
@@ -302,7 +315,7 @@ describe('AuditLogViewer (R3-P7 table)', () => {
     await setup();
     await waitForLoaded();
 
-    const heading = fixture.nativeElement.querySelector('h2') as HTMLElement;
+    const heading = fixture.nativeElement.querySelector('h1') as HTMLElement;
 
     expect(heading.className).toContain('flex');
     expect(heading.className).toContain('items-center');

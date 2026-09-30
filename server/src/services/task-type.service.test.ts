@@ -6,7 +6,9 @@ import type {
   TaskTypeServiceProjectMemberRepo,
 } from './task-type.service.js';
 import { TaskTypeRepository } from '../repositories/task-type.repository.js';
+import type { CallerContext } from './tenant-assert.js';
 import type { AuditService } from './audit.service.js';
+import { UnauthorizedError } from '../errors/app-error.js';
 import type { TaskType } from '@task-board/shared';
 
 // ─── Mock Factories ──────────────────────────────────────────────────────────
@@ -19,6 +21,7 @@ function createMockTaskTypeRepo() {
     create: vi.fn(),
     createMany: vi.fn(),
     update: vi.fn(),
+    reorderPositions: vi.fn(),
     delete: vi.fn(),
   } as unknown as TaskTypeRepository;
 }
@@ -30,9 +33,9 @@ function createMockTaskRepo(): TaskTypeServiceTaskRepo {
   };
 }
 
-function createMockProjectRepo(): TaskTypeServiceProjectRepo {
+function createMockProjectRepo(tenantId = 'tenant-1'): TaskTypeServiceProjectRepo {
   return {
-    findById: vi.fn().mockResolvedValue({ tenantId: 'tenant-1' }),
+    findById: vi.fn().mockResolvedValue({ tenantId, status: 'ACTIVE' }),
   };
 }
 
@@ -55,14 +58,20 @@ function makeTaskType(overrides: Partial<TaskType> = {}): TaskType {
     createdAt: '2025-01-01T00:00:00.000Z',
     updatedAt: '2025-01-01T00:00:00.000Z',
     ...overrides,
-  };
+  } as TaskType;
 }
+
+/** A caller context is now REQUIRED on every project-scoped method. */
+const CTX: CallerContext = { tenantId: 'tenant-1', userId: 'user-1', userRole: 'MEMBER' };
 
 describe('TaskTypeService', () => {
   let taskTypeRepo: ReturnType<typeof createMockTaskTypeRepo>;
   let taskRepo: TaskTypeServiceTaskRepo;
   let projectRepo: TaskTypeServiceProjectRepo;
   let auditService: AuditService;
+  // Hard dependency of the (fail-closed) guard → the default fixture is an
+  // authorized project admin.
+  let projectMemberRepo: TaskTypeServiceProjectMemberRepo & { findByUserAndProject: ReturnType<typeof vi.fn> };
   let service: TaskTypeService;
 
   beforeEach(() => {
@@ -70,14 +79,15 @@ describe('TaskTypeService', () => {
     taskRepo = createMockTaskRepo();
     projectRepo = createMockProjectRepo();
     auditService = createMockAuditService();
-    service = new TaskTypeService(taskTypeRepo, taskRepo, projectRepo, auditService);
+    projectMemberRepo = { findByUserAndProject: vi.fn().mockResolvedValue({ role: 'PROJECT_ADMIN' }) };
+    service = new TaskTypeService(taskTypeRepo, taskRepo, projectRepo, auditService, projectMemberRepo);
   });
 
   describe('getTaskTypesByProject', () => {
     it('returns all task types for a project', async () => {
       taskTypeRepo.findByProject = vi.fn().mockResolvedValue([makeTaskType()]);
 
-      const result = await service.getTaskTypesByProject('project-1');
+      const result = await service.getTaskTypesByProject('project-1', CTX);
 
       expect(result).toHaveLength(1);
       expect(result[0]?.name).toBe('Task');
@@ -89,7 +99,7 @@ describe('TaskTypeService', () => {
       taskTypeRepo.findByProjectAndKey = vi.fn().mockResolvedValue(null);
       taskTypeRepo.create = vi.fn().mockResolvedValue(makeTaskType());
 
-      const result = await service.createTaskType('project-1', { key: 'TASK', name: 'Task', position: 0 }, 'user-1');
+      const result = await service.createTaskType('project-1', { key: 'TASK', name: 'Task', position: 0 }, CTX);
 
       expect(result.name).toBe('Task');
     });
@@ -97,16 +107,16 @@ describe('TaskTypeService', () => {
     it('throws CONFLICT when key exists', async () => {
       taskTypeRepo.findByProjectAndKey = vi.fn().mockResolvedValue(makeTaskType());
 
-      await expect(service.createTaskType('project-1', { key: 'TASK', name: 'Task', position: 0 })).rejects.toThrow(
-        'A task type with this key already exists',
-      );
+      await expect(
+        service.createTaskType('project-1', { key: 'TASK', name: 'Task', position: 0 }, CTX),
+      ).rejects.toThrow('A task type with this key already exists');
     });
 
     it('creates audit event on task type creation', async () => {
       taskTypeRepo.findByProjectAndKey = vi.fn().mockResolvedValue(null);
       taskTypeRepo.create = vi.fn().mockResolvedValue(makeTaskType());
 
-      await service.createTaskType('project-1', { key: 'TASK', name: 'Task', position: 0 }, 'user-1');
+      await service.createTaskType('project-1', { key: 'TASK', name: 'Task', position: 0 }, CTX);
 
       expect(auditService.log).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -123,7 +133,7 @@ describe('TaskTypeService', () => {
       taskTypeRepo.findById = vi.fn().mockResolvedValue(makeTaskType());
       taskTypeRepo.update = vi.fn().mockResolvedValue(makeTaskType({ name: 'New Name' }));
 
-      await service.updateTaskType('type-1', { name: 'New Name' }, 'user-1');
+      await service.updateTaskType('type-1', { name: 'New Name' }, CTX);
 
       expect(taskTypeRepo.update).toHaveBeenCalledWith('type-1', {
         name: 'New Name',
@@ -136,7 +146,7 @@ describe('TaskTypeService', () => {
       taskTypeRepo.findById = vi.fn().mockResolvedValue(makeTaskType());
       taskTypeRepo.update = vi.fn().mockResolvedValue(makeTaskType({ name: 'New Name' }));
 
-      await service.updateTaskType('type-1', { name: 'New Name' }, 'user-1');
+      await service.updateTaskType('type-1', { name: 'New Name' }, CTX);
 
       expect(auditService.log).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -156,7 +166,7 @@ describe('TaskTypeService', () => {
       taskTypeRepo.findById = vi.fn().mockResolvedValue(makeTaskType());
       (taskRepo.countByType as ReturnType<typeof vi.fn>).mockResolvedValue(0);
 
-      await service.deleteTaskType('type-1');
+      await service.deleteTaskType('type-1', undefined, CTX);
 
       expect(taskTypeRepo.delete).toHaveBeenCalledWith('type-1');
     });
@@ -165,7 +175,7 @@ describe('TaskTypeService', () => {
       taskTypeRepo.findById = vi.fn().mockResolvedValue(makeTaskType());
       (taskRepo.countByType as ReturnType<typeof vi.fn>).mockResolvedValue(5);
 
-      await expect(service.deleteTaskType('type-1')).rejects.toThrow('Task type is in use by tasks');
+      await expect(service.deleteTaskType('type-1', undefined, CTX)).rejects.toThrow('Task type is in use by tasks');
     });
 
     it('uses TASK_TYPE_IN_USE error code (not INVALID_STATUS_REPLACEMENT)', async () => {
@@ -173,7 +183,7 @@ describe('TaskTypeService', () => {
       (taskRepo.countByType as ReturnType<typeof vi.fn>).mockResolvedValue(5);
 
       try {
-        await service.deleteTaskType('type-1');
+        await service.deleteTaskType('type-1', undefined, CTX);
         expect.fail('Should have thrown');
       } catch (error: unknown) {
         const err = error as { code: string };
@@ -189,7 +199,7 @@ describe('TaskTypeService', () => {
         .mockResolvedValueOnce(makeTaskType({ id: 'type-2', key: 'BUG', name: 'Bug' }));
       (taskRepo.countByType as ReturnType<typeof vi.fn>).mockResolvedValue(5);
 
-      await service.deleteTaskType('type-1', 'type-2');
+      await service.deleteTaskType('type-1', 'type-2', CTX);
 
       expect(taskRepo.updateManyByType).toHaveBeenCalledWith('project-1', 'type-1', 'type-2');
       expect(taskTypeRepo.delete).toHaveBeenCalledWith('type-1');
@@ -197,9 +207,10 @@ describe('TaskTypeService', () => {
 
     it('creates audit event on task type deletion', async () => {
       taskTypeRepo.findById = vi.fn().mockResolvedValue(makeTaskType());
+      taskTypeRepo.delete = vi.fn().mockResolvedValue(true);
       (taskRepo.countByType as ReturnType<typeof vi.fn>).mockResolvedValue(0);
 
-      await service.deleteTaskType('type-1', undefined, 'user-1');
+      await service.deleteTaskType('type-1', undefined, CTX);
 
       expect(auditService.log).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -214,8 +225,6 @@ describe('TaskTypeService', () => {
   // ── V2-4: edit_project_config enforcement ────────────────────────────────
 
   describe('edit_project_config enforcement', () => {
-    let projectMemberRepo: TaskTypeServiceProjectMemberRepo & { findByUserAndProject: ReturnType<typeof vi.fn> };
-
     beforeEach(() => {
       projectMemberRepo = { findByUserAndProject: vi.fn().mockResolvedValue(null) };
       service = new TaskTypeService(taskTypeRepo, taskRepo, projectRepo, auditService, projectMemberRepo);
@@ -225,7 +234,7 @@ describe('TaskTypeService', () => {
       projectMemberRepo.findByUserAndProject.mockResolvedValue({ role: 'EDITOR' });
 
       await expect(
-        service.createTaskType('project-1', { key: 'BUG', name: 'Bug', position: 0 }, 'user-1', 'EDITOR'),
+        service.createTaskType('project-1', { key: 'BUG', name: 'Bug', position: 0 }, { ...CTX, userRole: 'EDITOR' }),
       ).rejects.toThrow("Insufficient permissions. Requires 'edit_project_config'.");
       expect(taskTypeRepo.create).not.toHaveBeenCalled();
     });
@@ -234,7 +243,7 @@ describe('TaskTypeService', () => {
       taskTypeRepo.findById = vi.fn().mockResolvedValue(makeTaskType());
       projectMemberRepo.findByUserAndProject.mockResolvedValue({ role: 'VIEWER' });
 
-      await expect(service.updateTaskType('type-1', { name: 'X' }, 'user-1', 'VIEWER')).rejects.toThrow(
+      await expect(service.updateTaskType('type-1', { name: 'X' }, { ...CTX, userRole: 'VIEWER' })).rejects.toThrow(
         "Insufficient permissions. Requires 'edit_project_config'.",
       );
       expect(taskTypeRepo.update).not.toHaveBeenCalled();
@@ -248,8 +257,7 @@ describe('TaskTypeService', () => {
       const result = await service.createTaskType(
         'project-1',
         { key: 'BUG', name: 'Bug', position: 0 },
-        'user-1',
-        'PROJECT_ADMIN',
+        { ...CTX, userRole: 'PROJECT_ADMIN' },
       );
 
       expect(result.key).toBe('BUG');
@@ -261,19 +269,129 @@ describe('TaskTypeService', () => {
       // no membership record at all — tenant OWNER bypasses project-level checks
       projectMemberRepo.findByUserAndProject.mockResolvedValue(null);
 
-      await service.deleteTaskType('type-1', undefined, 'user-1', 'OWNER');
+      await service.deleteTaskType('type-1', undefined, { ...CTX, userRole: 'OWNER' });
 
       expect(taskTypeRepo.delete).toHaveBeenCalledWith('type-1');
     });
 
-    it('skips the check when no caller context is provided (legacy/test callers)', async () => {
+    /**
+     * The old behaviour was "no caller context → silently
+     * skip the check and delete anyway". That was the production hijack. It now
+     * throws Unauthorized and touches nothing.
+     */
+    it('throws Unauthorized (fail closed) instead of skipping the check when no caller context is provided', async () => {
       taskTypeRepo.findById = vi.fn().mockResolvedValue(makeTaskType());
       taskTypeRepo.delete = vi.fn().mockResolvedValue(true);
 
-      await service.deleteTaskType('type-1');
+      await expect(
+        service.deleteTaskType('type-1', undefined, { tenantId: '', userId: '', userRole: '' }),
+      ).rejects.toThrow(UnauthorizedError);
 
       expect(projectMemberRepo.findByUserAndProject).not.toHaveBeenCalled();
-      expect(taskTypeRepo.delete).toHaveBeenCalledWith('type-1');
+      expect(taskTypeRepo.delete).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── Tenant isolation + fail-closed guardrails ─────────────────────────────
+
+  describe('tenant isolation (M-001/M-006/M-034)', () => {
+    /** tenant-B owner hitting tenant-A's project-1 — the RBAC bypass is irrelevant */
+    const foreignCtx: CallerContext = { tenantId: 'tenant-OTHER', userId: 'user-1', userRole: 'OWNER' };
+    /** the historical fail-open shape: no context at all */
+    const emptyCtx: CallerContext = { tenantId: '', userId: '', userRole: '' };
+
+    beforeEach(() => {
+      // no project membership at all — only the tenant seam can stop this caller
+      projectMemberRepo = { findByUserAndProject: vi.fn().mockResolvedValue(null) };
+      service = new TaskTypeService(taskTypeRepo, taskRepo, projectRepo, auditService, projectMemberRepo);
+    });
+
+    it('createTaskType rejects a foreign tenant with 404 and creates nothing', async () => {
+      taskTypeRepo.findByProjectAndKey = vi.fn().mockResolvedValue(null);
+      taskTypeRepo.create = vi.fn().mockResolvedValue(makeTaskType());
+
+      await expect(
+        service.createTaskType('project-1', { key: 'BUG', name: 'Bug', position: 0 }, foreignCtx),
+      ).rejects.toMatchObject({ statusCode: 404, code: 'NOT_FOUND' });
+      expect(taskTypeRepo.create).not.toHaveBeenCalled();
+    });
+
+    it('getTaskTypesByProject rejects a foreign tenant with 404 and lists nothing', async () => {
+      taskTypeRepo.findByProject = vi.fn().mockResolvedValue([makeTaskType()]);
+
+      await expect(service.getTaskTypesByProject('project-1', foreignCtx)).rejects.toMatchObject({
+        statusCode: 404,
+        code: 'NOT_FOUND',
+      });
+      expect(taskTypeRepo.findByProject).not.toHaveBeenCalled();
+    });
+
+    it('reorder rejects a foreign tenant with 404 and reorders nothing', async () => {
+      await expect(service.reorder('project-1', [{ id: 'type-1', position: 2 }], foreignCtx)).rejects.toMatchObject({
+        statusCode: 404,
+        code: 'NOT_FOUND',
+      });
+      expect(taskTypeRepo.reorderPositions).not.toHaveBeenCalled();
+    });
+
+    it('updateTaskType on a foreign-tenant type is 404 and never renames it', async () => {
+      taskTypeRepo.findById = vi.fn().mockResolvedValue(makeTaskType());
+      taskTypeRepo.update = vi.fn().mockResolvedValue(makeTaskType({ name: 'HIJACKED' }));
+
+      await expect(service.updateTaskType('type-1', { name: 'HIJACKED' }, foreignCtx)).rejects.toMatchObject({
+        statusCode: 404,
+        code: 'NOT_FOUND',
+      });
+      expect(taskTypeRepo.update).not.toHaveBeenCalled();
+    });
+
+    it('deleteTaskType on a foreign-tenant type is 404 and never deletes it', async () => {
+      taskTypeRepo.findById = vi.fn().mockResolvedValue(makeTaskType());
+
+      await expect(service.deleteTaskType('type-1', undefined, foreignCtx)).rejects.toMatchObject({
+        statusCode: 404,
+        code: 'NOT_FOUND',
+      });
+      expect(taskTypeRepo.delete).not.toHaveBeenCalled();
+    });
+
+    it('a 404 for a foreign project is indistinguishable from a nonexistent one', async () => {
+      const missingProjectRepo: TaskTypeServiceProjectRepo = { findById: vi.fn().mockResolvedValue(null) };
+      const absent = new TaskTypeService(taskTypeRepo, taskRepo, missingProjectRepo, auditService, projectMemberRepo);
+      const messageOf = async (s: TaskTypeService) =>
+        s
+          .createTaskType('project-1', { key: 'X', name: 'X', position: 0 }, foreignCtx)
+          .then(() => null)
+          .catch((e: Error) => e.message);
+
+      expect(await messageOf(service)).toBe(await messageOf(absent));
+    });
+
+    it('throws Unauthorized (401) instead of silently skipping the check when the context is empty', async () => {
+      await expect(
+        service.createTaskType('project-1', { key: 'BUG', name: 'Bug', position: 0 }, emptyCtx),
+      ).rejects.toThrow(UnauthorizedError);
+      await expect(service.getTaskTypesByProject('project-1', emptyCtx)).rejects.toThrow(UnauthorizedError);
+      expect(taskTypeRepo.create).not.toHaveBeenCalled();
+    });
+
+    it('throws Forbidden (403) for an EDITOR inside the owning tenant', async () => {
+      projectMemberRepo.findByUserAndProject.mockResolvedValue({ role: 'EDITOR' });
+
+      await expect(
+        service.createTaskType('project-1', { key: 'BUG', name: 'Bug', position: 0 }, CTX),
+      ).rejects.toMatchObject({ statusCode: 403, code: 'FORBIDDEN' });
+      expect(taskTypeRepo.create).not.toHaveBeenCalled();
+    });
+
+    it('happy path: a project admin of the owning tenant still succeeds', async () => {
+      projectMemberRepo.findByUserAndProject.mockResolvedValue({ role: 'PROJECT_ADMIN' });
+      taskTypeRepo.findByProjectAndKey = vi.fn().mockResolvedValue(null);
+      taskTypeRepo.create = vi.fn().mockResolvedValue(makeTaskType());
+
+      const result = await service.createTaskType('project-1', { key: 'TASK', name: 'Task', position: 0 }, CTX);
+
+      expect(result.key).toBe('TASK');
     });
   });
 });

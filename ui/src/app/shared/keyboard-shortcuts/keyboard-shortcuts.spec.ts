@@ -1,5 +1,5 @@
 /**
- * Tests for the Q9 (RQ-04 ②) / P13 (item 31) global keyboard shortcuts service.
+ * Tests for the Q9/ P13 global keyboard shortcuts service.
  *
  * Covers:
  * - `?` and `F1` open the help dialog
@@ -150,7 +150,7 @@ describe('KeyboardShortcuts', () => {
     expect(navigate).toHaveBeenCalledWith(['/w', 'acme', 'projects', 'proj', 'tasks', 'new']);
   });
 
-  // ── P13 (item 31a): uppercase letter hotkeys ───────────────────
+  // ── Uppercase letter hotkeys ───────────────────────────────────
 
   it('should navigate to the create-task page on "C" (Shift+c)', () => {
     const navigate = vi.spyOn(router, 'navigate').mockResolvedValue(true);
@@ -172,7 +172,7 @@ describe('KeyboardShortcuts', () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
-  // ── P13 (item 31b): `t` — go to tasks ──────────────────────────
+  // ── `t` — go to tasks ──────────────────────────────────────────
 
   it('should navigate to the tasks table on "t" when a project context is active', () => {
     const navigate = vi.spyOn(router, 'navigate').mockResolvedValue(true);
@@ -202,7 +202,7 @@ describe('KeyboardShortcuts', () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
-  // ── P13 (item 31b) / doc 102: `b` — go to the project's single board ──
+  // ── P13/ doc 102: `b` — go to the project's single board ──
 
   it('should navigate straight to the project board on "b" (no board fetch)', async () => {
     const navigate = vi.spyOn(router, 'navigate').mockResolvedValue(true);
@@ -226,7 +226,7 @@ describe('KeyboardShortcuts', () => {
     expect(navigate).toHaveBeenCalledWith(['/w', 'acme', 'projects', 'proj', 'board']);
   });
 
-  // ── P13 (item 31b): `m` / `w` / `p` — dropdown toggle counters ──
+  // ── `m` / `w` / `p` — dropdown toggle counters ──
 
   it('should bump the user-menu toggle counter on "m" and "M"', () => {
     expect(service.userMenuToggle()).toBe(0);
@@ -253,7 +253,7 @@ describe('KeyboardShortcuts', () => {
     expect(service.projectMenuToggle()).toBe(1);
   });
 
-  // ── P13 (item 31b): `x` — toggle sidebar ───────────────────────
+  // ── `x` — toggle sidebar ───────────────────────────────────────
 
   it('should toggle the sidebar on "x" and "X"', () => {
     const toggle = vi.spyOn(sidebarService, 'toggleSidebar');
@@ -305,7 +305,7 @@ describe('KeyboardShortcuts', () => {
     pane.remove();
   });
 
-  // ── P13b: m/w/p close their OWN menu through the overlay guard ──
+  // ── M/w/p close their OWN menu through the overlay guard ──
 
   it('should bump the user-menu toggle on "m" while the user menu itself is open', () => {
     const pane = document.createElement('div');

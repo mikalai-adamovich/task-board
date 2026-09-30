@@ -1,5 +1,5 @@
 /**
- * Tests for the undo-toast helper (Q11 / RQ-04 ④ — DEC-053).
+ * Tests for the undo-toast helper.
  *
  * Covers:
  * - successWithUndo shows a success toast with an Undo action and the undo window duration

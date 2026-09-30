@@ -2,7 +2,7 @@
   <!-- Page header -->
   <div class="mb-6 flex items-center gap-3">
     <ng-icon name="lucideSettings" class="size-6 text-foreground" />
-    <h2 class="text-2xl font-bold text-foreground">{{ 'tenantSettings.title' | transloco }}</h2>
+    <h1 class="text-2xl font-bold text-foreground">{{ 'tenantSettings.title' | transloco }}</h1>
     @if (currentStatus() !== TenantStatus.ACTIVE) {
       <span hlmBadge [variant]="statusBadgeVariant(currentStatus())">
         {{ currentStatus() }}
@@ -18,7 +18,7 @@
     <!-- General Settings Card -->
     <hlm-card class="mb-6">
       <hlm-card-header>
-        <h3 hlmCardTitle>{{ 'tenantSettings.general' | transloco }}</h3>
+        <h2 hlmCardTitle>{{ 'tenantSettings.general' | transloco }}</h2>
       </hlm-card-header>
       <div hlmCardContent>
         @if (error()) {
@@ -35,8 +35,14 @@
               id="tenant-name"
               type="text"
               [formField]="settingsForm.name"
+              uiFieldControl
               [placeholder]="'tenantSettings.name' | transloco"
             />
+            @if (settingsForm.name().touched() && settingsForm.name().errors().length) {
+              <hlm-field-error class="block">{{
+                settingsForm.name().errors()[0]?.message | transloco
+              }}</hlm-field-error>
+            }
           </hlm-field>
           <hlm-field>
             <label hlmFieldLabel for="tenant-description">{{ 'tenantSettings.description' | transloco }}</label>
@@ -48,7 +54,13 @@
               rows="3"
               class="min-h-24"
               [formField]="settingsForm.description"
+              uiFieldControl
             ></textarea>
+            @if (settingsForm.description().touched() && settingsForm.description().errors().length) {
+              <hlm-field-error class="block">{{
+                settingsForm.description().errors()[0]?.message | transloco
+              }}</hlm-field-error>
+            }
             <p class="text-xs text-muted-foreground" data-testid="desc-char-count">
               {{ 'common.charCount' | transloco: { count: model().description.length, max: 120 } }}
             </p>
@@ -57,12 +69,7 @@
       </div>
       @if (canEdit()) {
         <hlm-card-footer>
-          <button
-            hlmBtn
-            type="submit"
-            form="settings-form"
-            [disabled]="settingsForm().invalid() || settingsForm().submitting()"
-          >
+          <button hlmBtn type="submit" form="settings-form" [disabled]="settingsForm().submitting()">
             @if (settingsForm().submitting()) {
               <hlm-spinner /> {{ 'tenantSettings.saving' | transloco }}
             } @else {
@@ -78,7 +85,7 @@
     @if (canEdit()) {
       <hlm-card class="border-destructive/50">
         <hlm-card-header>
-          <h3 hlmCardTitle class="text-destructive">{{ 'tenantSettings.dangerZone' | transloco }}</h3>
+          <h2 hlmCardTitle class="text-destructive">{{ 'tenantSettings.dangerZone' | transloco }}</h2>
         </hlm-card-header>
         <div hlmCardContent>
           <p class="text-sm text-muted-foreground">

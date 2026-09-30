@@ -2,20 +2,20 @@ import { isValidDateFormat } from '@task-board/shared';
 import type { DateFormatPreference, TimeFormatPreference } from '@task-board/shared';
 
 /**
- * Date/time display format helpers (R3-P8).
+ * Date/time display format helpers.
  *
  * Translate the persisted user preferences into Angular DatePipe format
  * strings, which templates consume via `{{ value | date: fmt() }}`.
  * Timezone handling is unchanged — values are rendered in local time.
  */
 
-/** Fallback when the user has not set a date format preference (null). */
-export const DEFAULT_DATE_FORMAT: DateFormatPreference = 'YYYY-MM-DD';
-/** Fallback when the user has not set a time format preference (null). */
-export const DEFAULT_TIME_FORMAT: TimeFormatPreference = '24h';
+// `DEFAULT_DATE_FORMAT` / `DEFAULT_TIME_FORMAT` were removed as dead code.
+// The fallback literals live inside the `toDatePipeFormat` / `toTimePipeFormat`
+// mappers themselves, so these two exported names had no readers — and being
+// exported, they looked like the authoritative default while duplicating it.
 
 /**
- * Preference → DatePipe date tokens (P12/DEC-056).
+ * Preference → DatePipe date tokens.
  *
  * User tokens map 1:1 to DatePipe tokens where they differ — `YYYY`→`yyyy`,
  * `YY`→`yy`, `DD`→`dd`, `D`→`d` — while `MM`, `M`, `MMM`, `MMMM` and all

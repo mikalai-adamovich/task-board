@@ -1,11 +1,24 @@
-<!-- Toolbar (hidden in fallback mode and in read-only mode) -->
+<!-- Toolbar (hidden in fallback mode and in read-only mode).
+
+     NO `role="toolbar"` here, deliberately. That role promises a composite
+     widget — a single tab stop with arrow-key movement between its controls.
+     This container has no key handler and no roving tabindex, so the roughly
+     fourteen buttons inside are independently focusable: exactly what a
+     `role="group"` describes. Assistive technology is told one thing and given
+     another, so the role is removed rather than documented.
+     `aria-label` stays: it still names the group. -->
 @if (!fallbackMode() && !readOnly()) {
   <div
     class="flex flex-wrap items-center gap-0.5 rounded-t-md border border-b-0 border-border bg-muted/40 px-2 py-1"
-    role="toolbar"
     [attr.aria-label]="'milkdownEditor.toolbar' | transloco"
   >
     <!-- Text formatting -->
+    <!--
+    These four are TOGGLES (the same command turns the mark on and off), so
+    each reports its state. `isMarkActive` reads the editor's own selection — a
+    constant `aria-pressed="false"` would be a lie, not a fix. The heading buttons
+    below are actions, not toggles, and correctly carry no state.
+  -->
     <button
       hlmBtn
       variant="ghost"
@@ -14,6 +27,8 @@
       type="button"
       (click)="runCommand('strong')"
       [hlmTooltip]="'milkdownEditor.bold' | transloco"
+      [attr.aria-label]="'milkdownEditor.bold' | transloco"
+      [attr.aria-pressed]="isMarkActive('strong')"
       [disabled]="mode() === 'raw'"
     >
       <ng-icon name="lucideBold" />
@@ -26,6 +41,8 @@
       type="button"
       (click)="runCommand('emphasis')"
       [hlmTooltip]="'milkdownEditor.italic' | transloco"
+      [attr.aria-label]="'milkdownEditor.italic' | transloco"
+      [attr.aria-pressed]="isMarkActive('emphasis')"
       [disabled]="mode() === 'raw'"
     >
       <ng-icon name="lucideItalic" />
@@ -38,6 +55,8 @@
       type="button"
       (click)="runCommand('strikethrough')"
       [hlmTooltip]="'milkdownEditor.strikethrough' | transloco"
+      [attr.aria-label]="'milkdownEditor.strikethrough' | transloco"
+      [attr.aria-pressed]="isMarkActive('strike_through')"
       [disabled]="mode() === 'raw'"
     >
       <ng-icon name="lucideStrikethrough" />
@@ -50,6 +69,8 @@
       type="button"
       (click)="runCommand('inlineCode')"
       [hlmTooltip]="'milkdownEditor.inlineCode' | transloco"
+      [attr.aria-label]="'milkdownEditor.inlineCode' | transloco"
+      [attr.aria-pressed]="isMarkActive('inlineCode')"
       [disabled]="mode() === 'raw'"
     >
       <ng-icon name="lucideCode" />
@@ -106,6 +127,7 @@
       type="button"
       (click)="runCommand('bulletList')"
       [hlmTooltip]="'milkdownEditor.bulletList' | transloco"
+      [attr.aria-label]="'milkdownEditor.bulletList' | transloco"
       [disabled]="mode() === 'raw'"
     >
       <ng-icon name="lucideList" />
@@ -118,6 +140,7 @@
       type="button"
       (click)="runCommand('orderedList')"
       [hlmTooltip]="'milkdownEditor.orderedList' | transloco"
+      [attr.aria-label]="'milkdownEditor.orderedList' | transloco"
       [disabled]="mode() === 'raw'"
     >
       <ng-icon name="lucideListOrdered" />
@@ -130,6 +153,7 @@
       type="button"
       (click)="runCommand('blockquote')"
       [hlmTooltip]="'milkdownEditor.blockquote' | transloco"
+      [attr.aria-label]="'milkdownEditor.blockquote' | transloco"
       [disabled]="mode() === 'raw'"
     >
       <ng-icon name="lucideQuote" />
@@ -142,6 +166,7 @@
       type="button"
       (click)="runCommand('codeBlock')"
       [hlmTooltip]="'milkdownEditor.codeBlock' | transloco"
+      [attr.aria-label]="'milkdownEditor.codeBlock' | transloco"
       [disabled]="mode() === 'raw'"
     >
       <ng-icon name="lucideFileText" />
@@ -158,6 +183,7 @@
       type="button"
       (click)="insertLink()"
       [hlmTooltip]="'milkdownEditor.link' | transloco"
+      [attr.aria-label]="'milkdownEditor.link' | transloco"
       [disabled]="mode() === 'raw'"
     >
       <ng-icon name="lucideLink" />
@@ -170,6 +196,7 @@
       type="button"
       (click)="runCommand('hr')"
       [hlmTooltip]="'milkdownEditor.horizontalRule' | transloco"
+      [attr.aria-label]="'milkdownEditor.horizontalRule' | transloco"
       [disabled]="mode() === 'raw'"
     >
       <ng-icon name="lucideMinus" />
@@ -202,6 +229,7 @@
   <textarea
     hlmTextarea
     class="min-h-50 w-full rounded-t-none font-mono text-sm"
+    [attr.aria-label]="'milkdownEditor.raw' | transloco"
     [value]="fallbackContent()"
     (input)="onRawInput($event)"
     [placeholder]="'milkdownEditor.rawPlaceholder' | transloco"

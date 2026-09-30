@@ -58,13 +58,18 @@ describe('CommentService (DEC-020 ownership/moderation)', () => {
   let projectRepo: { findById: ReturnType<typeof vi.fn> };
   let auditService: AuditService;
   let service: CommentService;
+  /**
+   * The caller context every project-scoped method now
+   * REQUIRES. Omitting it throws 401; a foreign `tenantId` throws 404.
+   */
+  const ctx = { tenantId: 'tenant-1', userId: 'user-1', userRole: 'MEMBER' };
 
   beforeEach(() => {
     commentRepo = createMockCommentRepo();
     userRepo = createMockUserRepo();
     taskRepo = createMockTaskRepo();
     projectMemberRepo = createMockProjectMemberRepo();
-    projectRepo = { findById: vi.fn().mockResolvedValue({ id: 'project-1', tenantId: 'tenant-1' }) };
+    projectRepo = { findById: vi.fn().mockResolvedValue({ id: 'project-1', tenantId: 'tenant-1', status: 'ACTIVE' }) };
     auditService = { log: vi.fn().mockResolvedValue(undefined) } as unknown as AuditService;
     service = new CommentService(
       commentRepo,
@@ -80,7 +85,7 @@ describe('CommentService (DEC-020 ownership/moderation)', () => {
     it('returns comments for a task within the caller tenant', async () => {
       commentRepo.findByTask = vi.fn().mockResolvedValue([makeComment()]);
 
-      const result = await service.getCommentsByTask('task-1', 'tenant-1');
+      const result = await service.getCommentsByTask('task-1', ctx);
 
       expect(result).toHaveLength(1);
     });
@@ -88,7 +93,7 @@ describe('CommentService (DEC-020 ownership/moderation)', () => {
     it('throws NOT_FOUND when the task does not exist', async () => {
       taskRepo.findById = vi.fn().mockResolvedValue(null);
 
-      await expect(service.getCommentsByTask('missing', 'tenant-1')).rejects.toMatchObject({
+      await expect(service.getCommentsByTask('missing', ctx)).rejects.toMatchObject({
         statusCode: 404,
         code: 'NOT_FOUND',
       });
@@ -97,36 +102,67 @@ describe('CommentService (DEC-020 ownership/moderation)', () => {
     it('throws NOT_FOUND (not 403) when the task belongs to another tenant (M-02)', async () => {
       projectRepo.findById = vi.fn().mockResolvedValue({ id: 'project-1', tenantId: 'tenant-OTHER' });
 
-      await expect(service.getCommentsByTask('task-1', 'tenant-1')).rejects.toMatchObject({
+      await expect(service.getCommentsByTask('task-1', ctx)).rejects.toMatchObject({
         statusCode: 404,
         code: 'NOT_FOUND',
       });
       expect(commentRepo.findByTask).not.toHaveBeenCalled();
     });
+
+    it('throws 401 when the caller context is missing (fail closed)', async () => {
+      await expect(service.getCommentsByTask('task-1', undefined as never)).rejects.toMatchObject({
+        statusCode: 401,
+        code: 'UNAUTHORIZED',
+      });
+      expect(commentRepo.findByTask).not.toHaveBeenCalled();
+    });
   });
 
-  describe('resolveTask / resolveTaskForComment (M-06)', () => {
-    it('resolves a task by id for the create-route audit context', async () => {
-      const task = await service.resolveTask('task-1');
+  describe('createComment', () => {
+    it('allows an EDITOR to comment and records the acting user as the author', async () => {
+      commentRepo.create = vi.fn().mockResolvedValue(makeComment({ authorId: 'user-1' }));
+      projectMemberRepo.findByUserAndProject = vi.fn().mockResolvedValue({ role: 'EDITOR' });
 
-      expect(task).toEqual({ id: 'task-1', projectId: 'project-1' });
+      const result = await service.createComment('task-1', { body: 'Hello' }, ctx);
+
+      expect(result.id).toBe('comment-1');
+      expect(commentRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ taskId: 'task-1', authorId: 'user-1', body: 'Hello' }),
+      );
     });
 
-    it('resolves the owning task of a comment for update/delete audit contexts', async () => {
-      commentRepo.findById = vi.fn().mockResolvedValue(makeComment());
+    it('denies a project VIEWER (create_comment is EDITOR+)', async () => {
+      commentRepo.create = vi.fn();
+      projectMemberRepo.findByUserAndProject = vi.fn().mockResolvedValue({ role: 'VIEWER' });
 
-      const task = await service.resolveTaskForComment('comment-1');
-
-      expect(task).toEqual({ id: 'task-1', projectId: 'project-1' });
+      await expect(service.createComment('task-1', { body: 'Nope' }, ctx)).rejects.toMatchObject({
+        statusCode: 403,
+        code: 'FORBIDDEN',
+      });
+      expect(commentRepo.create).not.toHaveBeenCalled();
     });
 
-    it('throws NOT_FOUND when the comment does not exist', async () => {
-      commentRepo.findById = vi.fn().mockResolvedValue(null);
+    // The create path used to be authorized by a `if (userRole)` guard,
+    // so a call site that forwarded no role wrote the comment unchecked.
+    it('throws 401 when the caller context is missing — no more skipped create_comment check', async () => {
+      commentRepo.create = vi.fn();
 
-      await expect(service.resolveTaskForComment('missing')).rejects.toMatchObject({
+      await expect(service.createComment('task-1', { body: 'Nope' }, undefined as never)).rejects.toMatchObject({
+        statusCode: 401,
+        code: 'UNAUTHORIZED',
+      });
+      expect(commentRepo.create).not.toHaveBeenCalled();
+    });
+
+    it('throws NOT_FOUND for a task of another tenant and writes nothing', async () => {
+      commentRepo.create = vi.fn();
+      projectRepo.findById = vi.fn().mockResolvedValue({ id: 'project-1', tenantId: 'tenant-OTHER' });
+
+      await expect(service.createComment('task-1', { body: 'Nope' }, ctx)).rejects.toMatchObject({
         statusCode: 404,
         code: 'NOT_FOUND',
       });
+      expect(commentRepo.create).not.toHaveBeenCalled();
     });
   });
 
@@ -136,7 +172,7 @@ describe('CommentService (DEC-020 ownership/moderation)', () => {
       commentRepo.update = vi.fn().mockResolvedValue(makeComment({ authorId: 'user-1', body: 'Edited' }));
       projectMemberRepo.findByUserAndProject = vi.fn().mockResolvedValue({ role: 'EDITOR' });
 
-      const result = await service.updateComment('comment-1', 'user-1', 'MEMBER', { body: 'Edited' });
+      const result = await service.updateComment('comment-1', { body: 'Edited' }, ctx);
 
       expect(result.body).toBe('Edited');
     });
@@ -145,7 +181,7 @@ describe('CommentService (DEC-020 ownership/moderation)', () => {
       commentRepo.findById = vi.fn().mockResolvedValue(makeComment({ authorId: 'user-2' }));
       projectMemberRepo.findByUserAndProject = vi.fn().mockResolvedValue({ role: 'EDITOR' });
 
-      await expect(service.updateComment('comment-1', 'user-1', 'MEMBER', { body: 'Hacked' })).rejects.toThrow(
+      await expect(service.updateComment('comment-1', { body: 'Hacked' }, ctx)).rejects.toThrow(
         'You can only edit your own comments',
       );
       expect(commentRepo.update).not.toHaveBeenCalled();
@@ -156,7 +192,7 @@ describe('CommentService (DEC-020 ownership/moderation)', () => {
       commentRepo.update = vi.fn().mockResolvedValue(makeComment({ body: 'Moderated' }));
       projectMemberRepo.findByUserAndProject = vi.fn().mockResolvedValue({ role: 'PROJECT_ADMIN' });
 
-      const result = await service.updateComment('comment-1', 'user-1', 'MEMBER', { body: 'Moderated' });
+      const result = await service.updateComment('comment-1', { body: 'Moderated' }, ctx);
 
       expect(result.body).toBe('Moderated');
     });
@@ -165,7 +201,7 @@ describe('CommentService (DEC-020 ownership/moderation)', () => {
       commentRepo.findById = vi.fn().mockResolvedValue(makeComment({ authorId: 'user-2' }));
       commentRepo.update = vi.fn().mockResolvedValue(makeComment({ body: 'Moderated' }));
 
-      const result = await service.updateComment('comment-1', 'user-1', 'OWNER', { body: 'Moderated' });
+      const result = await service.updateComment('comment-1', { body: 'Moderated' }, { ...ctx, userRole: 'OWNER' });
 
       expect(result.body).toBe('Moderated');
     });
@@ -174,9 +210,34 @@ describe('CommentService (DEC-020 ownership/moderation)', () => {
       commentRepo.findById = vi.fn().mockResolvedValue(makeComment({ authorId: 'user-1' }));
       projectMemberRepo.findByUserAndProject = vi.fn().mockResolvedValue({ role: 'VIEWER' });
 
-      await expect(service.updateComment('comment-1', 'user-1', 'MEMBER', { body: 'Edited' })).rejects.toThrow(
+      await expect(service.updateComment('comment-1', { body: 'Edited' }, ctx)).rejects.toThrow(
         "Insufficient permissions. Requires 'edit_comment'",
       );
+    });
+
+    // A comment id from another tenant must be rejected too.
+    it('throws NOT_FOUND (not 403) for a comment whose task is in another tenant', async () => {
+      commentRepo.findById = vi.fn().mockResolvedValue(makeComment());
+      commentRepo.update = vi.fn();
+      projectMemberRepo.findByUserAndProject = vi.fn().mockResolvedValue({ role: 'PROJECT_ADMIN' });
+      projectRepo.findById = vi.fn().mockResolvedValue({ id: 'project-1', tenantId: 'tenant-OTHER' });
+
+      await expect(service.updateComment('comment-1', { body: 'Hacked' }, ctx)).rejects.toMatchObject({
+        statusCode: 404,
+        code: 'NOT_FOUND',
+      });
+      expect(commentRepo.update).not.toHaveBeenCalled();
+    });
+
+    it('throws 401 when the caller context is missing (fail closed)', async () => {
+      commentRepo.findById = vi.fn().mockResolvedValue(makeComment());
+      commentRepo.update = vi.fn();
+
+      await expect(service.updateComment('comment-1', { body: 'Hacked' }, undefined as never)).rejects.toMatchObject({
+        statusCode: 401,
+        code: 'UNAUTHORIZED',
+      });
+      expect(commentRepo.update).not.toHaveBeenCalled();
     });
   });
 
@@ -185,7 +246,7 @@ describe('CommentService (DEC-020 ownership/moderation)', () => {
       commentRepo.findById = vi.fn().mockResolvedValue(makeComment({ authorId: 'user-1' }));
       projectMemberRepo.findByUserAndProject = vi.fn().mockResolvedValue({ role: 'EDITOR' });
 
-      await service.deleteComment('comment-1', 'user-1', 'MEMBER');
+      await service.deleteComment('comment-1', ctx);
 
       expect(commentRepo.delete).toHaveBeenCalledWith('comment-1');
     });
@@ -194,9 +255,7 @@ describe('CommentService (DEC-020 ownership/moderation)', () => {
       commentRepo.findById = vi.fn().mockResolvedValue(makeComment({ authorId: 'user-2' }));
       projectMemberRepo.findByUserAndProject = vi.fn().mockResolvedValue({ role: 'EDITOR' });
 
-      await expect(service.deleteComment('comment-1', 'user-1', 'MEMBER')).rejects.toThrow(
-        'You can only delete your own comments',
-      );
+      await expect(service.deleteComment('comment-1', ctx)).rejects.toThrow('You can only delete your own comments');
       expect(commentRepo.delete).not.toHaveBeenCalled();
     });
 
@@ -204,7 +263,7 @@ describe('CommentService (DEC-020 ownership/moderation)', () => {
       commentRepo.findById = vi.fn().mockResolvedValue(makeComment({ authorId: 'user-2' }));
       projectMemberRepo.findByUserAndProject = vi.fn().mockResolvedValue({ role: 'PROJECT_ADMIN' });
 
-      await service.deleteComment('comment-1', 'user-1', 'MEMBER');
+      await service.deleteComment('comment-1', ctx);
 
       expect(commentRepo.delete).toHaveBeenCalledWith('comment-1');
     });
@@ -212,7 +271,110 @@ describe('CommentService (DEC-020 ownership/moderation)', () => {
     it('throws NotFoundError when the comment does not exist', async () => {
       commentRepo.findById = vi.fn().mockResolvedValue(null);
 
-      await expect(service.deleteComment('missing', 'user-1', 'OWNER')).rejects.toThrow('Comment not found');
+      await expect(service.deleteComment('missing', { ...ctx, userRole: 'OWNER' })).rejects.toThrow(
+        'Comment not found',
+      );
+    });
+
+    // A comment id from another tenant must be rejected too.
+    it('throws NOT_FOUND for a comment whose task is in another tenant and deletes nothing', async () => {
+      commentRepo.findById = vi.fn().mockResolvedValue(makeComment());
+      projectMemberRepo.findByUserAndProject = vi.fn().mockResolvedValue({ role: 'PROJECT_ADMIN' });
+      projectRepo.findById = vi.fn().mockResolvedValue({ id: 'project-1', tenantId: 'tenant-OTHER' });
+
+      await expect(service.deleteComment('comment-1', ctx)).rejects.toMatchObject({
+        statusCode: 404,
+        code: 'NOT_FOUND',
+      });
+      expect(commentRepo.delete).not.toHaveBeenCalled();
+    });
+
+    it('throws 401 when the caller context is missing (fail closed)', async () => {
+      commentRepo.findById = vi.fn().mockResolvedValue(makeComment());
+
+      await expect(service.deleteComment('comment-1', undefined as never)).rejects.toMatchObject({
+        statusCode: 401,
+        code: 'UNAUTHORIZED',
+      });
+      expect(commentRepo.delete).not.toHaveBeenCalled();
+    });
+
+    it('denies a project VIEWER deleting a comment (403)', async () => {
+      commentRepo.findById = vi.fn().mockResolvedValue(makeComment({ authorId: 'user-1' }));
+      projectMemberRepo.findByUserAndProject = vi.fn().mockResolvedValue({ role: 'VIEWER' });
+
+      await expect(service.deleteComment('comment-1', ctx)).rejects.toMatchObject({
+        statusCode: 403,
+        code: 'FORBIDDEN',
+      });
+      expect(commentRepo.delete).not.toHaveBeenCalled();
+    });
+  });
+  /**
+   * A comment of another tenant must be indistinguishable from a
+   * nonexistent one, down to the error BODY.
+   *
+   * Before, the not-found branch said "Comment not found" and the cross-tenant
+   * branch said "Task not found" (the comment's own task failed the tenant
+   * assert), so the bit the 404 suppresses came back through `message` and any
+   * comment id became a tenant-ownership oracle.
+   */
+  describe('a foreign comment is indistinguishable from a nonexistent one (D-18)', () => {
+    /** The error body a caller would receive, whatever the underlying reason. */
+    async function body(promise: Promise<unknown>): Promise<unknown> {
+      try {
+        await promise;
+
+        return { resolved: true };
+      } catch (error) {
+        const e = error as { statusCode?: number; code?: string; message?: string };
+
+        return { statusCode: e.statusCode, code: e.code, message: e.message };
+      }
+    }
+
+    /** A service whose task belongs to a project of ANOTHER tenant. */
+    function serviceOverAForeignTask() {
+      const foreignProjectRepo = {
+        findById: vi.fn().mockResolvedValue({ id: 'project-2', tenantId: 'tenant-2' }),
+      };
+
+      return {
+        foreignProjectRepo,
+        service: new CommentService(
+          commentRepo,
+          userRepo as never,
+          taskRepo,
+          projectMemberRepo,
+          auditService,
+          foreignProjectRepo as never,
+        ),
+      };
+    }
+
+    it('answers a nonexistent comment and a foreign one with the SAME body', async () => {
+      commentRepo.findById = vi.fn().mockResolvedValue(null);
+
+      const missing = await body(service.deleteComment('comment-missing', ctx));
+
+      commentRepo.findById = vi.fn().mockResolvedValue({ id: 'comment-x', taskId: 'task-x', body: 'b' });
+      taskRepo.findById = vi.fn().mockResolvedValue({ id: 'task-x', projectId: 'project-2' });
+
+      const { service: foreignService } = serviceOverAForeignTask();
+      const foreign = await body(foreignService.deleteComment('comment-x', ctx));
+
+      expect(foreign).toEqual(missing);
+      expect(missing).toMatchObject({ statusCode: 404 });
+    });
+
+    it('still refuses a foreign comment — equality is not bought by removing the check', async () => {
+      commentRepo.findById = vi.fn().mockResolvedValue({ id: 'comment-x', taskId: 'task-x', body: 'b' });
+      taskRepo.findById = vi.fn().mockResolvedValue({ id: 'task-x', projectId: 'project-2' });
+
+      const { service: foreignService } = serviceOverAForeignTask();
+
+      await expect(foreignService.deleteComment('comment-x', ctx)).rejects.toMatchObject({ statusCode: 404 });
+      expect(commentRepo.delete).not.toHaveBeenCalled();
     });
   });
 });

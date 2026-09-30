@@ -9,7 +9,6 @@ node_modules/
 # Build outputs
 dist/
 out/
-.tmp/
 .cache/
 
 # Angular
@@ -49,7 +48,8 @@ Thumbs.db
 # moves for unrelated reasons.
 .harness/state/regress-trials/
 
-# Agent scratch: throwaway analysis, probes and one-off scripts. Never committed.
+# Agent scratch: the single scratch home for throwaway analysis, probes, one-off scripts and Playwright's HTML report
+# output. Never committed.
 .agent-scratch/*
 !.agent-scratch/.gitkeep
 
@@ -68,6 +68,15 @@ coverage/
 ui/test-results/
 playwright-report/
 ui/.playwright/
+
+# Playwright / e2e output (ui/e2e)
+# Without these, every `npm run test:e2e` leaves a 500 KB+ generated HTML/JSON
+# tree that is not code, gets picked up by `eslint .` (prettier/prettier) and
+# inflates the warning count, and shows up as untracked noise in `git status`.
+playwright-report/
+blob-report/
+test-results/
+.playwright/
 
 # OS
 .DS_Store

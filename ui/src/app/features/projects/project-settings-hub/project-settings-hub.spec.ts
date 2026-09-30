@@ -1,6 +1,6 @@
 import { firstValueFrom } from 'rxjs';
 /**
- * Tests for the ProjectSettingsHub (DEC-035).
+ * Tests for the ProjectSettingsHub.
  *
  * Covers:
  * - Admin sees all settings links (General/Types/Statuses/Labels/Boards/Danger Zone)

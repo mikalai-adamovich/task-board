@@ -2,8 +2,10 @@ import { BaseRepository } from './base.repository.js';
 import { randomUUID } from 'node:crypto';
 import type { Document } from 'mongodb';
 import { BOARD_PAGE_SIZE } from '@task-board/shared';
-import type { Task, IdentitySnapshot, BoardPageCursor, TaskPriorityLevel } from '@task-board/shared';
+import type { Task, IdentitySnapshot, BoardPageCursor, TaskPriorityLevel, SortDirection } from '@task-board/shared';
 import { escapeRegExp } from '../utils/regex.js';
+import { toPlainText } from '../utils/markdown-plain-text.js';
+import { QUERY_MAX_TIME_MS_BOARD, QUERY_MAX_TIME_MS_LIST } from '../db/query-timeout.js';
 
 // Required MongoDB indexes:
 // - { id: 1 } (unique)
@@ -19,10 +21,11 @@ import { escapeRegExp } from '../utils/regex.js';
 // - { assigneeId: 1, updatedAt: -1 } (cross-project /tasks/my — audit #3)
 // - { projectId: 1, statusName: 1, number: -1 } (TOP-2 semantic sort)
 // - { projectId: 1, sprintName: 1, number: -1 } (TOP-2 semantic sort)
+// - { projectId: 1, typeId: 1 }                (countByType)
 
 /** Sort fields that require resolving relation names / snapshots before sorting. */
 /**
- * TOP-2: `statusId`/`sprintId` sorts moved OFF the aggregation pipeline — the
+ * `statusId`/`sprintId` sorts moved OFF the aggregation pipeline — the
  * denormalized `statusName`/`sprintName` fields are plain indexed document
  * keys now (see SEMANTIC_TO_DOC_KEY). Only `labelIds` still needs the
  * $lookup pipeline (alphabetically-first label of a task's label set is not
@@ -47,10 +50,26 @@ export interface TaskDocument {
   typeId: string;
   title: string;
   description: string | null;
+  /**
+   * The PLAIN-TEXT PROJECTION of {@link description}.
+   *
+   * `description` is always Markdown (the editor's contract, unchanged). Search
+   * used to compile its regex over the Markdown source, so a hit was syntax the
+   * user could not see and the prose they could see was not matchable. This field
+   * is the text as rendered, written on EVERY save by this repository (see
+   * `create` / `updateWithVersion`) so no write path can forget it.
+   *
+   * NOT part of the `Task` domain type and NOT returned by any query: it is a
+   * server-side search index, excluded from the board and lightweight projections
+   * exactly like `description` itself. A document written before this field
+   * existed carries no projection at all; `backfillTaskDescriptionText` in
+   * `db/migrations.ts` fills those in.
+   */
+  descriptionText?: string | null;
   statusId: string;
-  /** TOP-2: denormalized status name — sort-only, synced by status mutations */
+  /** Denormalized status name — sort-only, synced by status mutations */
   statusName: string | null;
-  /** TOP-2: denormalized sprint name — sort-only, synced by sprint mutations */
+  /** Denormalized sprint name — sort-only, synced by sprint mutations */
   sprintName: string | null;
   priorityLevel: number;
   reporterId: string | null;
@@ -88,37 +107,53 @@ export type TaskUpdatePayload = Partial<
 
 // ─── Filter Types ────────────────────────────────────────────────────────────
 
+/**
+ * Filter/pagination options for the task list — mirrors the (Zod-validated)
+ * output of `TaskQuerySchema`.
+ *
+ * Every optional field carries `| undefined` because the route forwards the
+ * parsed query object verbatim and `exactOptionalPropertyTypes` distinguishes
+ * "key absent" from "key present and undefined". `sort.direction` is the shared
+ * {@link SortDirection} instead of a hand-copied union.
+ */
 export interface TaskQueryOptions {
-  page?: number;
-  limit?: number;
-  sort?: { field: string; direction: 'asc' | 'desc' };
-  statusId?: string;
-  priorityLevel?: number;
-  typeId?: string;
-  assigneeId?: string;
-  reporterId?: string;
-  sprintId?: string;
-  labelId?: string;
-  search?: string;
-  /** Q13/F-01: inclusive ISO date (`YYYY-MM-DD`) range filters */
-  createdFrom?: string;
-  createdTo?: string;
-  updatedFrom?: string;
-  updatedTo?: string;
+  page?: number | undefined;
+  limit?: number | undefined;
+  sort?: { field: string; direction: SortDirection } | undefined;
+  statusId?: string | undefined;
+  priorityLevel?: number | undefined;
+  typeId?: string | undefined;
+  assigneeId?: string | undefined;
+  reporterId?: string | undefined;
+  sprintId?: string | undefined;
   /**
-   * F5 (perf audit #2): omit `description` from the returned documents.
+   * Tri-state "has a sprint" filter, mirroring `TaskQuerySchema.hasSprint`.
+   * `undefined` → no sprint filtering; `false` → only tasks with
+   * `sprintId === null` (the backlog); `true` → only tasks in some sprint.
+   * Mutually exclusive with `sprintId` (validated at the schema edge).
+   */
+  hasSprint?: boolean | undefined;
+  labelId?: string | undefined;
+  search?: string | undefined;
+  /** Inclusive ISO date (`YYYY-MM-DD`) range filters */
+  createdFrom?: string | undefined;
+  createdTo?: string | undefined;
+  updatedFrom?: string | undefined;
+  updatedTo?: string | undefined;
+  /**
+   * Omit `description` from the returned documents.
    * List consumers that never render the description (task table, widgets)
    * use this to cut ~40% of the response payload. Server-side description
    * search/filtering is unaffected.
    */
-  excludeDescription?: boolean;
+  excludeDescription?: boolean | undefined;
   /**
    * Board view: lightweight card projection — the returned documents carry
    * only the fields the board UI reads (id/number/title/typeId/statusId/
    * priority/assignee + snapshot, version for optimistic DnD). Exclusion
    * projection: applied after matching, so filters are unaffected.
    */
-  view?: 'board';
+  view?: 'board' | undefined;
 }
 
 /**
@@ -128,6 +163,10 @@ export interface TaskQueryOptions {
  */
 const BOARD_VIEW_EXCLUDED_FIELDS = [
   'description',
+  // The plain-text projection is a copy of the description, so a board card
+  // that excluded the description but carried the projection would still ship the
+  // whole body — the exact payload regression F5 removed.
+  'descriptionText',
   'projectId',
   'reporterId',
   'reporterSnapshot',
@@ -156,10 +195,12 @@ export interface BoardPageOptions {
   /** Column statuses — matched with `$in` (one column may group several). */
   statusIds: string[];
   /** Resume key of the last loaded card; absent for the first page. */
-  cursor?: BoardPageCursor | null;
-  sprintId?: string;
-  assigneeId?: string;
-  priorityLevel?: number;
+  cursor?: BoardPageCursor | null | undefined;
+  // The board route forwards the parsed `BoardQuerySchema` object, whose
+  // absent filters are explicit `undefined`s.
+  sprintId?: string | undefined;
+  assigneeId?: string | undefined;
+  priorityLevel?: number | undefined;
 }
 
 /** One board column page — fixed `BOARD_PAGE_SIZE`, probe-derived `hasMore`. */
@@ -217,13 +258,24 @@ export class TaskRepository extends BaseRepository<TaskDocument, Task> {
    * and snapshots are the bulk of a full task document); the server-side sort
    * by `updatedAt` is unchanged. Requires the `{ assigneeId: 1, updatedAt: -1 }`
    * index (see migrations) — without it this query is a COLLSCAN.
+   *
+   * `projectIds` is REQUIRED and is the membership scope: the caller may
+   * only see tasks in projects of tenants they currently hold an ACTIVE
+   * membership in. Passing an empty array returns nothing — there is no call
+   * shape in which a user id alone reaches a task.
    */
-  async findAssignedTo(userId: string, limit = 50): Promise<Task[]> {
+  async findAssignedTo(userId: string, projectIds: readonly string[], limit = 50): Promise<Task[]> {
+    // The query is scoped by the caller's MEMBERSHIP, not by the user id
+    // alone. `projectIds` is the set the caller may currently read, resolved by
+    // the service from their tenant memberships; an empty set is a closed door
+    // (`$in: []` matches nothing), so a caller with no membership cannot reach a
+    // document through this method at all. The `{assigneeId, updatedAt}` index
+    // still applies — `assigneeId` remains the equality prefix.
     const docs = await this.collection
       // createdAt/updatedAt are required by toDomain (toISOString) — and
       // updatedAt is the sort key anyway.
       .find(
-        { assigneeId: userId },
+        { assigneeId: userId, projectId: { $in: projectIds } },
         {
           projection: {
             id: 1,
@@ -234,6 +286,9 @@ export class TaskRepository extends BaseRepository<TaskDocument, Task> {
             createdAt: 1,
             updatedAt: 1,
           },
+          // Cross-project — the range grows with every assignment the user
+          // ever has, so the query is not bounded by any single project's size.
+          maxTimeMS: QUERY_MAX_TIME_MS_LIST,
         },
       )
       .sort({ updatedAt: -1 })
@@ -263,6 +318,7 @@ export class TaskRepository extends BaseRepository<TaskDocument, Task> {
       assigneeId,
       reporterId,
       sprintId,
+      hasSprint,
       labelId,
       search,
       createdFrom,
@@ -279,10 +335,16 @@ export class TaskRepository extends BaseRepository<TaskDocument, Task> {
     if (typeId) query.typeId = typeId;
     if (assigneeId) query.assigneeId = assigneeId;
     if (reporterId) query.reporterId = reporterId;
+    // The sprint filter has two mutually exclusive shapes — an exact sprint
+    // id, or the tri-state "has a sprint" flag. `sprintId: null` is the equality
+    // match on the stored null and is served by the existing
+    // `{projectId, sprintId, number}` index, so the backlog query stays indexed.
     if (sprintId) query.sprintId = sprintId;
+    else if (hasSprint === false) query.sprintId = null;
+    else if (hasSprint === true) query.sprintId = { $ne: null };
     if (labelId) query.labelIds = labelId;
 
-    // Q13/F-01: inclusive date-range filters (ISO dates → Date boundaries).
+    // Inclusive date-range filters (ISO dates → Date boundaries).
     // `{ projectId, createdAt: -1 }` / `{ projectId, updatedAt: -1 }` indexes cover these.
     if (createdFrom || createdTo) {
       query.createdAt = {
@@ -301,9 +363,25 @@ export class TaskRepository extends BaseRepository<TaskDocument, Task> {
       // Escape user input — raw input is compiled as a regex (ReDoS / 500 on invalid patterns)
       const regex = { $regex: escapeRegExp(search), $options: 'i' };
 
+      // The description branch matches the PLAIN-TEXT PROJECTION, not
+      // the Markdown source. `description` is still Markdown (the editor's
+      // contract), so matching it made `**bold**` findable and `bold text` — the
+      // phrase on screen — not; the Markdown punctuation was itself matchable
+      // content. A hit is now always text a reader can see.
+      //
+      // The second description branch is a TRANSITIONAL safety net, not a second
+      // contract: a document written before the projection existed carries no
+      // `descriptionText`, and `backfillTaskDescriptionText` (db/migrations.ts)
+      // fills those in before the next deploy. Matching a missing projection on
+      // the source is strictly better than a task that became unsearchable in the
+      // window between the code shipping and the backfill running, and it is
+      // bounded by that backfill. Delete this branch when the backfill has run
+      // everywhere; the guardrail in `task-search-projection.guardrail.test.ts`
+      // is what keeps the primary branch honest in the meantime.
       query.$or = [
         { title: regex },
-        { description: regex },
+        { descriptionText: regex },
+        { description: regex, descriptionText: { $exists: false } },
         { 'createdBySnapshot.displayName': regex },
         { 'assigneeSnapshot.displayName': regex },
         { 'reporterSnapshot.displayName': regex },
@@ -321,12 +399,17 @@ export class TaskRepository extends BaseRepository<TaskDocument, Task> {
       if (view === 'board') {
         pipeline.push({ $unset: [...BOARD_VIEW_EXCLUDED_FIELDS] } as unknown as Document);
       } else if (excludeDescription) {
-        pipeline.push({ $unset: 'description' });
+        // The projection is excluded with the description — omitting it here
+        // would ship the whole body to a caller that asked not to receive it.
+        pipeline.push({ $unset: ['description', 'descriptionText'] });
       }
 
+      // The `labelIds` semantic sort is an unavoidable blocking SORT over
+      // the whole project — the one pipeline here with no index
+      // that can serve it, so it carries the same generous budget as the find.
       const [docs, total] = await Promise.all([
-        this.collection.aggregate<TaskDocument>(pipeline).toArray(),
-        this.collection.countDocuments(query),
+        this.collection.aggregate<TaskDocument>(pipeline, { maxTimeMS: QUERY_MAX_TIME_MS_LIST }).toArray(),
+        this.collection.countDocuments(query, { maxTimeMS: QUERY_MAX_TIME_MS_LIST }),
       ]);
 
       return {
@@ -345,10 +428,11 @@ export class TaskRepository extends BaseRepository<TaskDocument, Task> {
     if (view === 'board') {
       findOptions = { projection: Object.fromEntries(BOARD_VIEW_EXCLUDED_FIELDS.map((field) => [field, 0])) };
     } else if (excludeDescription) {
-      findOptions = { projection: { description: 0 } };
+      // The projection travels with the description out of the response.
+      findOptions = { projection: { description: 0, descriptionText: 0 } };
     }
 
-    // TOP-2: statusId/sprintId sorts map to their denormalized name fields —
+    // statusId/sprintId sorts map to their denormalized name fields —
     // plain indexed sorts, no aggregation pipeline.
     // `priority` remains the public sort key (URL state / saved filters);
     // it maps to the numeric `priorityLevel` document field.
@@ -364,9 +448,19 @@ export class TaskRepository extends BaseRepository<TaskDocument, Task> {
     const sortSpec: Record<string, 1 | -1> = ALIGNED_TIEBREAKER_FIELDS.has(sortField)
       ? { [docSortKey]: sortDir, number: sortDir }
       : { [docSortKey]: sortDir, number: -1 };
+    // `maxTimeMS` on BOTH halves of the pair. The `search` shape ($or of
+    // five regexes over the whole {projectId} range) is the single most
+    // expensive query in the app (measured 728–766 ms + 351 ms count on a
+    // 25k-task project); the budget aborts it server-side instead of letting it
+    // burn the Worker's CPU. See db/query-timeout.ts for the value rationale.
     const [docs, total] = await Promise.all([
-      this.collection.find(query, findOptions).sort(sortSpec).skip(skip).limit(limit).toArray(),
-      this.collection.countDocuments(query),
+      this.collection
+        .find(query, { ...findOptions, maxTimeMS: QUERY_MAX_TIME_MS_LIST })
+        .sort(sortSpec)
+        .skip(skip)
+        .limit(limit)
+        .toArray(),
+      this.collection.countDocuments(query, { maxTimeMS: QUERY_MAX_TIME_MS_LIST }),
     ]);
 
     return {
@@ -412,8 +506,14 @@ export class TaskRepository extends BaseRepository<TaskDocument, Task> {
     if (assigneeId) query.assigneeId = assigneeId;
     if (priorityLevel !== undefined) query.priorityLevel = priorityLevel;
 
+    // Keyset pagination bounds `keysExamined` by the COLUMN size rather
+    // than by scroll depth, so this path is cheap by construction — it gets the
+    // tighter board budget as a backstop, not as a fix.
     const docs = await this.collection
-      .find(query, { projection: Object.fromEntries(BOARD_VIEW_EXCLUDED_FIELDS.map((field) => [field, 0])) })
+      .find(query, {
+        projection: Object.fromEntries(BOARD_VIEW_EXCLUDED_FIELDS.map((field) => [field, 0])),
+        maxTimeMS: QUERY_MAX_TIME_MS_BOARD,
+      })
       .sort({ priorityLevel: -1, number: 1 })
       .limit(BOARD_PAGE_SIZE + 1)
       .toArray();
@@ -502,17 +602,20 @@ export class TaskRepository extends BaseRepository<TaskDocument, Task> {
     number: number;
     typeId: string;
     title: string;
-    description?: string;
+    // `| undefined` on every optional field — the service forwards the
+    // validated `CreateTask` body plus server-resolved snapshots, and
+    // `exactOptionalPropertyTypes` requires the distinction to be explicit.
+    description?: string | undefined;
     statusId: string;
-    statusName?: string | null;
-    sprintName?: string | null;
+    statusName?: string | null | undefined;
+    sprintName?: string | null | undefined;
     priorityLevel: number;
-    reporterId?: string;
-    reporterSnapshot?: IdentitySnapshot;
-    assigneeId?: string;
-    assigneeSnapshot?: IdentitySnapshot;
-    sprintId?: string;
-    labelIds?: string[];
+    reporterId?: string | undefined;
+    reporterSnapshot?: IdentitySnapshot | undefined;
+    assigneeId?: string | undefined;
+    assigneeSnapshot?: IdentitySnapshot | undefined;
+    sprintId?: string | undefined;
+    labelIds?: string[] | undefined;
     createdById: string;
     createdBySnapshot: IdentitySnapshot;
   }): Promise<Task> {
@@ -524,6 +627,10 @@ export class TaskRepository extends BaseRepository<TaskDocument, Task> {
       typeId: input.typeId,
       title: input.title,
       description: input.description ?? null,
+      // The plain-text projection is derived HERE, in the repository, not in
+      // the service — so no create path (including the numbering-retry loop, which
+      // re-enters this method) can produce a task that search cannot read.
+      descriptionText: toPlainText(input.description),
       statusId: input.statusId,
       statusName: input.statusName ?? null,
       sprintName: input.sprintName ?? null,
@@ -549,12 +656,26 @@ export class TaskRepository extends BaseRepository<TaskDocument, Task> {
    * Atomic update with optimistic concurrency check.
    * Uses findOneAndUpdate with version check + $inc.
    * Returns null if version mismatch (concurrent modification).
+   *
+   * When the payload carries a `description`, the plain-text projection is
+   * re-derived HERE rather than by the caller. The rule "the projection is a
+   * function of the description, never a separate user input" is what makes the
+   * two fields unable to drift: a service that forgets to set the projection
+   * cannot leave a stale one behind, because this method overwrites it from the
+   * only source of truth. A payload WITHOUT a description leaves the stored
+   * projection untouched, exactly as it leaves the description untouched.
    */
   async updateWithVersion(id: string, currentVersion: number, update: TaskUpdatePayload): Promise<Task | null> {
+    const $set: Record<string, unknown> = { ...update };
+
+    if (update.description !== undefined) {
+      $set.descriptionText = toPlainText(update.description);
+    }
+
     const result = await this.collection.findOneAndUpdate(
       { id, version: currentVersion },
       {
-        $set: { ...update, updatedAt: new Date() },
+        $set: { ...$set, updatedAt: new Date() },
         $inc: { version: 1 },
       },
       { returnDocument: 'after' },
@@ -567,20 +688,22 @@ export class TaskRepository extends BaseRepository<TaskDocument, Task> {
    * Count tasks with a given status in a project.
    */
   async countByStatus(projectId: string, statusId: string): Promise<number> {
-    return this.collection.countDocuments({ projectId, statusId });
+    return this.collection.countDocuments({ projectId, statusId }, { maxTimeMS: QUERY_MAX_TIME_MS_LIST });
   }
 
   /**
-   * S-05: per-status task counts in ONE `$match` + `$group` aggregation
+   * Per-status task counts in ONE `$match` + `$group` aggregation
    * (used by the project-overview status summary — replaces one
    * `countDocuments` per status).
    */
   async countByStatusGrouped(projectId: string): Promise<{ statusId: string; count: number }[]> {
     const rows = await this.collection
-      .aggregate<{ _id: string; count: number }>([
-        { $match: { projectId } },
-        { $group: { _id: '$statusId', count: { $sum: 1 } } },
-      ])
+      .aggregate<{ _id: string; count: number }>(
+        [{ $match: { projectId } }, { $group: { _id: '$statusId', count: { $sum: 1 } } }],
+        // The group produces one key per status in the project — 25,250
+        // keys on the audit's skew project — so this is a full-range read.
+        { maxTimeMS: QUERY_MAX_TIME_MS_LIST },
+      )
       .toArray();
 
     return rows.map((row) => ({ statusId: row._id, count: row.count }));
@@ -619,10 +742,21 @@ export class TaskRepository extends BaseRepository<TaskDocument, Task> {
     if (entries.length === 0) return [];
 
     const now = new Date();
+    // The same rule as `updateWithVersion` — a payload carrying a
+    // `description` re-derives the projection. Today's bulk schema admits only
+    // status/assignee/sprint, so this is defensive rather than load-bearing; it is
+    // here so widening that schema cannot silently produce a task whose stored
+    // description and search index disagree.
+    const $set: Record<string, unknown> = { ...update };
+
+    if (update.description !== undefined) {
+      $set.descriptionText = toPlainText(update.description);
+    }
+
     const ops = entries.map((entry) => ({
       updateOne: {
         filter: { id: entry.id, version: entry.version },
-        update: { $set: { ...update, updatedAt: now }, $inc: { version: 1 } },
+        update: { $set: { ...$set, updatedAt: now }, $inc: { version: 1 } },
       },
     }));
 
@@ -635,12 +769,12 @@ export class TaskRepository extends BaseRepository<TaskDocument, Task> {
     return updatedDocs.map(toDomain);
   }
 
-  /** TOP-2: propagate a status rename to all tasks holding the status. */
+  /** Propagate a status rename to all tasks holding the status. */
   async setStatusNameForTasks(projectId: string, statusId: string, statusName: string): Promise<void> {
     await this.collection.updateMany({ projectId, statusId }, { $set: { statusName, updatedAt: new Date() } });
   }
 
-  /** TOP-2: propagate a sprint rename to all tasks holding the sprint. */
+  /** Propagate a sprint rename to all tasks holding the sprint. */
   async setSprintNameForTasks(projectId: string, sprintId: string, sprintName: string): Promise<void> {
     await this.collection.updateMany({ projectId, sprintId }, { $set: { sprintName, updatedAt: new Date() } });
   }
@@ -649,7 +783,7 @@ export class TaskRepository extends BaseRepository<TaskDocument, Task> {
    * Count tasks with a given type in a project.
    */
   async countByType(projectId: string, typeId: string): Promise<number> {
-    return this.collection.countDocuments({ projectId, typeId });
+    return this.collection.countDocuments({ projectId, typeId }, { maxTimeMS: QUERY_MAX_TIME_MS_LIST });
   }
 
   /**
@@ -691,7 +825,11 @@ export class TaskRepository extends BaseRepository<TaskDocument, Task> {
    * the tasks themselves are removed.
    */
   async findIdsByProject(projectId: string): Promise<string[]> {
-    const docs = await this.collection.find({ projectId }, { projection: { id: 1, _id: 0 } }).toArray();
+    // Unbounded id-only scan of the whole project (25,250 keys on the
+    // audit's skew project) feeding the cascade-delete $in.
+    const docs = await this.collection
+      .find({ projectId }, { projection: { id: 1, _id: 0 }, maxTimeMS: QUERY_MAX_TIME_MS_LIST })
+      .toArray();
 
     return docs.map((doc) => doc.id);
   }

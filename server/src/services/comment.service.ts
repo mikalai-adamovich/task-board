@@ -2,7 +2,8 @@ import type { Comment, CreateComment, UpdateComment, IdentitySnapshot } from '@t
 import { ForbiddenError, NotFoundError } from '../errors/app-error.js';
 import { CommentRepository } from '../repositories/comment.repository.js';
 import { ensurePermission, rbacService } from './rbac.service.js';
-import { assertTenantEntity } from './tenant-assert.js';
+import { assertProjectInTenant, requireCallerContext, type CallerContext } from './tenant-assert.js';
+import { assertProjectAcceptsWrites, type WriteGuardedProject } from './project-write-guard.js';
 import type { AuditService } from './audit.service.js';
 
 export interface CommentServiceUserRepo {
@@ -19,136 +20,180 @@ export interface CommentServiceProjectMemberRepo {
   findByUserAndProject(userId: string, projectId: string): Promise<{ role: string } | null>;
 }
 
-/** Minimal project repository interface to resolve a task's tenant (M-02) */
+/**
+ * Minimal project repository interface to resolve a task's tenant.
+ *
+ * `status` is part of the projection because the write seam needs it: a comment is written
+ * against a task, so the write rule is a question about the task's OWNING
+ * project, and the tenant assertion already performed this lookup.
+ */
 export interface CommentServiceProjectRepo {
-  findById(id: string): Promise<{ tenantId: string } | null>;
+  findById(id: string): Promise<({ tenantId: string } & WriteGuardedProject) | null>;
 }
 
+/**
+ * The ONE message a comment-addressed route answers with, whether the id
+ * does not exist, belongs to another tenant, or names a task that does.
+ */
+const COMMENT_NOT_FOUND = 'Comment not found';
+
 export class CommentService {
+  /**
+   * Every dependency is REQUIRED: an absent project/task repository means
+   * "cannot prove tenant ownership", which must fail closed (404) rather than
+   * silently skip the assertion. The parameter order is unchanged from the
+   * pre-audit signature so `container.ts` needs no wiring change.
+   */
   constructor(
     private readonly commentRepo: CommentRepository,
     private readonly userRepo: CommentServiceUserRepo,
-    private readonly taskRepo?: CommentServiceTaskRepo,
-    private readonly projectMemberRepo?: CommentServiceProjectMemberRepo,
-    private readonly auditService?: AuditService,
-    private readonly projectRepo?: CommentServiceProjectRepo,
+    private readonly taskRepo: CommentServiceTaskRepo,
+    private readonly projectMemberRepo: CommentServiceProjectMemberRepo,
+    private readonly auditService: AuditService,
+    private readonly projectRepo: CommentServiceProjectRepo,
   ) {}
 
-  async getCommentsByTask(taskId: string, tenantId: string): Promise<Comment[]> {
-    const task = await this.requireTask(taskId);
-
-    // M-02: a bare task id must never cross tenant boundaries (404, not 403)
-    await assertTenantEntity(this.projectRepo, task.projectId, tenantId, 'Task');
-
-    return this.commentRepo.findByTask(taskId);
-  }
+  // ─── Tenant / project scope ───────────────────────────────────────────────
 
   /**
-   * M-06: resolve the task a create-route addresses so the route can build the
-   * audit context (`{ tenantId, projectId }`) from the comment service's own
-   * task repo — no duplicate fetch through a different service.
+   * A bare task id must never cross tenant boundaries. The task is
+   * resolved first and its owning project is asserted against the caller's
+   * tenant (404, not 403) BEFORE any comment is read or written.
+   *
+   * @returns the resolved task so callers can audit-log without a second fetch.
    */
-  async resolveTask(taskId: string): Promise<{ id: string; projectId: string }> {
-    return this.requireTask(taskId);
-  }
-
-  /**
-   * M-06: resolve the owning task of a comment so the update/delete routes
-   * (which address comments by id) can build the audit context.
-   */
-  async resolveTaskForComment(commentId: string): Promise<{ id: string; projectId: string }> {
-    const comment = await this.commentRepo.findById(commentId);
-
-    if (!comment) {
-      throw new NotFoundError('Comment not found');
-    }
-
-    return this.requireTask(comment.taskId);
-  }
-
-  /** Fetch the owning task or 404 — comments never exist without their task. */
-  private async requireTask(taskId: string): Promise<{ id: string; projectId: string }> {
-    if (!this.taskRepo) {
-      throw new NotFoundError('Task not found');
-    }
-
+  private async requireTaskInTenant(
+    taskId: string,
+    context: CallerContext,
+  ): Promise<{ tenantId: string } & WriteGuardedProject & { id: string; projectId: string }> {
+    const { tenantId } = requireCallerContext(context);
     const task = await this.taskRepo.findById(taskId);
 
     if (!task) {
       throw new NotFoundError('Task not found');
     }
 
+    const project = await assertProjectInTenant(this.projectRepo, task.projectId, tenantId, 'Task');
+
+    return { ...project, ...task };
+  }
+
+  /**
+   * The WRITE variant of {@link requireTaskInTenant}. A comment is written
+   * against a TASK, so the write rule is about the task's OWNING project — the
+   * one that is scheduled for deletion. The read variant above is shared by
+   * `getCommentsByTask` and the writes, so the rule cannot live in it; every
+   * write method routes through this instead.
+   */
+  private async requireWritableTaskInTenant(
+    taskId: string,
+    context: CallerContext,
+  ): Promise<{ tenantId: string } & WriteGuardedProject & { id: string; projectId: string }> {
+    const task = await this.requireTaskInTenant(taskId, context);
+
+    assertProjectAcceptsWrites(task, 'Task');
+
     return task;
   }
 
-  async createComment(
-    taskId: string,
-    authorId: string,
-    input: CreateComment,
-    auditContext?: { tenantId: string; projectId: string },
-    userRole?: string,
-  ): Promise<Comment> {
-    // V2-4: Viewers are read-only — gate creation through the RBAC matrix
-    // (create_comment allows PROJECT_ADMIN/EDITOR; tenant Owner/Admin bypass).
-    if (userRole) {
-      // M-06: when the route supplied the audit context, reuse its projectId —
-      // no duplicate task fetch for the role resolution.
-      const projectRole = await this.resolveCallerProjectRole(taskId, authorId, auditContext?.projectId);
+  /**
+   * The comment is addressed by a bare id, so its owning task is
+   * resolved and tenant-asserted before any authorization decision is made.
+   *
+   * A `Comment` document carries no `projectId` of its own — the audit/role
+   * context is inherited from the resolved task, hence the explicit spread.
+   */
+  private async requireCommentInTenant(
+    commentId: string,
+    context: CallerContext,
+  ): Promise<Comment & { projectId: string; tenantId: string }> {
+    requireCallerContext(context);
 
-      ensurePermission('create_comment', userRole, projectRole);
+    const comment = await this.commentRepo.findById(commentId);
+
+    if (!comment) {
+      throw new NotFoundError(COMMENT_NOT_FOUND);
     }
 
-    const authorSnapshot = await this.captureIdentitySnapshot(authorId);
+    // The task resolution below 404s with the TASK's name ("Task not
+    // found"). On a comment-addressed route the entity being addressed is the
+    // COMMENT, so a comment belonging to another tenant answered differently
+    // from a nonexistent one — the bit the 404 suppresses came back through
+    // `message`, and any comment id became a tenant-ownership oracle. Re-raise
+    // with the one message this route may answer, whatever the real reason was.
+    try {
+      const task = await this.requireTaskInTenant(comment.taskId, context);
+
+      return { ...comment, projectId: task.projectId, tenantId: task.tenantId };
+    } catch (error) {
+      if (error instanceof NotFoundError) {
+        throw new NotFoundError(COMMENT_NOT_FOUND);
+      }
+
+      throw error;
+    }
+  }
+
+  async getCommentsByTask(taskId: string, context: CallerContext): Promise<Comment[]> {
+    await this.requireTaskInTenant(taskId, context);
+
+    return this.commentRepo.findByTask(taskId);
+  }
+
+  async createComment(taskId: string, input: CreateComment, context: CallerContext): Promise<Comment> {
+    const { userId } = requireCallerContext(context);
+    const task = await this.requireWritableTaskInTenant(taskId, context);
+    // V2-4: Viewers are read-only — gate creation through the RBAC matrix
+    // (create_comment allows PROJECT_ADMIN/EDITOR; tenant Owner/Admin bypass).
+    const projectRole = await this.resolveCallerProjectRole(task.projectId, userId);
+
+    ensurePermission('create_comment', context.userRole, projectRole);
+
+    const authorSnapshot = await this.captureIdentitySnapshot(userId);
     const comment = await this.commentRepo.create({
       taskId,
-      authorId,
+      authorId: userId,
       authorSnapshot,
       body: input.body,
     });
 
     // Audit side effect
-    if (this.auditService && auditContext) {
+    if (this.auditService) {
       await this.auditService.log({
-        tenantId: auditContext.tenantId,
-        projectId: auditContext.projectId,
+        tenantId: task.tenantId,
+        projectId: task.projectId,
         entityType: 'COMMENT',
         entityId: comment.id,
         action: 'CREATED',
-        actorId: authorId,
+        actorId: userId,
       });
     }
 
     return comment;
   }
 
-  async updateComment(
-    commentId: string,
-    userId: string,
-    userRole: string,
-    input: UpdateComment,
-    auditContext?: { tenantId: string; projectId: string },
-  ): Promise<Comment> {
-    const comment = await this.commentRepo.findById(commentId);
+  async updateComment(commentId: string, input: UpdateComment, context: CallerContext): Promise<Comment> {
+    const { userId, userRole } = requireCallerContext(context);
+    const comment = await this.requireCommentInTenant(commentId, context);
 
-    if (!comment) {
-      throw new NotFoundError('Comment not found');
-    }
+    // The same read-only rule as every other project-scoped write.
+    assertProjectAcceptsWrites(await this.projectRepo.findById(comment.projectId), 'Task');
 
-    // DEC-020: base permission first, then ownership — Editors edit only their own
+    // Base permission first, then ownership — Editors edit only their own
     // comments; Project Admin+ (and tenant Owner/Admin bypass) may moderate any.
-    await this.ensureCommentAccess(comment, userId, userRole, 'edit_comment', 'edit', auditContext?.projectId);
+    await this.ensureCommentAccess(comment, userId, userRole, 'edit_comment', 'edit');
 
     const updated = await this.commentRepo.update(commentId, { body: input.body });
 
     if (!updated) {
-      throw new NotFoundError('Comment not found');
+      throw new NotFoundError(COMMENT_NOT_FOUND);
     }
 
     // Audit side effect
-    if (this.auditService && auditContext) {
+    if (this.auditService) {
       await this.auditService.log({
-        tenantId: auditContext.tenantId,
-        projectId: auditContext.projectId,
+        tenantId: comment.tenantId,
+        projectId: comment.projectId,
         entityType: 'COMMENT',
         entityId: commentId,
         action: 'UPDATED',
@@ -160,27 +205,22 @@ export class CommentService {
     return updated;
   }
 
-  async deleteComment(
-    commentId: string,
-    userId: string,
-    userRole: string,
-    auditContext?: { tenantId: string; projectId: string },
-  ): Promise<void> {
-    const comment = await this.commentRepo.findById(commentId);
+  async deleteComment(commentId: string, context: CallerContext): Promise<void> {
+    const { userId, userRole } = requireCallerContext(context);
+    const comment = await this.requireCommentInTenant(commentId, context);
 
-    if (!comment) {
-      throw new NotFoundError('Comment not found');
-    }
+    // The same read-only rule as every other project-scoped write.
+    assertProjectAcceptsWrites(await this.projectRepo.findById(comment.projectId), 'Task');
 
-    // DEC-020: base permission first, then ownership — Editors delete only their own
+    // Base permission first, then ownership — Editors delete only their own
     // comments; Project Admin+ (and tenant Owner/Admin bypass) may moderate any.
-    await this.ensureCommentAccess(comment, userId, userRole, 'delete_comment', 'delete', auditContext?.projectId);
+    await this.ensureCommentAccess(comment, userId, userRole, 'delete_comment', 'delete');
 
     // Audit side effect (before delete)
-    if (this.auditService && auditContext) {
+    if (this.auditService) {
       await this.auditService.log({
-        tenantId: auditContext.tenantId,
-        projectId: auditContext.projectId,
+        tenantId: comment.tenantId,
+        projectId: comment.projectId,
         entityType: 'COMMENT',
         entityId: commentId,
         action: 'DELETED',
@@ -197,16 +237,18 @@ export class CommentService {
    * 2. Non-authors need moderation rights — evaluated through the RBAC matrix at
    *    PROJECT_ADMIN level so tenant Owner/Admin bypass applies without ad-hoc
    *    role comparisons.
+   *
+   * The caller's project role is resolved from the ALREADY tenant-asserted
+   * task, so a foreign comment can never reach this point.
    */
   private async ensureCommentAccess(
-    comment: Pick<Comment, 'taskId' | 'authorId'>,
+    comment: Pick<Comment, 'taskId' | 'authorId'> & { projectId: string },
     userId: string,
     userRole: string,
     action: 'edit_comment' | 'delete_comment',
     verb: string,
-    knownProjectId?: string,
   ): Promise<void> {
-    const projectRole = await this.resolveCallerProjectRole(comment.taskId, userId, knownProjectId);
+    const projectRole = await this.resolveCallerProjectRole(comment.projectId, userId);
 
     // Base permission: Editors+ may act on comments (Viewers denied)
     ensurePermission(action, userRole, projectRole);
@@ -221,35 +263,11 @@ export class CommentService {
   }
 
   /**
-   * Resolve the caller's project role via task → project membership.
-   * `knownProjectId` (M-06) lets callers that already resolved the task skip
-   * the redundant fetch.
+   * Resolve the caller's project role from an already tenant-asserted projectId.
+   * A missing membership yields `null`, which the RBAC matrix treats as
+   * "no project access" (denied unless the tenant role bypasses).
    */
-  private async resolveCallerProjectRole(
-    taskId: string,
-    userId: string,
-    knownProjectId?: string,
-  ): Promise<string | null> {
-    if (!this.projectMemberRepo) {
-      return null;
-    }
-
-    let projectId = knownProjectId;
-
-    if (!projectId) {
-      if (!this.taskRepo) {
-        return null;
-      }
-
-      const task = await this.taskRepo.findById(taskId);
-
-      if (!task) {
-        return null;
-      }
-
-      projectId = task.projectId;
-    }
-
+  private async resolveCallerProjectRole(projectId: string, userId: string): Promise<string | null> {
     const membership = await this.projectMemberRepo.findByUserAndProject(userId, projectId);
 
     return membership?.role ?? null;

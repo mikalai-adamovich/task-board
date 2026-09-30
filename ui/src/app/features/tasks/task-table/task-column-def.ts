@@ -3,13 +3,13 @@ import { TASK_TABLE_PINNED_COLUMNS } from '@task-board/shared';
 import type { SelectOption } from '@stores/project-ref-store';
 
 /**
- * M-13 (4.2): column definition shared between the TaskTable composition root
+ * Column definition shared between the TaskTable composition root
  * (which owns the URL-bound filter accessors) and the TaskTableColumns UI
  * child (chooser + header context menu).
  */
 export interface TaskColumnDef {
   field: string;
-  /** R3-P4: stable preference key shared with the server (`taskTableColumns`) */
+  /** Stable preference key shared with the server (`taskTableColumns`) */
   columnKey: TaskTableColumnKey;
   labelKey: string;
   filterType: 'none' | 'text' | 'select' | 'date';
@@ -24,7 +24,7 @@ export interface TaskColumnDef {
   getFilterValue: () => string;
   setFilterValue?: (value: string) => void;
   getOptions?: () => SelectOption[];
-  /** Q13/F-01: date-range accessors for `filterType: 'date'` columns */
+  /** Date-range accessors for `filterType: 'date'` columns */
   getDateFrom?: () => string;
   getDateTo?: () => string;
   /** Empty string on either side clears that bound */

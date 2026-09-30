@@ -100,7 +100,8 @@
       "email": "Email",
       "submit": "Send reset link",
       "submitting": "Sending",
-      "backToLogin": "Back to sign in"
+      "backToLogin": "Back to sign in",
+      "failed": "Der Link zum Zurücksetzen konnte nicht gesendet werden. Bitte versuchen Sie es erneut."
     },
     "resetPassword": {
       "title": "Reset password",
@@ -110,7 +111,10 @@
       "confirmPassword": "Confirm password",
       "submit": "Reset password",
       "submitting": "Resetting",
-      "backToLogin": "Back to sign in"
+      "backToLogin": "Back to sign in",
+      "invalidToken": "Dieser Link zum Zurücksetzen ist ungültig oder abgelaufen. Bitte fordern Sie einen neuen an.",
+      "passwordsNotMatch": "Passwörter stimmen nicht überein.",
+      "success": "Passwort erfolgreich aktualisiert"
     }
   },
   "landing": {
@@ -179,7 +183,9 @@
       "checking": "Checking availability",
       "taken": "This URL is already taken",
       "available": "This URL is available",
-      "hint": "Lowercase letters, numbers and hyphens only."
+      "hint": "Lowercase letters, numbers and hyphens only.",
+      "invalid": "Nur Kleinbuchstaben, Zahlen und Bindestriche verwenden",
+      "required": "Workspace-URL ist erforderlich"
     },
     "plan": {
       "title": "Choose a plan",
@@ -303,7 +309,9 @@
     "expired": "Abgelaufen",
     "editMemberTitle": "Mitglied bearbeiten",
     "editMemberDesc": "Name, E-Mail, Rolle und Ablaufdatum des Mitglieds bearbeiten.",
-    "clearExpiration": "Löschen"
+    "clearExpiration": "Löschen",
+    "removeConfirm": "Möchten Sie dieses Mitglied wirklich entfernen?",
+    "removeMemberTitle": "Mitglied entfernen"
   },
   "projects": {
     "createTitle": "Projekt erstellen",
@@ -350,7 +358,9 @@
     "viewAllTasks": "View all tasks",
     "sprintDates": "{{start}} – {{end}}",
     "board": "Board",
-    "manageBoard": "Spalten konfigurieren"
+    "manageBoard": "Spalten konfigurieren",
+    "archivedBanner": "Dieses Projekt ist archiviert und schreibgeschützt.",
+    "deletionPendingBanner": "Dieses Projekt ist zur Löschung vorgemerkt und schreibgeschützt."
   },
   "boardView": {
     "loading": "Board wird geladen",
@@ -370,7 +380,9 @@
     "allAssignees": "Alle Zuweisungen",
     "currentUser": "Ich",
     "unassigned": "Nicht zugewiesen",
-    "allPriorities": "Alle Prioritäten"
+    "allPriorities": "Alle Prioritäten",
+    "moveTaskTitle": "Aufgabe verschieben",
+    "moveTaskDesc": "Wähle die Spalte, in die diese Aufgabe verschoben werden soll."
   },
   "priority": {
     "low": "Niedrig",
@@ -449,7 +461,8 @@
     "editDatesTitle": "Sprint-Termine bearbeiten",
     "startDateLabel": "Startdatum",
     "endDateLabel": "Enddatum",
-    "saveDates": "Termine speichern"
+    "saveDates": "Termine speichern",
+    "removeTaskFromSprint": "{{name}} aus Sprint entfernen"
   },
   "docs": {
     "title": "Dokumentation",
@@ -533,7 +546,8 @@
     "typeRequired": "Aufgabentyp ist erforderlich",
     "statusRequired": "Status ist erforderlich",
     "priorityRequired": "Priorität ist erforderlich",
-    "titleMaxLength": "Title must be at most 200 characters"
+    "titleMaxLength": "Title must be at most 200 characters",
+    "descriptionMax": "Beschreibung darf maximal 120 Zeichen lang sein"
   },
   "errors": {
     "unexpected": "Ein unerwarteter Fehler ist aufgetreten. Bitte versuchen Sie es erneut.",
@@ -544,6 +558,7 @@
     "forbidden": "Sie haben keine Berechtigung für diese Aktion.",
     "conflict": "Diese Ressource wurde von einem anderen Benutzer geändert. Bitte laden Sie neu und versuchen Sie es erneut.",
     "validation": "Bitte überprüfen Sie Ihre Eingabe und versuchen Sie es erneut.",
+    "payloadTooLarge": "Die Anfrage war zu groß. Bitte verringern Sie die Menge der gesendeten Daten und versuchen Sie es erneut.",
     "badRequest": "Die Anfrage war ungültig. Bitte überprüfen Sie Ihre Eingabe.",
     "tooManyRequests": "Zu viele Anfragen. Bitte warten Sie einen Moment und versuchen Sie es erneut.",
     "unknown": "Ein unbekannter Fehler ist aufgetreten.",
@@ -561,12 +576,19 @@
     "tenantArchived": "Dieser Arbeitsbereich ist archiviert. Stellen Sie ihn wieder her, um Änderungen vorzunehmen.",
     "projectKeyImmutable": "Der Projektschlüssel kann nicht geändert werden, da bereits Aufgaben für dieses Projekt existieren.",
     "taskTypeInUse": "Dieser Aufgabentyp wird von bestehenden Aufgaben verwendet. Wählen Sie vor dem Löschen einen Ersatztyp.",
-    "statusInUse": "Dieser Status wird von bestehenden Aufgaben verwendet. Wählen Sie vor dem Löschen einen Ersatzstatus."
+    "statusInUse": "Dieser Status wird von bestehenden Aufgaben verwendet. Wählen Sie vor dem Löschen einen Ersatzstatus.",
+    "slugTaken": "Diese URL ist bereits vergeben",
+    "invalidResetToken": "Dieser Link zum Zurücksetzen des Passworts ist ungültig oder abgelaufen. Fordere einen neuen an.",
+    "rateLimited": "Zu viele Versuche. Bitte warte einen Moment und versuche es erneut.",
+    "queryTimeout": "Die Anfrage hat zu lange gedauert und wurde abgebrochen. Bitte versuche es erneut.",
+    "taskNumberUnavailable": "Es konnte gerade keine Aufgabennummer vergeben werden. Bitte versuche es gleich noch einmal.",
+    "tooManyRequestsAfter": "Zu viele Anfragen. Bitte versuche es in {{seconds}} Sekunden erneut."
   },
   "toasts": {
     "created": "Erfolgreich erstellt",
     "updated": "Erfolgreich aktualisiert",
-    "deleted": "Erfolgreich gelöscht"
+    "deleted": "Erfolgreich gelöscht",
+    "saved": "Erfolgreich gespeichert"
   },
   "common": {
     "cancel": "Abbrechen",
@@ -574,7 +596,8 @@
     "delete": "Löschen",
     "undo": "Rückgängig",
     "undoSuccess": "Aktion rückgängig gemacht",
-    "charCount": "{{count}}/{{max}}"
+    "charCount": "{{count}}/{{max}}",
+    "undoFailed": "Aktion konnte nicht rückgängig gemacht werden"
   },
   "labelManager": {
     "createDesc": "Erstelle ein neues Label für dieses Projekt.",
@@ -722,7 +745,9 @@
       "apply": "Anwenden",
       "clear": "Zurücksetzen",
       "selectAll": "Alle auswählen",
-      "selectRow": "Zeile auswählen"
+      "selectRow": "Zeile auswählen",
+      "partial": "{{count}} Aufgaben aktualisiert, {{failed}} fehlgeschlagen",
+      "success": "{{count}} Aufgaben aktualisiert"
     }
   },
   "comments": {
@@ -783,7 +808,9 @@
     "apply": "Apply",
     "rename": "Umbenennen",
     "renameTitle": "Filter umbenennen",
-    "renaming": "Wird umbenannt"
+    "renaming": "Wird umbenannt",
+    "nameRequired": "Filtername ist erforderlich",
+    "renameError": "Filter konnte nicht umbenannt werden."
   },
   "auditLog": {
     "time": "Zeit",
@@ -808,6 +835,7 @@
     "codeBlock": "Codeblock",
     "raw": "Quelltext",
     "wysiwyg": "WYSIWYG",
+    "editor": "Rich-Text-Editor",
     "showRaw": "Markdown anzeigen",
     "showWysiwyg": "Rich-Text-Editor anzeigen",
     "rawPlaceholder": "Markdown hier schreiben",
@@ -856,7 +884,10 @@
     "saveColumns": "Änderungen speichern",
     "columnIndex": "Spalte {{index}}",
     "emptyColumnHint": "Mindestens einen Status zuweisen",
-    "unassignedStatuses": "Nicht auf dem Board sichtbar: {{names}}"
+    "unassignedStatuses": "Nicht auf dem Board sichtbar: {{names}}",
+    "moveUpColumn": "Spalte {{index}} nach oben verschieben",
+    "moveDownColumn": "Spalte {{index}} nach unten verschieben",
+    "removeColumnIndex": "Spalte {{index}} entfernen"
   },
   "taskCreate": {
     "title": "Create task",
@@ -903,7 +934,8 @@
     "projectSwitcher": "Projektauswahl",
     "goTasks": "Zu den Aufgaben",
     "goBoard": "Zum Board",
-    "toggleSidebar": "Seitenleiste umschalten"
+    "toggleSidebar": "Seitenleiste umschalten",
+    "moveCard": "Fokussierte Karte in eine andere Spalte verschieben"
   },
   "tableDensity": {
     "comfortable": "Komfortabel",
@@ -921,5 +953,17 @@
     "modeLight": "Hell",
     "modeDark": "Dunkel",
     "deferredToast": "Theme gespeichert. Es wird angewendet, wenn Auto zu {{mode}} wechselt, oder wechsle den Modus jetzt zu {{mode}}."
+  },
+  "a11y": {
+    "skipToContent": "Zum Inhalt springen",
+    "filterColumn": "Nach {{column}} filtern"
+  },
+  "pageTitles": {
+    "workspace": "Workspace",
+    "project": "Projekt",
+    "board": "Board",
+    "task": "Aufgabe",
+    "sprint": "Sprint",
+    "projectGeneral": "Allgemeine Einstellungen"
   }
 }

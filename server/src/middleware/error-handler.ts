@@ -14,6 +14,7 @@ export {
 } from '../errors/app-error.js';
 
 import { AppError } from '../errors/app-error.js';
+import { isQueryTimeoutError } from '../db/query-timeout.js';
 
 // ─── Error Handler ────────────────────────────────────────────────────────────
 
@@ -31,10 +32,18 @@ import { AppError } from '../errors/app-error.js';
  * - `HTTPException` (Hono built-in) → mapped to its status
  * - Unknown errors → 500 INTERNAL_ERROR (no stack leak)
  *
- * M-10: when the request-id middleware is mounted, the correlation id is
+ * When the request-id middleware is mounted, the correlation id is
  * included as `error.requestId` — at error level, NOT top-level, so the top
  * level stays reserved for the `{ data }` success envelope. Omitted when no
  * request id is on the context (e.g. apps that don't mount the middleware).
+ *
+ * A MongoDB `maxTimeMS` expiry (`QueryAborted` / code 50) is translated to
+ * a 503 `QUERY_TIMEOUT` in the SAME envelope as every other error. Without this
+ * mapping it fell through to the unknown-error branch and became a 500
+ * `INTERNAL_ERROR` — wrong status, and the raw driver message ("operation
+ * exceeded time limit") was the only clue an operator had. The client message
+ * is intentionally generic: it names no collection, no index, no filter and no
+ * driver string, so the envelope cannot be used to probe query shapes.
  *
  * Use with `app.onError(errorHandler)` in the Hono app bootstrap.
  */
@@ -44,6 +53,13 @@ export const errorHandler: ErrorHandler = (err, c) => {
 
   // ── Known application errors ──────────────────────────────────────────────
   if (err instanceof AppError) {
+    // Headers an error requires (e.g. `Retry-After` + `RateLimit-*` on a 429)
+    // must be set BEFORE the body is written — Hono applies them to the
+    // response being built.
+    for (const [name, value] of Object.entries(err.headers ?? {})) {
+      c.header(name, value);
+    }
+
     return c.json(
       {
         error: {
@@ -75,6 +91,25 @@ export const errorHandler: ErrorHandler = (err, c) => {
         },
       },
       400,
+    );
+  }
+
+  // ── MongoDB maxTimeMS expiry → 503 QUERY_TIMEOUT ─────────────────────────
+  // Checked BEFORE the HTTPException branch: a driver error is not an
+  // HTTPException, but ordering it here keeps the "known cause" mappings
+  // together and makes the mapping independent of Hono's error shapes.
+  if (isQueryTimeoutError(err)) {
+    console.error('Query aborted by maxTimeMS', err);
+
+    return c.json(
+      {
+        error: {
+          code: 'QUERY_TIMEOUT',
+          message: 'The query took too long to complete. Narrow your filters and try again.',
+          ...withRequestId,
+        },
+      },
+      503,
     );
   }
 

@@ -2,6 +2,13 @@ import { randomUUID } from 'node:crypto';
 import type { ClientSession, Collection } from 'mongodb';
 import type { ProjectMember } from '@task-board/shared';
 
+// guardrail:no-base-repository 2026-09-29 — the delete is composite-keyed
+// (`delete(projectId, userId)`, a different signature from the base's
+// `delete(id)`), so extending would either shadow it with an incompatible
+// signature or rename a public method every caller depends on. That is a
+// behaviour change, not a conversion. See `rules/guardrails.guardrail.test.ts`
+// (P-03).
+
 // Required MongoDB indexes:
 // - { projectId: 1, userId: 1 } (unique)
 // - { id: 1 } (unique)

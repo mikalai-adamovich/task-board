@@ -1,7 +1,7 @@
 <div class="mx-auto max-w-2xl">
   <!-- Page header -->
   <div class="mb-6">
-    <h2 class="text-2xl font-bold text-foreground">{{ 'projectSettings.general' | transloco }}</h2>
+    <h1 class="text-2xl font-bold text-foreground">{{ 'projectSettings.general' | transloco }}</h1>
     <p class="mt-1 text-sm text-muted-foreground">{{ 'projectSettings.generalDesc' | transloco }}</p>
   </div>
 
@@ -13,7 +13,7 @@
 
   <hlm-card>
     <hlm-card-header>
-      <h3 hlmCardTitle>{{ 'projectSettings.general' | transloco }}</h3>
+      <h2 hlmCardTitle>{{ 'projectSettings.general' | transloco }}</h2>
     </hlm-card-header>
     <div hlmCardContent>
       @if (error()) {
@@ -23,7 +23,7 @@
       }
 
       <form id="general-form" [formRoot]="generalForm" class="flex flex-col gap-4">
-        <!-- Project key: immutable server-side (BR-022) — locked with hint -->
+        <!-- Project key: immutable server-side — locked with hint -->
         <hlm-field>
           <label hlmFieldLabel for="project-key">{{ 'projectSettings.key' | transloco }}</label>
           <div class="relative">
@@ -42,7 +42,10 @@
         </hlm-field>
         <hlm-field>
           <label hlmFieldLabel for="project-name">{{ 'projectSettings.name' | transloco }}</label>
-          <input hlmInput id="project-name" type="text" [formField]="generalForm.name" />
+          <input hlmInput id="project-name" type="text" [formField]="generalForm.name" uiFieldControl />
+          @if (generalForm.name().touched() && generalForm.name().errors().length) {
+            <hlm-field-error class="block">{{ generalForm.name().errors()[0]?.message | transloco }}</hlm-field-error>
+          }
         </hlm-field>
         <hlm-field>
           <label hlmFieldLabel for="project-description">{{ 'projectSettings.description' | transloco }}</label>
@@ -56,7 +59,13 @@
             rows="3"
             class="min-h-24"
             [formField]="generalForm.description"
+            uiFieldControl
           ></textarea>
+          @if (generalForm.description().touched() && generalForm.description().errors().length) {
+            <hlm-field-error class="block">{{
+              generalForm.description().errors()[0]?.message | transloco
+            }}</hlm-field-error>
+          }
           <p class="text-xs text-muted-foreground" data-testid="desc-char-count">
             {{ 'common.charCount' | transloco: { count: model().description.length, max: 120 } }}
           </p>
@@ -65,12 +74,7 @@
     </div>
     @if (isAdmin()) {
       <hlm-card-footer>
-        <button
-          hlmBtn
-          type="submit"
-          form="general-form"
-          [disabled]="generalForm().invalid() || generalForm().submitting()"
-        >
+        <button hlmBtn type="submit" form="general-form" [disabled]="generalForm().submitting()">
           @if (generalForm().submitting()) {
             <hlm-spinner /> {{ 'projectSettings.saving' | transloco }}
           } @else {

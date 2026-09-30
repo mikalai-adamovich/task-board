@@ -132,7 +132,7 @@ describe('SprintList', () => {
   describe('ngOnInit - tenant-level (no project context)', () => {
     beforeEach(() => setup());
 
-    // F2: without an active project there is nothing to fetch — the old
+    // Without an active project there is nothing to fetch — the old
     // component issued a bogus `GET /projects//tasks`-style request here.
     it('should NOT call sprintClient.list when no projectId', () => {
       expect(sprintClientMock.list).not.toHaveBeenCalled();
@@ -140,6 +140,13 @@ describe('SprintList', () => {
 
     it('should leave sprints empty when no projectId', () => {
       expect(component.sprints()).toEqual([]);
+    });
+
+    // The backlog counter resource used to run its stream with an empty
+    // projectId, i.e. `taskClient.list('', { hasSprint: false, limit: 1 })`.
+    it('should NOT call taskClient.list for the backlog count when no projectId (F21)', () => {
+      expect(taskClientMock.list).not.toHaveBeenCalled();
+      expect(component.backlogCount()).toBe(0);
     });
 
     it('should set loading to false', () => {
@@ -273,7 +280,7 @@ describe('SprintList', () => {
     });
   });
 
-  // ── Backlog group & overdue flag (DEC-029 / DEC-039) ──────
+  // ── Backlog group & overdue flag ──────────────────────────
   // The backlog group header is a plain (non-link) label since the standalone
   // backlog page was removed — unsprinted tasks are found via the tasks-table
   // sprint filter instead.
@@ -281,8 +288,12 @@ describe('SprintList', () => {
   describe('backlog group', () => {
     beforeEach(() => setup('p1'));
 
-    it('should fetch the backlog task count with sprintId null', () => {
-      expect(taskClientMock.list).toHaveBeenCalledWith('p1', { sprintId: null, limit: 1 });
+    // The contract CHANGED deliberately — `sprintId: null` meant "no sprint
+    // filtering" and silently counted ALL project tasks as backlog. The backlog
+    // is now requested explicitly with `hasSprint: false`; the assertion is
+    // equally strict, just on the new key.
+    it('should fetch the backlog task count with the explicit no-sprint filter (hasSprint: false)', () => {
+      expect(taskClientMock.list).toHaveBeenCalledWith('p1', { hasSprint: false, limit: 1 });
     });
 
     it('should expose the backlog count from the pagination total', () => {

@@ -1,12 +1,13 @@
 <div class="mb-6 flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
-  <h2 class="text-2xl font-bold text-foreground">{{ 'taskTable.title' | transloco }}</h2>
+  <h1 class="text-2xl font-bold text-foreground">{{ 'taskTable.title' | transloco }}</h1>
   <div class="flex w-full flex-wrap items-center gap-3 sm:w-auto">
-    <!-- Q9: `data-task-table-search` is the `/` keyboard-shortcut focus target -->
+    <!-- `data-task-table-search` is the `/` keyboard-shortcut focus target -->
     <input
       hlmInput
       type="text"
       data-task-table-search
       class="order-first w-full sm:order-none sm:w-64"
+      [attr.aria-label]="'taskTable.filterSearch' | transloco"
       [placeholder]="'taskTable.searchPlaceholder' | transloco"
       [value]="searchValue()"
       (input)="searchInput.emit($event)"
@@ -20,7 +21,7 @@
     >
       <ng-icon name="lucideFilter" />
     </button>
-    <!-- Q9 (RQ-04 ⑤): compact/comfortable density toggle (device-local preference) -->
+    <!-- Compact/comfortable density toggle (device-local preference) -->
     <button
       hlmBtn
       variant="outline"

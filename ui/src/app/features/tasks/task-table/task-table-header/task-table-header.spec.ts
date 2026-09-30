@@ -1,5 +1,5 @@
 /**
- * Tests for the TaskTableHeader sub-component (M-13 / 4.2):
+ * Tests for the TaskTableHeader sub-component:
  *
  * - Renders the search input with the buffered value + shortcut target attribute
  * - Emits the raw input event on keystrokes (parent owns the debounce)

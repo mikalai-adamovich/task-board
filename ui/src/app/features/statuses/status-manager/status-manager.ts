@@ -17,6 +17,7 @@ import { HlmNativeSelectImports } from '@spartan-ng/helm/native-select';
 import { HlmCardImports } from '@spartan-ng/helm/card';
 import { HlmBadgeImports } from '@spartan-ng/helm/badge';
 import { form, FormField, FormRoot, schema, required } from '@angular/forms/signals';
+import { FieldControl } from '@app/shared/field-control/field-control';
 import type { Status, CreateStatus } from '@task-board/shared';
 import type { BrnDialogState } from '@spartan-ng/brain/dialog';
 import { injectUndoToasts } from '@app/shared/utils/undo-toast';
@@ -31,6 +32,7 @@ interface CreateStatusForm {
 @Component({
   selector: 'ui-status-manager',
   imports: [
+    FieldControl,
     HlmAlertImports,
     HlmEmptyImports,
     TranslocoPipe,
@@ -54,7 +56,7 @@ export class StatusManager implements OnInit {
   private readonly statusClient = inject(StatusClient);
   private readonly authStore = inject(AuthStore);
   private readonly projectStore = inject(ProjectStore);
-  /** F2: status mutations must invalidate the shared reference-data cache */
+  /** Status mutations must invalidate the shared reference-data cache */
   private readonly refStore = inject(ProjectRefStore);
   protected readonly canManage = computed(() =>
     canManageProject(this.projectStore.projectRole(), this.authStore.tenantRole()),
@@ -62,17 +64,17 @@ export class StatusManager implements OnInit {
   /** Bound via withComponentInputBinding() — now receives project key from route */
   readonly projectKey = input.required<string>();
   /** Resolved project UUID from the store */
-  protected readonly projectId = computed(() => this.projectStore.activeProject()?.id ?? '');
-  protected readonly statuses = signal<Status[]>([]);
-  protected readonly loading = signal(true);
-  protected readonly error = signal('');
-  protected readonly showCreateDialog = signal(false);
-  protected readonly showDeleteDialog = signal(false);
-  protected readonly deletingStatus = signal<Status | null>(null);
-  protected readonly replacementStatusId = signal('');
-  protected readonly editingId = signal<string | null>(null);
-  protected readonly editingName = signal('');
-  protected readonly saving = signal(false);
+  private readonly projectId = computed(() => this.projectStore.activeProject()?.id ?? '');
+  private readonly statuses = signal<Status[]>([]);
+  private readonly loading = signal(true);
+  private readonly error = signal('');
+  private readonly showCreateDialog = signal(false);
+  private readonly showDeleteDialog = signal(false);
+  private readonly deletingStatus = signal<Status | null>(null);
+  private readonly replacementStatusId = signal('');
+  private readonly editingId = signal<string | null>(null);
+  private readonly editingName = signal('');
+  private readonly saving = signal(false);
   private readonly createModel = signal<CreateStatusForm>({ name: '' });
   protected readonly createForm = form(
     this.createModel,
@@ -115,7 +117,7 @@ export class StatusManager implements OnInit {
     this.editingName.set(status.name);
   }
 
-  protected cancelEdit(): void {
+  private cancelEdit(): void {
     this.editingId.set(null);
     this.editingName.set('');
   }
@@ -225,7 +227,7 @@ export class StatusManager implements OnInit {
           this.showDeleteDialog.set(false);
           this.deletingStatus.set(null);
           this.error.set('');
-          // Q11 (DEC-053): undo caveat — the original position may already be
+          // Undo caveat — the original position may already be
           // taken by other statuses after deletion, so the status is recreated
           // at the END of the list instead of restoring its exact position.
           this.notify.successWithUndo('toasts.deleted', () => {

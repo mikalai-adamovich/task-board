@@ -23,16 +23,16 @@ export interface Sprint {
 /** Create sprint request body type */
 export interface CreateSprint {
   name: string;
-  startDate?: string;
-  endDate?: string;
+  startDate?: string | undefined;
+  endDate?: string | undefined;
 }
 
 /** Update sprint request body type */
 export interface UpdateSprint {
-  name?: string;
+  name?: string | undefined;
   /** `null` clears the date */
-  startDate?: string | null;
+  startDate?: string | null | undefined;
   /** `null` clears the date */
-  endDate?: string | null;
-  status?: SprintStatus;
+  endDate?: string | null | undefined;
+  status?: SprintStatus | undefined;
 }

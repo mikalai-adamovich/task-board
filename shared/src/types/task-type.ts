@@ -22,13 +22,13 @@ export interface TaskType {
 export interface CreateTaskType {
   key: string;
   name: string;
-  icon?: string;
+  icon?: string | undefined;
   position: number;
 }
 
 /** Update task type request body type (key is immutable) */
 export interface UpdateTaskType {
-  name?: string;
-  icon?: string;
-  position?: number;
+  name?: string | undefined;
+  icon?: string | undefined;
+  position?: number | undefined;
 }

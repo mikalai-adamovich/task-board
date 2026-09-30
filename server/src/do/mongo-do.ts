@@ -1,5 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import { app } from '../app.js';
+import { assertRequiredConfiguration } from '../config/runtime-config.js';
 import type { AppEnv } from '../types/context.js';
 
 /**
@@ -19,9 +20,17 @@ import type { AppEnv } from '../types/context.js';
  *
  * Mongo migrations deliberately do NOT run here — they stay in
  * server/scripts/migrate.ts executed by CD before the deploy.
+ *
+ * The required-configuration boot gate runs HERE as well as in the Worker
+ * entrypoint. The DO is a separate isolate with its own fetch entry, so a gate
+ * that lived only in the Worker would let an unconfigured DO build a service
+ * graph and sign nothing. Cheap (two presence checks) and it makes the
+ * invariant hold on both paths into the application.
  */
 export class MongoHonoDurableObject extends DurableObject<AppEnv> {
   override async fetch(request: Request): Promise<Response> {
+    assertRequiredConfiguration(this.env as unknown as Record<string, unknown>);
+
     // Pass the DO's env (secrets + vars are shared with the Worker) and a
     // Hono-compatible execution context. DurableObjectState provides
     // waitUntil, which is all Hono's context uses.

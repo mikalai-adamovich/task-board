@@ -13,19 +13,27 @@ export interface AppEnv {
     MONGODB_URI: string;
     JWT_SECRET: string;
     ALLOWED_ORIGINS?: string;
-    /** Deployment environment — 'production' enables strict boot-time checks (M-09) */
+    /** Deployment environment — 'production' enables strict boot-time checks */
     ENVIRONMENT?: string;
-    /** Minimum log level for the structured logger (S-19): debug | info | warn | error */
+    /** Minimum log level for the structured logger: debug | info | warn | error */
     LOG_LEVEL?: string;
     RESEND_API_KEY?: string;
     FRONTEND_URL?: string;
     /** Mongo client lifecycle: 'per-request' (production) | 'durable' (DO) | 'singleton' (broken experiment) */
     DB_CLIENT_MODE?: string;
+    /**
+     * The operator-declared instance count that keeps the login
+     * limiter's DEPLOYMENT-wide ceiling constant when `DB_CLIENT_MODE` runs
+     * more than one instance. Ignored in `durable` (one DO identity). A
+     * positive integer or unset; anything else is treated as undeclared and
+     * falls back to the conservative default in `utils/rate-limit-scope.ts`.
+     */
+    RATE_LIMIT_INSTANCE_BUDGET?: string;
     /** Durable Object holding the Hono app + persistent MongoClient (DB_CLIENT_MODE=durable) */
     MONGO_DO: DurableObjectNamespace<MongoHonoDurableObject>;
   };
   Variables: {
-    /** Correlation id for this request (set by requestIdMiddleware, M-10) */
+    /** Correlation id for this request (set by requestIdMiddleware) */
     requestId: string;
     /** TEMPORARY perf: user lookup started by auth middleware, resolved by resolveUser */
     userPromise?: Promise<User | null>;

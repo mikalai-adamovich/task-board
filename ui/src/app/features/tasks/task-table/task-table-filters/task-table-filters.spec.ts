@@ -1,5 +1,5 @@
 /**
- * Tests for the TaskTableFilters sub-component (M-13 / 4.2):
+ * Tests for the TaskTableFilters sub-component:
  *
  * - Renders one chip per active filter with its translated label + value
  * - Emits `removeFilter` with the chip's param on × click

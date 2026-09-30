@@ -19,7 +19,10 @@ describe('logger', () => {
     vi.unstubAllEnvs();
   });
 
-  function lastEntry(spy: { mock: { lastCall?: unknown[] } }): LogEntry {
+  // The parameter is typed as "has a `mock.lastCall`" rather than an exact
+  // structural type — Vitest's `MockInstance.mock.lastCall` is non-optional, so
+  // an exact match is not assignable under `exactOptionalPropertyTypes`.
+  function lastEntry(spy: { mock: { lastCall: unknown[] | undefined } }): LogEntry {
     const line = spy.mock.lastCall?.[0];
 
     expect(typeof line).toBe('string');

@@ -1,16 +1,16 @@
 import { registerLocaleData } from '@angular/common';
 import { inject, type ApplicationConfig } from '@angular/core';
 import { provideAppInitializer } from '@angular/core';
-import { provideRouter, withComponentInputBinding } from '@angular/router';
+import { provideRouter, TitleStrategy, withComponentInputBinding } from '@angular/router';
 import { provideHttpClient, withInterceptors } from '@angular/common/http';
 import { provideSpartanHlm } from '@spartan-ng/helm/utils';
 import { provideTransloco, TranslocoService } from '@jsverse/transloco';
 import { TranslocoHttpLoader } from './transloco-loader';
 
-// P12 (item 28) / P14: Angular locale data for every non-en app locale so
+// Angular locale data for every non-en app locale so
 // DatePipe renders localized month names (e.g. 'MMM' → 'авг'). `en` is the
 // built-in base locale. The ids below match the Transloco `availableLangs`.
-// P14 (item 32): locale datasets are sizeable (~10 kB each), so they are
+// Locale datasets are sizeable (~10 kB each), so they are
 // dynamically imported instead of bundled eagerly — the ACTIVE language's
 // locale is registered in an app initializer (before first paint), the rest
 // on demand when the language changes.
@@ -35,7 +35,7 @@ function registerLocale(lang: string): Promise<void> {
   return loader().then((module) => registerLocaleData(module.default, lang));
 }
 
-/** N-09: keep `<html lang>` in sync with the active language (a11y — screen readers). */
+/** Keep `<html lang>` in sync with the active language (a11y — screen readers). */
 function syncDocumentLang(lang: string): void {
   document.documentElement.lang = lang;
 }
@@ -57,6 +57,7 @@ function initLocales(): Promise<void> {
 }
 
 import { routes } from './app.routes';
+import { TranslocoTitleStrategy } from './title.strategy';
 import { authInterceptor } from './interceptors/auth.interceptor';
 import { tenantInterceptor } from './interceptors/tenant.interceptor';
 import { errorInterceptor } from './interceptors/error.interceptor';
@@ -66,7 +67,7 @@ import { KeyboardShortcuts } from './shared/keyboard-shortcuts/keyboard-shortcut
 
 export const appConfig: ApplicationConfig = {
   providers: [
-    // P14: register the active language's Angular locale data before first
+    // Register the active language's Angular locale data before first
     // paint (the remaining locales load on demand — see `localeLoaders`).
     provideAppInitializer(() => initLocales()),
     // Root-level so AppShell (dialog binding) and HelpMenu (Hotkeys item)
@@ -75,6 +76,9 @@ export const appConfig: ApplicationConfig = {
     KeyboardShortcuts,
     provideSpartanHlm(),
     provideRouter(routes, withComponentInputBinding()),
+    // Localised `<title>` — route `title` values are translation KEYS, resolved
+    // (and re-resolved on language change) by the strategy.
+    { provide: TitleStrategy, useClass: TranslocoTitleStrategy },
     provideHttpClient(withInterceptors([authInterceptor, tenantInterceptor, errorInterceptor])),
     { provide: API_BASE_URL, useValue: environment.apiBaseUrl },
     provideTransloco({

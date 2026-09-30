@@ -17,7 +17,7 @@ export interface TaskTableFilterChip {
 }
 
 /**
- * M-13 (4.2): filter UI extracted from the TaskTable composition root —
+ * Filter UI extracted from the TaskTable composition root —
  * the saved-filters dialog and the active-filter chips row. Purely
  * presentational: the URL-bound filter state and the patchParams data flow
  * stay in the parent (`TaskTable`); this component renders and emits.

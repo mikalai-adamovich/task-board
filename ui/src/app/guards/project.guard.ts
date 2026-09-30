@@ -7,7 +7,7 @@ import { ProjectStore } from '@stores/project-store';
 /**
  * Functional route guard that ensures the user has access to a project.
  *
- * The tenant is resolved by slug from the `/w/:tenantSlug` URL prefix (DEC-032);
+ * The tenant is resolved by slug from the `/w/:tenantSlug` URL prefix;
  * the project is resolved by its human-readable key.
  *
  * The navigation decision NEVER depends on the members list:

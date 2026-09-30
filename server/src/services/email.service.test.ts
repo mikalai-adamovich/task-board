@@ -1,9 +1,33 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { EmailService, ConsoleEmailService } from './email.service.js';
+import {
+  EMAIL_SEND_TIMEOUT_MS,
+  EmailService,
+  EmailTimeoutError,
+  EmailDeliveryError,
+  ConsoleEmailService,
+} from './email.service.js';
 
 // ─── Mock Resend ─────────────────────────────────────────────────────────────
 
-const mockSend = vi.fn().mockResolvedValue({ id: 'email-123' });
+/**
+ * The mock now answers with the shape the SDK actually resolves —
+ * `{ data, error: null, headers }` — not a bare `{ id }`.
+ *
+ * The old `{ id: 'email-123' }` had no `error` property at all, so a mock
+ * "refusing" the send was not constructible: every test resolved something
+ * that looked like success, which is exactly why the fixed branch was
+ * unreachable and the defect was invisible. The type is `Response<T>` in
+ * `node_modules/resend/dist/index.d.mts:122-135`, and the discriminated union
+ * is the whole point.
+ */
+const ACCEPTED = { data: { id: 'email-123' }, error: null, headers: {} };
+/** A provider that accepted the request and refused the message. */
+const REFUSED = {
+  data: null,
+  error: { message: 'The from address is not verified', name: 'validation_error', statusCode: 422 },
+  headers: {},
+};
+const mockSend = vi.fn().mockResolvedValue(ACCEPTED);
 
 vi.mock('resend', () => ({
   Resend: vi.fn().mockImplementation(() => ({
@@ -149,6 +173,177 @@ describe('EmailService', () => {
   });
 });
 
+/**
+ * An outbound call that never answers must not hold a Worker request
+ * open. The Resend SDK has no `signal` option, so the bound is enforced by
+ * racing the promise — what changes is that the REQUEST stops waiting, not
+ * that the send silently succeeds.
+ */
+/**
+ * A send the provider REFUSES must not read as a send that succeeded.
+ *
+ * These are the absent-input tests the SDK's shape made impossible to write
+ * before: `resend.post` resolves `{ error }` for a validation failure, a
+ * suppressed recipient, an exhausted quota or a restricted key, and never
+ * rejects for any of them. A caller that only awaited could not tell any of
+ * them from a delivered message.
+ */
+describe('D-27: a refused send is a failure, not a success', () => {
+  let service: EmailService;
+
+  beforeEach(() => {
+    mockSend.mockReset();
+    mockSend.mockResolvedValue(ACCEPTED);
+    service = new EmailService('re_test_key', 'noreply@taskboard.app', 'https://app.example.com');
+  });
+
+  it('throws EmailDeliveryError when the provider resolves { error }', async () => {
+    mockSend.mockResolvedValue(REFUSED);
+
+    await expect(
+      service.sendPasswordResetEmail({
+        to: 'user@example.com',
+        resetUrl: 'https://app.example.com/auth/reset-password?token=abc',
+        expiresInMinutes: 60,
+      }),
+    ).rejects.toBeInstanceOf(EmailDeliveryError);
+  });
+
+  it('carries the provider reason and status, so a caller can tell quota from validation', async () => {
+    mockSend.mockResolvedValue(REFUSED);
+
+    const error = await service
+      .sendEmail({ to: 'user@example.com', subject: 's', html: '<p>x</p>' })
+      .then(() => null)
+      .catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(EmailDeliveryError);
+    expect((error as EmailDeliveryError).reason).toBe('validation_error');
+    expect((error as EmailDeliveryError).statusCode).toBe(422);
+  });
+
+  it('every send path reports a refusal — the check is not on one of three', async () => {
+    mockSend.mockResolvedValue(REFUSED);
+
+    const sends = [
+      service.sendPasswordResetEmail({ to: 'a@b.c', resetUrl: 'https://x/y', expiresInMinutes: 60 }),
+      service.sendInvitationEmail({ to: 'a@b.c', inviterName: 'J', tenantName: 'T', role: 'member', token: 't' }),
+      service.sendEmail({ to: 'a@b.c', subject: 's', html: '<p>x</p>' }),
+    ];
+
+    for (const send of sends) {
+      await expect(send).rejects.toBeInstanceOf(EmailDeliveryError);
+    }
+  });
+
+  it('a refusal is still distinguishable from a transport failure', async () => {
+    // Two failure modes, two errors: the call sites that treat one as
+    // best-effort and the other as fatal need to be able to.
+    mockSend.mockResolvedValue(REFUSED);
+
+    const refused = await service
+      .sendEmail({ to: 'a@b.c', subject: 's', html: '<p>x</p>' })
+      .catch((err: unknown) => err as Error);
+
+    mockSend.mockRejectedValue(new Error('ECONNREFUSED'));
+
+    const transport = await service
+      .sendEmail({ to: 'a@b.c', subject: 's', html: '<p>x</p>' })
+      .catch((err: unknown) => err as Error);
+
+    expect(refused).toBeInstanceOf(EmailDeliveryError);
+    expect(transport).toBeInstanceOf(Error);
+    expect(transport).not.toBeInstanceOf(EmailDeliveryError);
+    expect((transport as Error).message).toBe('ECONNREFUSED');
+  });
+
+  it('a send the provider ACCEPTS still resolves', async () => {
+    mockSend.mockResolvedValue(ACCEPTED);
+
+    await expect(service.sendEmail({ to: 'a@b.c', subject: 's', html: '<p>x</p>' })).resolves.toBeUndefined();
+  });
+});
+
+describe('EmailService outbound timeout (F-516)', () => {
+  let service: EmailService;
+
+  beforeEach(() => {
+    mockSend.mockReset();
+    service = new EmailService('re_test_key', 'noreply@taskboard.app', 'https://app.example.com');
+  });
+
+  it('has a bounded budget', () => {
+    expect(EMAIL_SEND_TIMEOUT_MS).toBeGreaterThan(0);
+    expect(EMAIL_SEND_TIMEOUT_MS).toBeLessThanOrEqual(10_000);
+  });
+
+  it('rejects with EmailTimeoutError when the send hangs', async () => {
+    vi.useFakeTimers();
+    mockSend.mockReturnValue(new Promise(() => undefined));
+
+    try {
+      const pending = service.sendPasswordResetEmail({
+        to: 'user@example.com',
+        resetUrl: 'https://app.example.com/auth/reset-password?token=abc',
+        expiresInMinutes: 60,
+      });
+      const assertion = expect(pending).rejects.toBeInstanceOf(EmailTimeoutError);
+
+      await vi.advanceTimersByTimeAsync(EMAIL_SEND_TIMEOUT_MS);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('rejects on the same budget for invitations and generic sends', async () => {
+    vi.useFakeTimers();
+    mockSend.mockReturnValue(new Promise(() => undefined));
+
+    try {
+      const invitation = expect(
+        service.sendInvitationEmail({
+          to: 'user@example.com',
+          inviterName: 'John',
+          tenantName: 'Acme',
+          role: 'member',
+          token: 'tok',
+        }),
+      ).rejects.toBeInstanceOf(EmailTimeoutError);
+      const generic = expect(
+        service.sendEmail({ to: 'user@example.com', subject: 's', html: '<p>x</p>' }),
+      ).rejects.toBeInstanceOf(EmailTimeoutError);
+
+      await vi.advanceTimersByTimeAsync(EMAIL_SEND_TIMEOUT_MS);
+      await Promise.all([invitation, generic]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not time out a call that answers in time', async () => {
+    mockSend.mockResolvedValue({ id: 'email-1' });
+
+    await expect(
+      service.sendEmail({ to: 'user@example.com', subject: 's', html: '<p>x</p>' }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('propagates a transport failure unchanged (call sites keep their semantics)', async () => {
+    mockSend.mockRejectedValue(new Error('ECONNRESET'));
+
+    // Best-effort call sites (invitations) already catch this; a fail-hard one
+    // (password reset) already answered 500. A timeout behaves identically.
+    await expect(
+      service.sendPasswordResetEmail({
+        to: 'user@example.com',
+        resetUrl: 'https://app.example.com/auth/reset-password?token=abc',
+        expiresInMinutes: 60,
+      }),
+    ).rejects.toThrow('ECONNRESET');
+  });
+});
+
 describe('ConsoleEmailService', () => {
   let service: ConsoleEmailService;
   let consoleSpy: ReturnType<typeof vi.spyOn>;
@@ -172,7 +367,7 @@ describe('ConsoleEmailService', () => {
         token: 'tok-123',
       });
 
-      // S-19: one single-line JSON entry per email
+      // One single-line JSON entry per email
       expect(consoleSpy).toHaveBeenCalledTimes(1);
 
       const entry = JSON.parse(consoleSpy.mock.calls[0]?.[0] as string) as Record<string, unknown>;

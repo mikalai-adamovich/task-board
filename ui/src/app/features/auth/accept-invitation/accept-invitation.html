@@ -7,7 +7,7 @@
   } @else if (error() && !invitation()) {
     <hlm-card class="w-full max-w-md">
       <hlm-card-header>
-        <h3 hlmCardTitle>{{ 'auth.invitation.error' | transloco }}</h3>
+        <h1 hlmCardTitle>{{ 'auth.invitation.error' | transloco }}</h1>
       </hlm-card-header>
       <div hlmCardContent>
         <hlm-alert variant="destructive">
@@ -23,7 +23,7 @@
   } @else if (invitation(); as inv) {
     <hlm-card class="w-full max-w-md">
       <hlm-card-header>
-        <h3 hlmCardTitle>{{ 'auth.invitation.title' | transloco }}</h3>
+        <h1 hlmCardTitle>{{ 'auth.invitation.title' | transloco }}</h1>
         <p hlmCardDescription>{{ 'auth.invitation.description' | transloco }}</p>
       </hlm-card-header>
 
@@ -66,11 +66,14 @@
                   id="displayName"
                   type="text"
                   [formField]="invitationForm.displayName"
+                  uiFieldControl
                   autocomplete="name"
                   placeholder="John Doe"
                 />
                 @if (invitationForm.displayName().touched() && invitationForm.displayName().errors().length) {
-                  <p hlm-field-error>{{ invitationForm.displayName().errors()[0]?.message | transloco }}</p>
+                  <hlm-field-error class="block">{{
+                    invitationForm.displayName().errors()[0]?.message | transloco
+                  }}</hlm-field-error>
                 }
               </hlm-field>
 
@@ -81,11 +84,14 @@
                   id="password"
                   type="password"
                   [formField]="invitationForm.password"
+                  uiFieldControl
                   autocomplete="new-password"
                   placeholder="••••••••"
                 />
                 @if (invitationForm.password().touched() && invitationForm.password().errors().length) {
-                  <p hlm-field-error>{{ invitationForm.password().errors()[0]?.message | transloco }}</p>
+                  <hlm-field-error class="block">{{
+                    invitationForm.password().errors()[0]?.message | transloco
+                  }}</hlm-field-error>
                 }
               </hlm-field>
 
@@ -96,11 +102,14 @@
                   id="confirmPassword"
                   type="password"
                   [formField]="invitationForm.confirmPassword"
+                  uiFieldControl
                   autocomplete="new-password"
                   placeholder="••••••••"
                 />
                 @if (invitationForm.confirmPassword().touched() && invitationForm.confirmPassword().errors().length) {
-                  <p hlm-field-error>{{ invitationForm.confirmPassword().errors()[0]?.message | transloco }}</p>
+                  <hlm-field-error class="block">{{
+                    invitationForm.confirmPassword().errors()[0]?.message | transloco
+                  }}</hlm-field-error>
                 }
               </hlm-field>
             </hlm-field-group>
@@ -118,13 +127,7 @@
             }
           </button>
         } @else {
-          <button
-            hlmBtn
-            type="submit"
-            form="invitation-form"
-            class="w-full"
-            [disabled]="invitationForm().invalid() || invitationForm().submitting()"
-          >
+          <button hlmBtn type="submit" form="invitation-form" class="w-full" [disabled]="invitationForm().submitting()">
             @if (invitationForm().submitting()) {
               <hlm-spinner /> {{ 'auth.invitation.creatingAccount' | transloco }}
             } @else {

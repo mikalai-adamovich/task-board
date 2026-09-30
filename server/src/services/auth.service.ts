@@ -11,6 +11,9 @@ import type {
   ForgotPasswordResponse,
 } from '@task-board/shared';
 import { AppError, BadRequestError, ConflictError, NotFoundError, ValidationError } from '../errors/app-error.js';
+import { withConflictOnDuplicate } from '../db/duplicate-key.js';
+import { buildRateLimitHeaders, createRateLimiter } from '../utils/rate-limiter.js';
+import { resolveRateLimitScope, type RateLimitScope } from '../utils/rate-limit-scope.js';
 import { UserRepository } from '../repositories/user.repository.js';
 import { TenantRepository } from '../repositories/tenant.repository.js';
 import { TenantMemberRepository } from '../repositories/tenant-member.repository.js';
@@ -35,10 +38,42 @@ const BCRYPT_SALT_ROUNDS = 10;
 /** Forgot-password rate limit: max requests per email+IP within the window */
 const FORGOT_PASSWORD_MAX_REQUESTS = 5;
 const FORGOT_PASSWORD_WINDOW_MS = 15 * 60 * 1000;
-/** Login rate limit: max attempts per email+IP within the window (brute-force mitigation) */
+/**
+ * Login rate limit, PER ACCOUNT: max attempts for one email inside the window
+ * (brute-force mitigation).
+ *
+ * The key is the normalized email ALONE. The previous key was
+ * `email:ip`, which an attacker defeats by rotating source addresses — the
+ * per-account ceiling then never engages. Keying on the account means a
+ * distributed attempt against one victim is still capped.
+ */
 const LOGIN_MAX_REQUESTS = 10;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
-/** Registration rate limit: max accounts per IP within the window (mass-creation mitigation) */
+
+/**
+ * The login ceiling, exported so `/api/readyz` can report what this
+ * deployment is actually enforcing. Named for what it is rather than reusing the
+ * private constant, so the probe and the limiter cannot drift apart silently.
+ */
+export const LOGIN_RATE_LIMIT_MAX_REQUESTS = LOGIN_MAX_REQUESTS;
+
+/**
+ * Login rate limit, PER SOURCE: max attempts from one client identifier inside
+ * the window. This is the ceiling the per-account key cannot provide — it stops
+ * the SPRAY (one attempt against many different accounts from one source), which
+ * the audit measured at 60 requests / 0 rejections before this change.
+ *
+ * VALUE: 30 attempts per 15 min per source. Defensible against the spray (the
+ * measured 60-request probe now stops at request 31) while tolerating a shared
+ * NAT egress: an office of ~20 people all signing in inside the same 15 minutes
+ * stays under the ceiling. A botnet sidesteps it by spreading over sources —
+ * that is the known residual risk of an in-process per-source ceiling. Raise it
+ * if shared-NAT false positives show up in production; lower it if credential
+ * stuffing is observed.
+ */
+const LOGIN_SOURCE_MAX_REQUESTS = 30;
+const LOGIN_SOURCE_WINDOW_MS = 15 * 60 * 1000;
+/** Registration rate limit: max accounts per source within the window (mass-creation mitigation) */
 const REGISTER_MAX_REQUESTS = 20;
 const REGISTER_WINDOW_MS = 60 * 60 * 1000;
 
@@ -50,44 +85,21 @@ export interface PasswordResetMailer {
   sendPasswordResetEmail(params: { to: string; resetUrl: string; expiresInMinutes: number }): Promise<void>;
 }
 
-/**
- * Best-effort in-memory sliding-window rate limiter factory.
- *
- * Intentionally module-level: limiters must survive across requests to be
- * effective. On Cloudflare Workers they are per-isolate and reset on eviction
- * — acceptable for MVP abuse mitigation (DEC-023 / security notes §21).
- */
-function createRateLimiter(maxRequests: number, windowMs: number): (key: string) => boolean {
-  const attempts = new Map<string, number[]>();
-
-  return (key: string): boolean => {
-    const now = Date.now();
-    const timestamps = (attempts.get(key) ?? []).filter((ts) => now - ts < windowMs);
-
-    if (timestamps.length >= maxRequests) {
-      attempts.set(key, timestamps);
-      return true;
-    }
-
-    timestamps.push(now);
-    attempts.set(key, timestamps);
-
-    // Opportunistic cleanup of stale keys to bound memory growth
-    if (attempts.size > 1000) {
-      for (const [k, ts] of attempts) {
-        if (ts.every((t) => now - t >= windowMs)) {
-          attempts.delete(k);
-        }
-      }
-    }
-
-    return false;
-  };
-}
-
+// Both login limiters live at module level so their counters
+// survive across requests — a limiter rebuilt per request would never trip.
+// The shared, memory-bounded implementation now lives in `utils/rate-limiter.ts`
+// (see that file for the in-process limitations and the eviction strategy).
 const isForgotPasswordRateLimited = createRateLimiter(FORGOT_PASSWORD_MAX_REQUESTS, FORGOT_PASSWORD_WINDOW_MS);
 const isLoginRateLimited = createRateLimiter(LOGIN_MAX_REQUESTS, LOGIN_WINDOW_MS);
+const isLoginSourceRateLimited = createRateLimiter(LOGIN_SOURCE_MAX_REQUESTS, LOGIN_SOURCE_WINDOW_MS);
 const isRegisterRateLimited = createRateLimiter(REGISTER_MAX_REQUESTS, REGISTER_WINDOW_MS);
+
+// ─── Re-export (F6 compatibility) ────────────────────────────────────────────
+// `buildRateLimitHeaders` / `RateLimitResult` were defined here and are imported
+// from this module elsewhere; they now live with the shared limiter. Re-exported
+// so existing imports keep working.
+export { buildRateLimitHeaders } from '../utils/rate-limiter.js';
+export type { RateLimitResult } from '../utils/rate-limiter.js';
 
 /** Create a deterministic SHA-256 hash of a token for storage/lookup (Web Crypto — Workers compatible) */
 async function hashToken(token: string): Promise<string> {
@@ -101,6 +113,24 @@ async function hashToken(token: string): Promise<string> {
 // ─── Auth Service ────────────────────────────────────────────────────────────
 
 export class AuthService {
+  /**
+   * The login limiter's SCOPE for this deployment.
+   *
+   * The limiters below are module-level (their counters MUST survive across
+   * requests — a limiter rebuilt per request would never trip), so the mode
+   * cannot be applied to them at construction. Instead the per-instance CEILING
+   * is resolved once per service graph from `DB_CLIENT_MODE` and used in place
+   * of the raw constant at each probe. The counters themselves are untouched:
+   * in `durable` mode the ceiling is exactly what it always was, so production
+   * behaviour is bit-for-bit unchanged; in a multi-instance mode the ceiling is
+   * divided by the declared instance count so the DEPLOYMENT-wide ceiling stays
+   * the configured number instead of growing with the isolate count.
+   *
+   * See `utils/rate-limit-scope.ts` for the full reasoning, including why the
+   * counter is deliberately NOT moved into the Durable Object.
+   */
+  private readonly loginScope: RateLimitScope;
+
   constructor(
     private readonly userRepo: UserRepository,
     private readonly tenantRepo: TenantRepository,
@@ -108,7 +138,11 @@ export class AuthService {
     private readonly jwtSecret: string,
     private readonly mailer?: PasswordResetMailer | null,
     private readonly frontendUrl = 'http://localhost:4200',
-  ) {}
+    dbClientMode?: string,
+    instanceBudget?: string,
+  ) {
+    this.loginScope = resolveRateLimitScope(dbClientMode, instanceBudget, LOGIN_MAX_REQUESTS);
+  }
 
   /**
    * Find an active (non-deleted) user by id.
@@ -124,8 +158,16 @@ export class AuthService {
    * Rate-limited per client IP (mass account creation mitigation).
    */
   async register(input: RegisterRequest, clientIp?: string): Promise<AuthResponse> {
-    if (isRegisterRateLimited(clientIp ?? 'unknown')) {
-      throw new AppError(429, 'RATE_LIMITED', 'Too many registration attempts. Try again later.');
+    const registerLimit = isRegisterRateLimited(clientIp ?? 'unknown');
+
+    if (registerLimit.limited) {
+      throw new AppError(
+        429,
+        'RATE_LIMITED',
+        'Too many registration attempts. Try again later.',
+        undefined,
+        buildRateLimitHeaders(REGISTER_MAX_REQUESTS, registerLimit),
+      );
     }
 
     const normalizedEmail = input.email.toLowerCase().trim();
@@ -137,11 +179,19 @@ export class AuthService {
 
     const bcrypt = await import('bcryptjs');
     const passwordHash = await bcrypt.hash(input.password, BCRYPT_SALT_ROUNDS);
-    const user = await this.userRepo.create({
-      email: normalizedEmail,
-      displayName: input.displayName,
-      passwordHash,
-    });
+    // The "email already taken" check above is racy; the unique
+    // `users.email` index rejects the loser. The response is byte-for-byte the
+    // one the pre-check produces — the driver's "E11000 … dup key: { email: … }"
+    // must never reach the client, since it would confirm the account exists.
+    const user = await withConflictOnDuplicate(
+      () =>
+        this.userRepo.create({
+          email: normalizedEmail,
+          displayName: input.displayName,
+          passwordHash,
+        }),
+      () => new ConflictError('A user with this email already exists'),
+    );
     // Activate pending invitations for this email
     const pendingInvitations = await this.tenantMemberRepo.findPendingByEmail(normalizedEmail);
     let firstTenantId: string | null = null;
@@ -165,16 +215,58 @@ export class AuthService {
 
   /**
    * Log in with email and password.
-   * Rate-limited per email+IP (brute-force mitigation).
+   *
+   * TWO ceilings apply and BOTH must pass — the stricter one wins:
+   * - per account (key: normalized email) — stops brute force against one victim;
+   * - per source (key: `CF-Connecting-IP`, see `middleware/rate-limit.ts`) — stops
+   *   the spray of one attempt per address across many addresses, which the
+   *   per-account ceiling alone never sees.
+   * Whichever trips first is reported, together with its own limit in
+   * `RateLimit-Limit` and the back-off in `Retry-After`.
    */
   async login(input: LoginRequest, clientIp?: string): Promise<AuthResponse> {
     const normalizedEmail = input.email.toLowerCase().trim();
+    const source = clientIp ?? 'unknown';
+    // The per-account limiter keeps the deployment-wide ceiling in
+    // `durable` mode and the divided one everywhere else, so rolling back to
+    // `per-request` no longer multiplies the credential-stuffing ceiling by an
+    // unknown isolate count. `RateLimit-Limit` reports the ceiling that actually
+    // applied, so the header and the behaviour cannot disagree.
+    const accountCeiling = this.loginScope.effectiveCeiling;
+    const sourceCeiling = Math.max(1, Math.floor(LOGIN_SOURCE_MAX_REQUESTS / this.loginScope.instances));
+    const accountLimit = isLoginRateLimited(`account:${normalizedEmail}`, accountCeiling);
+    const sourceLimit = isLoginSourceRateLimited(`source:${source}`, sourceCeiling);
 
-    if (isLoginRateLimited(`${normalizedEmail}:${clientIp ?? 'unknown'}`)) {
-      throw new AppError(429, 'RATE_LIMITED', 'Too many login attempts. Try again later.');
+    if (accountLimit.limited) {
+      throw new AppError(
+        429,
+        'RATE_LIMITED',
+        'Too many login attempts. Try again later.',
+        undefined,
+        buildRateLimitHeaders(accountCeiling, accountLimit),
+      );
     }
 
-    const userDoc = await this.userRepo.findByEmail(normalizedEmail);
+    if (sourceLimit.limited) {
+      throw new AppError(
+        429,
+        'RATE_LIMITED',
+        'Too many login attempts from this source. Try again later.',
+        undefined,
+        buildRateLimitHeaders(sourceCeiling, sourceLimit),
+      );
+    }
+
+    // `findActiveByEmail`, not `findByEmail`. `findByEmail` deliberately
+    // matches soft-deleted users (see `user.repository.ts`) because the write
+    // paths that call it are uniqueness checks against a `users.email` index
+    // that is NOT partial. Authentication is not a uniqueness check, and a
+    // soft-deleted account that still knows the password must NOT receive a
+    // 24 h JWT: it was deleted, and the only truthful answer is the same
+    // INVALID_CREDENTIALS an unknown email gets. Asking for `findByEmail` here
+    // made the soft-delete filter a property of the CALLER rather than of the
+    // query, and the one caller that forgot it handed out the token.
+    const userDoc = await this.userRepo.findActiveByEmail(normalizedEmail);
 
     // V1-8: wrong credentials must return a distinct INVALID_CREDENTIALS code so
     // the UI can show a neutral "Invalid email or password" message instead of
@@ -222,7 +314,17 @@ export class AuthService {
    * Accept an invitation to join a tenant.
    * Token is matched via SHA-256 hash.
    */
-  async acceptInvitation(input: { token: string; password?: string; displayName?: string }): Promise<AuthResponse> {
+  /**
+   * The `| undefined` is required because the route forwards the parsed
+   * `AcceptInvitationSchema` body, whose absent optionals are explicit
+   * `undefined`s. Still a structural type (not a hand-written *body* type with
+   * its own field semantics) — the schema remains the single contract.
+   */
+  async acceptInvitation(input: {
+    token: string;
+    password?: string | undefined;
+    displayName?: string | undefined;
+  }): Promise<AuthResponse> {
     const hash = await hashToken(input.token);
     const invitation = await this.tenantMemberRepo.findByInvitationToken(hash);
 
@@ -304,7 +406,7 @@ export class AuthService {
     };
   }
 
-  // ─── Password reset (DEC-023) ──────────────────────────────────────────────
+  // ─── Password reset ────────────────────────────────────────────────────────
 
   /**
    * Request a password reset.
@@ -317,7 +419,7 @@ export class AuthService {
   async requestPasswordReset(input: { email: string }, clientIp?: string): Promise<ForgotPasswordResponse> {
     const normalizedEmail = input.email.toLowerCase().trim();
 
-    if (!isForgotPasswordRateLimited(`${normalizedEmail}:${clientIp ?? 'unknown'}`)) {
+    if (!isForgotPasswordRateLimited(`${normalizedEmail}:${clientIp ?? 'unknown'}`).limited) {
       const user = await this.userRepo.findActiveByEmail(normalizedEmail);
 
       if (user) {

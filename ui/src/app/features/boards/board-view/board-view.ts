@@ -46,6 +46,22 @@ export interface BoardColumnState {
   loading: boolean;
 }
 
+/**
+ * Whether a failed request is the CALLER's to report.
+ *
+ * The global `errorInterceptor` toasts every 5xx and every network failure, so a
+ * component that also toasted those would show two toasts for one failure
+ * (AGENTS.md §UI). A 4xx — forbidden, conflict, validation — is the case the
+ * interceptor deliberately leaves to the caller. A value that is not an HTTP
+ * response at all has no status and belongs to whoever caught it.
+ *
+ * The same rule is applied in `task-table.ts`; it is a property of the
+ * interceptor contract, not of one component.
+ */
+function isCallerHandled(err: unknown): boolean {
+  return err instanceof HttpErrorResponse && err.status >= 400 && err.status < 500;
+}
+
 @Component({
   selector: 'ui-board-view',
   imports: [
@@ -80,14 +96,14 @@ export class BoardView {
   /** Optional sprint filter from query params (`?sprintId=…`) */
   readonly sprintId = input<string | null>(null);
   /**
-   * F-08: optional assignee filter from query params (`?assignee=…`).
+   * Optional assignee filter from query params (`?assignee=…`).
    * Values: `me` (symbolic — resolved to the AuthStore user id at query time),
    * `unassigned` (client-side post-filter), or a concrete member user id.
    */
   readonly assignee = input<string | null>(null);
-  /** F-08: optional priority filter from query params (`?priorityLevel=…`) */
+  /** Optional priority filter from query params (`?priorityLevel=…`) */
   readonly priorityLevel = input<TaskPriorityLevel | null>(null, { transform: priorityLevelParam });
-  protected readonly projectId = computed(() => this.projectStore.activeProject()?.id ?? '');
+  private readonly projectId = computed(() => this.projectStore.activeProject()?.id ?? '');
   /** Board page header shows the project name — the board itself has no name (single-board model). */
   protected readonly projectName = computed(() => this.projectStore.activeProject()?.name ?? '');
   private readonly i18n = inject(TranslocoService);
@@ -99,13 +115,13 @@ export class BoardView {
     stream: ({ params }) => (params.projectId ? this.boardClient.getForProject(params.projectId) : of(null)),
     defaultValue: null,
   });
-  protected readonly board = computed(() => (this.boardResource.hasValue() ? this.boardResource.value() : null));
+  private readonly board = computed(() => (this.boardResource.hasValue() ? this.boardResource.value() : null));
   /**
    * Per-column paginated card state, keyed by board column id. Replaced
    * wholesale on initial load / filter change, appended to by load-more,
    * reconciled in place by drag-and-drop (never refetched after a move).
    */
-  protected readonly columnStates = signal<Record<string, BoardColumnState>>({});
+  private readonly columnStates = signal<Record<string, BoardColumnState>>({});
   /**
    * Board generation — bumped for every initial-pages request. Stale
    * pagination responses (filter changed mid-flight) are dropped instead of
@@ -146,7 +162,7 @@ export class BoardView {
     defaultValue: null,
   });
   /**
-   * S-08: display cards per column — the stored (server-filtered) pages with
+   * Display cards per column — the stored (server-filtered) pages with
    * the `unassigned` pseudo-filter applied client-side. Computed once per
    * change instead of filter-per-column on every CD cycle.
    */
@@ -164,9 +180,9 @@ export class BoardView {
     return map;
   });
   /** Project members — powers the assignee filter options (shared ref store) */
-  protected readonly memberOptions = computed(() => this.refStore.options(this.effectiveProjectId(), 'members'));
+  private readonly memberOptions = computed(() => this.refStore.options(this.effectiveProjectId(), 'members'));
   /** Display label of the active assignee filter (chip + select trigger) */
-  protected readonly selectedAssigneeLabel = computed(() => {
+  private readonly selectedAssigneeLabel = computed(() => {
     const value = this.assignee();
 
     if (!value) return '';
@@ -183,8 +199,8 @@ export class BoardView {
     }
   });
 
-  /** Translated priority label (P11); unknown values render verbatim. */
-  protected priorityLabel(priorityLevel: SharedPriorityLevel): string {
+  /** Translated priority label; unknown values render verbatim. */
+  private priorityLabel(priorityLevel: SharedPriorityLevel): string {
     const key = priorityLabelKey(priorityLevel);
 
     return key ? this.i18n.translate(key) : String(priorityLevel);
@@ -194,10 +210,10 @@ export class BoardView {
     this.priorityLevel() !== null ? this.priorityLabel(this.priorityLevel() as SharedPriorityLevel) : '',
   );
   /**
-   * Sprints of the board's project — powers the sprint selector (DEC-038).
-   * F2: shared ProjectRefStore cache — no per-page duplicate request.
+   * Sprints of the board's project — powers the sprint selector.
+   * Shared ProjectRefStore cache — no per-page duplicate request.
    */
-  protected readonly sprints = computed(() => this.refStore.sprintEntities(this.effectiveProjectId()));
+  private readonly sprints = computed(() => this.refStore.sprintEntities(this.effectiveProjectId()));
   /** Display name of the currently scoped sprint (falls back to the raw id) */
   protected readonly selectedSprintName = computed(() => {
     const id = this.sprintId();
@@ -214,7 +230,7 @@ export class BoardView {
     return err ? getErrorMessage(err) : '';
   });
   // Reference data (statuses, task types for the card's bottom row) via the shared store
-  protected readonly statusMap = computed(() => this.refStore.nameMap(this.effectiveProjectId(), 'statuses'));
+  private readonly statusMap = computed(() => this.refStore.nameMap(this.effectiveProjectId(), 'statuses'));
   /** typeId → issue-type display name (board card bottom-left) */
   protected readonly typeMap = computed(() => this.refStore.nameMap(this.effectiveProjectId(), 'types'));
 
@@ -294,10 +310,29 @@ export class BoardView {
 
     this.setFilterParam('priorityLevel', level === null ? '' : String(level));
   }
-  protected readonly showStatusSelect = signal(false);
-  protected readonly pendingDrop = signal<{ task: BoardTask; targetColumn: BoardColumn } | null>(null);
+  private readonly showStatusSelect = signal(false);
+  private readonly pendingDrop = signal<{ task: BoardTask; targetColumn: BoardColumn } | null>(null);
   /**
-   * S-08: display name per column id — computed once per change instead of
+   * a11y: the keyboard "move to column" picker (`v` on a focused card). CDK
+   * drag-and-drop is pointer-only, so without this a keyboard / screen-reader
+   * user could not change a card's column at all. The pick reuses the SAME
+   * mutation path as a drop (`moveTaskToStatus`, incl. the multi-status prompt).
+   */
+  private readonly showMoveToColumn = signal(false);
+  private readonly pendingMove = signal<BoardTask | null>(null);
+  /** Target columns for the pending move — every column except the card's current one. */
+  protected readonly moveTargets = computed(() => {
+    const task = this.pendingMove();
+    const board = this.board();
+
+    if (!task || !board) return [];
+
+    const current = this.columnOwnerByStatusId().get(task.statusId)?.id;
+
+    return board.columns.filter((column) => column.id !== current);
+  });
+  /**
+   * Display name per column id — computed once per change instead of
    * re-running per column on every CD cycle.
    */
   protected readonly columnNames = computed(() => {
@@ -369,7 +404,7 @@ export class BoardView {
 
     if (sprintId) query.sprintId = sprintId;
 
-    // F-08: concrete assignee/priority filters go server-side (same as sprintId).
+    // Concrete assignee/priority filters go server-side (same as sprintId).
     // `me` resolves to the current user id at query time; `unassigned` has no
     // server-side equivalent (exact-id match only) and is post-filtered in
     // `displayedTasksByColumnId`.
@@ -467,7 +502,7 @@ export class BoardView {
   }
 
   /** Load the next page for every pending column in one HTTP request. */
-  protected flushPendingPages(): void {
+  private flushPendingPages(): void {
     const ids = [...this.pendingColumns];
 
     this.pendingColumns.clear();
@@ -514,19 +549,15 @@ export class BoardView {
         if (generation !== this.pagesGeneration) return;
 
         this.setColumnLoading(ready, false);
-        this.notify.error(getErrorMessage(err));
+        // 4xx only: a 5xx or a network failure is already toasted by the global
+        // errorInterceptor, and toasting it again here showed the user two.
+        if (isCallerHandled(err)) this.notify.error(getErrorMessage(err));
       },
     });
   }
 
-  /** Get all unique statusIds from board columns */
-  protected get allStatusIds(): string[] {
-    const b = this.board();
-
-    if (!b) return [];
-
-    return b.columns.flatMap((c) => c.statusIds);
-  }
+  // The `allStatusIds` getter was removed as dead code — column status ids are
+  // read from the board config directly where needed.
 
   /** Navigate to the unified create-task page (U1 — replaces the board dialog) */
   goToNewTask(): void {
@@ -574,6 +605,44 @@ export class BoardView {
     if (state === 'closed') {
       this.showStatusSelect.set(false);
       this.pendingDrop.set(null);
+    }
+  }
+
+  /** a11y: open the "move to column" picker for a card focused via the keyboard. */
+  protected openMoveToColumn(task: BoardTask): void {
+    this.pendingMove.set(task);
+    this.showMoveToColumn.set(true);
+  }
+
+  /**
+   * Apply a keyboard move: identical semantics to a cross-column drop — a
+   * multi-status column still asks which status the card should land in.
+   */
+  protected moveToColumn(column: BoardColumn): void {
+    const task = this.pendingMove();
+
+    this.showMoveToColumn.set(false);
+    this.pendingMove.set(null);
+
+    if (!task) return;
+
+    if (column.statusIds.length > 1) {
+      this.pendingDrop.set({ task, targetColumn: column });
+      this.showStatusSelect.set(true);
+      return;
+    }
+
+    const targetStatusId = column.statusIds[0];
+
+    if (targetStatusId) {
+      this.moveTaskToStatus(task, targetStatusId);
+    }
+  }
+
+  protected onMoveToColumnDialogStateChange(state: BrnDialogState): void {
+    if (state === 'closed') {
+      this.showMoveToColumn.set(false);
+      this.pendingMove.set(null);
     }
   }
 
@@ -711,7 +780,7 @@ export class BoardView {
   protected goToTask(task: BoardTask): void {
     const projectKey = this.route.snapshot.paramMap.get('projectKey') ?? this.projectStore.activeProject()?.key ?? '';
 
-    // Canonical task URL uses the project key + task number (DEC-032)
+    // Canonical task URL uses the project key + task number
     this.router.navigate([
       '/w',
       getTenantSlug(this.route),

@@ -30,14 +30,14 @@ export interface Task {
   /** Optional sprint assignment (null if in backlog) */
   sprintId: string | null;
   /**
-   * Denormalized status name (audit TOP-2) — sort-only display field kept in
+   * Denormalized status name — sort-only display field kept in
    * sync with statuses.name by the server (rename/delete fan-out). Consumers
    * still resolve display names via the reference-data store. Optional:
    * list DTOs with field projections may omit it.
    */
-  statusName?: string | null;
+  statusName?: string | null | undefined;
   /** Denormalized sprint name — same sync contract as statusName. */
-  sprintName?: string | null;
+  sprintName?: string | null | undefined;
   /** Label IDs attached to this task */
   labelIds: string[];
   /** User ID of the task creator */
@@ -84,29 +84,29 @@ export interface BoardTask {
 export interface CreateTask {
   typeId: string;
   title: string;
-  description?: string;
+  description?: string | undefined;
   statusId: string;
   priorityLevel: TaskPriorityLevel;
-  assigneeId?: string;
-  sprintId?: string;
-  labelIds?: string[];
+  assigneeId?: string | undefined;
+  sprintId?: string | undefined;
+  labelIds?: string[] | undefined;
 }
 
 /** Update task request body type (version is required for optimistic concurrency) */
 export interface UpdateTask {
-  title?: string;
-  description?: string;
-  statusId?: string;
-  priorityLevel?: TaskPriorityLevel;
-  assigneeId?: string | null;
-  typeId?: string;
-  sprintId?: string | null;
-  labelIds?: string[];
+  title?: string | undefined;
+  description?: string | undefined;
+  statusId?: string | undefined;
+  priorityLevel?: TaskPriorityLevel | undefined;
+  assigneeId?: string | null | undefined;
+  typeId?: string | undefined;
+  sprintId?: string | null | undefined;
+  labelIds?: string[] | undefined;
   version: number;
 }
 
 /**
- * Q10 (RQ-04 ③): bulk update request body.
+ * Bulk update request body.
  * Exactly ONE field of `data` must be present per request — enforced by the
  * server's Zod schema; nullable `assigneeId`/`sprintId` unassign/clear.
  */

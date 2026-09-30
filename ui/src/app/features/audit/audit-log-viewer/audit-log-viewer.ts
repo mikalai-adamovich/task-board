@@ -7,9 +7,10 @@ import { TranslocoPipe } from '@jsverse/transloco';
 import { provideIcons, NgIcon } from '@ng-icons/core';
 import { lucideHistory, lucideFilter, lucideArrowUp, lucideArrowDown, lucideRows3 } from '@ng-icons/lucide';
 import { rxResource } from '@angular/core/rxjs-interop';
-import { AuditClient, type AuditListParams } from '@services/audit-client';
-import type { AuditEvent, PaginatedResponse } from '@task-board/shared';
-import { AuditEntityType } from '@task-board/shared';
+import { of } from 'rxjs';
+import { AuditClient } from '@services/audit-client';
+import type { AuditEvent, AuditAction, AuditEntityType, SortDirection, PaginatedResponse } from '@task-board/shared';
+import { AuditActionValues, AuditEntityTypeValues } from '@task-board/shared';
 import { HlmButtonImports } from '@spartan-ng/helm/button';
 import { HlmBadgeImports } from '@spartan-ng/helm/badge';
 import { HlmSelectImports } from '@spartan-ng/helm/select';
@@ -26,7 +27,7 @@ import {
 import { useAutoRowMeasurement } from '@app/shared/auto-table/use-auto-row-measurement';
 import { useTableDensity } from '@app/shared/auto-table/table-density';
 
-/** R3-P7: strict numeric query-param transform — non-positive/garbage → 0 (caller applies defaults). */
+/** Strict numeric query-param transform — non-positive/garbage → 0 (caller applies defaults). */
 function safeNumericParam(value: unknown): number {
   const n = Number(value);
 
@@ -65,9 +66,9 @@ export class AuditLogViewer {
   private readonly auditClient = inject(AuditClient);
   private readonly projectStore = inject(ProjectStore);
   private readonly preferencesStore = inject(PreferencesStore);
-  /** R3-P8: DatePipe token derived from the user's date/time format preference */
+  /** DatePipe token derived from the user's date/time format preference */
   protected readonly dateTimeFmt = this.preferencesStore.dateTimePipeFormat;
-  /** P12 (item 28): active language passed as the DatePipe locale for localized month names */
+  /** Active language passed as the DatePipe locale for localized month names */
   protected readonly lang = this.preferencesStore.language;
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
@@ -77,24 +78,24 @@ export class AuditLogViewer {
   readonly page = input(1, { transform: safeNumericParam });
   readonly limit = input(20, { transform: safeNumericParam });
   /** `asc` | `desc` (time sort direction — default desc = newest first) */
-  readonly sort = input<'asc' | 'desc'>('desc');
+  readonly sort = input<SortDirection>('desc');
   readonly action = input('');
   readonly entityType = input('');
   /** Actor user id */
   readonly actor = input('');
   // ─── Derived state ─────────────────────────────────────────────────────────
   /** Resolved project UUID from the store (available after guard loads project) */
-  protected readonly projectId = computed(() => this.projectStore.activeProject()?.id ?? '');
-  protected readonly safePage = computed(() => this.page() || 1);
-  protected readonly safeLimit = computed(() => this.limit() || 20);
+  private readonly projectId = computed(() => this.projectStore.activeProject()?.id ?? '');
+  private readonly safePage = computed(() => this.page() || 1);
+  private readonly safeLimit = computed(() => this.limit() || 20);
   /**
-   * Q2 (F-05): Auto page-size mode — the persisted preference sentinel (0) means the
+   * Auto page-size mode — the persisted preference sentinel (0) means the
    * effective page size is derived from the measured table-wrapper height instead of
    * a fixed number. Same semantics as the tasks table.
    */
-  protected readonly isAutoMode = computed(() => this.preferencesStore.pageSize() === AUTO_PAGE_SIZE_SENTINEL);
+  private readonly isAutoMode = computed(() => this.preferencesStore.pageSize() === AUTO_PAGE_SIZE_SENTINEL);
   /**
-   * Q9 (RQ-04 ⑤): device-local table density — compact mode shrinks vertical cell
+   * Device-local table density — compact mode shrinks vertical cell
    * padding via a class on the `<table>`; the Auto math reacts through the
    * density-aware fallback row height.
    */
@@ -108,7 +109,7 @@ export class AuditLogViewer {
   private readonly availableRowsHeight = this.measurement.availableRowsHeight;
   private readonly tableWrapRef = viewChild<ElementRef<HTMLDivElement>>('tableWrap');
   /** Effective numeric page size used for fetching/rendering. */
-  protected readonly effectiveLimit = computed(() =>
+  private readonly effectiveLimit = computed(() =>
     this.isAutoMode()
       ? computeAutoPageSize(this.availableRowsHeight(), this.measurement.measuredRowHeight() || this.rowHeightPx())
       : this.safeLimit(),
@@ -130,11 +131,32 @@ export class AuditLogViewer {
       if (total > 0) this.lastKnownPagination.set({ total, totalPages });
     });
   }
-  /** All available entity types for the filter dropdown */
-  protected readonly entityTypes = Object.values(AuditEntityType);
-  protected readonly actions = ['CREATED', 'UPDATED', 'DELETED'] as const;
   /**
-   * R3-P7: actor options are populated from the loaded page data (distinct actors),
+   * All available entity types / actions for the filter dropdowns.
+   *
+   * Both lists were hand-written (`Object.values(AuditEntityType)` and a
+   * literal `['CREATED','UPDATED','DELETED'] as const`); they are now the shared
+   * value tuples, so a fourth action added to the constant appears in the UI and
+   * is accepted by the server on the same commit.
+   */
+  protected readonly entityTypes = AuditEntityTypeValues;
+  protected readonly actions = AuditActionValues;
+  /**
+   * The `action`/`entityType` inputs are raw query-param strings (bound by
+   * `withComponentInputBinding`), so a hand-edited URL can carry anything. They
+   * used to be narrowed with `as AuditListParams['action']` — a silent lie that
+   * forwarded `?action=BOGUS` to the server and surfaced a 400. These computeds
+   * instead RESOLVE the string against the shared tuples: an unrecognised value
+   * yields `undefined`, i.e. "no filter", with no cast anywhere.
+   */
+  private readonly actionFilter = computed<AuditAction | undefined>(() =>
+    AuditActionValues.find((candidate) => candidate === this.action()),
+  );
+  private readonly entityTypeFilter = computed<AuditEntityType | undefined>(() =>
+    AuditEntityTypeValues.find((candidate) => candidate === this.entityType()),
+  );
+  /**
+   * Actor options are populated from the loaded page data (distinct actors),
    * per plan §P7 — no dedicated endpoint.
    */
   protected readonly actorOptions = computed<ActorOption[]>(() => {
@@ -146,21 +168,24 @@ export class AuditLogViewer {
 
     return [...seen].map(([id, name]) => ({ id, name }));
   });
+  // No request while the project id is still blank (store empty between the
+  // guard resolving and the first render) — it would hit `/projects//audit`.
   private readonly auditResource = rxResource({
     params: () => ({
       projectId: this.projectId(),
       page: this.safePage(),
       limit: this.effectiveLimit(),
       sort: this.sort(),
-      action: (this.action() || undefined) as AuditListParams['action'],
-      entityType: (this.entityType() || undefined) as AuditListParams['entityType'],
+      action: this.actionFilter(),
+      entityType: this.entityTypeFilter(),
       actorId: this.actor() || undefined,
     }),
-    stream: ({ params }) => this.auditClient.listByProject(params.projectId, params),
+    stream: ({ params }) =>
+      params.projectId ? this.auditClient.listByProject(params.projectId, params) : of(EMPTY_PAGE),
     defaultValue: EMPTY_PAGE,
   });
   // hasValue() guards are mandatory — reading .value() in the error state throws.
-  protected readonly events = computed(() => (this.auditResource.hasValue() ? this.auditResource.value().data : []));
+  private readonly events = computed(() => (this.auditResource.hasValue() ? this.auditResource.value().data : []));
   /**
    * Last non-empty pagination totals — during a refetch the resource resets to
    * the empty default (total 0), which would collapse the pagination to a single
@@ -174,7 +199,7 @@ export class AuditLogViewer {
 
     return this.lastKnownPagination().total;
   });
-  protected readonly totalPages = computed(() => {
+  private readonly totalPages = computed(() => {
     if (!this.auditResource.isLoading()) {
       return this.auditResource.hasValue() ? this.auditResource.value().pagination.totalPages : 0;
     }
@@ -197,7 +222,7 @@ export class AuditLogViewer {
     return err.error?.message ?? err.cause?.error?.message ?? err.message ?? 'errors.unexpected';
   });
   /** Row-click inline expansion of the full changes detail */
-  protected readonly expandedEventId = signal<string | null>(null);
+  private readonly expandedEventId = signal<string | null>(null);
 
   // ─── URL sync ──────────────────────────────────────────────────────────────
 
@@ -275,13 +300,8 @@ export class AuditLogViewer {
 
     return label === null || label === undefined || label === '' ? '\u2014' : String(label);
   }
-
-  /** Compact one-line diff text for the Changes cell (`field: old → new`). */
-  protected compactDiff(change: AuditEvent['changes'][number]): string {
-    const oldPart = change.oldValue !== null ? `${this.changeValue(change, 'old')} \u2192 ` : '';
-
-    return `${change.field}: ${oldPart}${this.changeValue(change, 'new')}`;
-  }
+  // `compactDiff()` was removed as dead code — the audit-log template renders
+  // the changes cell with `changeValue()` per side, not with a pre-joined string.
 
   /** First changes shown in the compact cell before expansion. */
   protected visibleChanges(event: AuditEvent, max = 2): AuditEvent['changes'] {

@@ -9,7 +9,7 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { HlmSidebarService } from '@spartan-ng/helm/sidebar/service';
 
 /**
- * Q9 (RQ-04 ②) / P13 (item 31): global keyboard shortcuts for the
+ * Global keyboard shortcuts for the
  * authenticated shell.
  *
  * - `c` → navigate to the create-task page of the active project (only when a
@@ -104,7 +104,7 @@ export class KeyboardShortcuts {
   /** Bound to the shell's help dialog (`[state]`). */
   readonly helpOpen = signal(false);
   /**
-   * P13 (item 31b): toggle counters for the shell dropdowns. `m`/`w`/`p`
+   * Toggle counters for the shell dropdowns. `m`/`w`/`p`
    * increment these; the owning component (UserMenu / TenantSwitcher /
    * ProjectSwitcher) reacts with an `effect` and opens/closes its dropdown via
    * its `HlmDropdownMenuTrigger` (state-aware — see `openFocused`/`close`).
@@ -115,7 +115,7 @@ export class KeyboardShortcuts {
   readonly workspaceMenuToggle = signal(0);
   readonly projectMenuToggle = signal(0);
   /**
-   * P13b: live open state of the three shell dropdowns, reported by the owning
+   * Live open state of the three shell dropdowns, reported by the owning
    * components via the trigger's `hlmDropdownMenuOpened`/`hlmDropdownMenuClosed`
    * outputs. Lets `m`/`w`/`p` pass the overlay guard while THEIR OWN menu is
    * open (to close it) without re-enabling hotkeys while other overlays
@@ -143,7 +143,7 @@ export class KeyboardShortcuts {
 
   private onKeydown(event: KeyboardEvent): void {
     // Never hijack modified keystrokes (browser/devtools shortcuts).
-    // Shift alone is fine — that's how `C`/`M`/… arrive (item 31a).
+    // Shift alone is fine — that's how `C`/`M`/… arrive.
     if (event.ctrlKey || event.metaKey || event.altKey) return;
     // Typing context wins — inputs, textareas and contenteditable editors
     if (isEditableTarget(event.target)) return;
@@ -243,7 +243,7 @@ export class KeyboardShortcuts {
     }
   }
 
-  /** P13b: bump the toggle counter of the dropdown owned by `key` (m/w/p). */
+  /** Bump the toggle counter of the dropdown owned by `key` (m/w/p). */
   private bumpMenuToggle(key: string): void {
     if (key === 'm') this.userMenuToggle.update((n) => n + 1);
     else if (key === 'w') this.workspaceMenuToggle.update((n) => n + 1);

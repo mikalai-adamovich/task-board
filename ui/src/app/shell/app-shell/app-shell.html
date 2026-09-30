@@ -1,13 +1,42 @@
+<!-- a11y: keyboard bypass for the sidebar/header. Visually hidden until focused
+     (see the `sr-only focus:not-sr-only` utilities), then pinned to the top-left
+     above every layer. The target <main> is focusable (`tabindex="-1"`) so the
+     jump actually moves the caret, not just the scroll position. -->
+<a
+  href="#main-content"
+  class="sr-only z-100 rounded-md bg-primary px-4 py-2 font-medium text-primary-foreground focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:outline-none focus:ring-2 focus:ring-ring"
+>
+  {{ 'a11y.skipToContent' | transloco }}
+</a>
+
+<!--
+  The one focus-on-navigation mechanism. `RouteFocus` listens for
+  NavigationEnd and moves focus to the `<main>` below, so a route change is
+  announced instead of leaving the caret in the sidebar.
+-->
+<div uiRouteFocus></div>
+
 <ui-sidebar>
   <div class="flex flex-1 flex-col overflow-hidden">
-    <!-- F-12: single source of truth for page padding — pages must not add their own px -->
-    <main class="flex-1 overflow-auto p-3 lg:p-6">
+    <!-- Single source of truth for page padding — pages must not add their own px -->
+    <!--
+      This `<main>` is the skip link's destination, and `focus:outline-none`
+      suppressed the focus indicator exactly there — the skip-link sequence ended
+      with a visible link and an invisible destination. It now shows a ring.
+      `scroll-pt-(--header-height)` compensates for the sticky header, so a
+      focused element is never scrolled underneath it (WCAG 2.2 SC 2.4.11).
+    -->
+    <main
+      id="main-content"
+      tabindex="-1"
+      class="flex-1 overflow-auto p-3 scroll-pt-(--header-height) focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none lg:p-6"
+    >
       <router-outlet />
     </main>
   </div>
 </ui-sidebar>
 
-<!-- Q9 (RQ-04 ②): `?`/F1 opens the shortcut-help dialog.
+<!-- `?`/F1 opens the shortcut-help dialog.
      BrnDialog emits stateChanged with BOTH 'open' and 'closed' — reacting to
      'open' would immediately re-close the dialog, so guard on 'closed' only. -->
 <hlm-dialog
@@ -57,6 +86,12 @@
           <kbd class="rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-xs">F1</kbd>
           <kbd class="rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-xs">?</kbd>
         </span>
+      </li>
+      <!-- a11y: the ONLY way to move a board card with the keyboard — CDK drag
+           is pointer-only, so this is documented here, not buried in a menu. -->
+      <li class="flex items-center justify-between gap-4">
+        <span>{{ 'shortcuts.moveCard' | transloco }}</span>
+        <kbd class="rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-xs">V</kbd>
       </li>
     </ul>
     <hlm-dialog-footer>

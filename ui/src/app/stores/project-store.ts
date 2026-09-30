@@ -15,18 +15,30 @@ import type { Project, ProjectMember } from '@task-board/shared';
 export class ProjectStore {
   private readonly projectClient = inject(ProjectClient);
   private readonly authStore = inject(AuthStore);
-  /** F4: watched for session isolation — a null active tenant means logout. */
+  /** Watched for session isolation — a null active tenant means logout. */
   private readonly tenantStore = inject(TenantStore);
   readonly activeProject = signal<Project | null>(null);
   readonly members = signal<ProjectMember[]>([]);
+  /**
+   * Project id the current `members` value was loaded for — null when nothing is
+   * loaded (or the context was cleared).
+   *
+   * The list loads in the BACKGROUND (`loadProjectByKey` does not await it), so an
+   * empty `members` array is ambiguous: "not loaded yet" and "loaded, nobody in it"
+   * are the same value. Consumers that must not confuse the two (ProjectRefStore
+   * caches by key, and `[]` is truthy) need this unambiguous answer.
+   */
+  readonly loadedMembersFor = signal<string | null>(null);
   readonly loading = signal(false);
-  // ─── F4: tenant-scoped project-list cache (shared by TenantHome + ProjectSwitcher) ──
+  // ─── Tenant-scoped project-list cache (shared by TenantHome + ProjectSwitcher) ──
   /** tenantId → project list (session-scoped; cleared on logout) */
   private readonly projectLists = signal<Record<string, Project[]>>({});
   /** tenantId → whether the list request is in flight */
   private readonly listLoading = signal<Record<string, boolean>>({});
   /** tenantId → in-flight request promise (concurrent-caller dedupe) */
   private readonly listInFlight = new Map<string, Promise<Project[]>>();
+  /** projectId → in-flight member request promise (concurrent-caller dedupe) */
+  private readonly membersInFlight = new Map<string, Promise<void>>();
   /** Whether a project is currently loaded */
   readonly hasProject = computed(() => this.activeProject() !== null);
   /**
@@ -55,21 +67,9 @@ export class ProjectStore {
     return this.members().find((member) => member.userId === userId)?.role ?? null;
   });
 
-  /** Load the project context by ID (project + user's project role). */
-  async loadProject(projectId: string): Promise<Project> {
-    this.loading.set(true);
-    try {
-      const project = await firstValueFrom(this.projectClient.getById(projectId));
-
-      this.activeProject.set(project);
-      // Load members to resolve role (if available) — awaited so consumers
-      // (e.g. projectGuard) can resolve the user's project role synchronously.
-      await this.loadMembers(project.id);
-      return project;
-    } finally {
-      this.loading.set(false);
-    }
-  }
+  // `loadProject(projectId)` was removed as dead code — the project context is
+  // loaded through the route resolver (which then calls the individual loaders),
+  // so this entry point had no caller and duplicated that flow.
 
   /** Load the project context by key within a tenant. */
   async loadProjectByKey(tenantId: string, key: string): Promise<Project> {
@@ -92,8 +92,26 @@ export class ProjectStore {
   /**
    * Load project members in the background (non-critical for navigation).
    * Errors are swallowed — consumers degrade gracefully without members.
+   *
+   * Concurrent callers share ONE request: a component that "ensures" the member
+   * list while the background load is still outstanding must not turn every
+   * ensure() into another request.
    */
-  async loadMembers(projectId: string): Promise<void> {
+  loadMembers(projectId: string): Promise<void> {
+    const inFlight = this.membersInFlight.get(projectId);
+
+    if (inFlight) return inFlight;
+
+    const request = this.fetchMembers(projectId).finally(() => {
+      this.membersInFlight.delete(projectId);
+    });
+
+    this.membersInFlight.set(projectId, request);
+
+    return request;
+  }
+
+  private async fetchMembers(projectId: string): Promise<void> {
     try {
       const members = await firstValueFrom(this.projectClient.listMembers(projectId));
 
@@ -102,8 +120,10 @@ export class ProjectStore {
       if (this.activeProject()?.id !== projectId) return;
 
       this.members.set(members);
+      this.loadedMembersFor.set(projectId);
     } catch {
-      // Members are non-critical for project context
+      // Members are non-critical for project context. `loadedMembersFor` is left
+      // unset, so a later caller still knows the list was never obtained.
     }
   }
 
@@ -111,9 +131,10 @@ export class ProjectStore {
   clearProject(): void {
     this.activeProject.set(null);
     this.members.set([]);
+    this.loadedMembersFor.set(null);
   }
 
-  // ─── F4: project-list cache API ─────────────────────────────────────────────
+  // ─── Project-list cache API ─────────────────────────────────────────────────
 
   /** Reactive read of the cached list for a tenant (empty while loading/uncached). */
   projectList(tenantId: string): Project[] {
@@ -126,7 +147,7 @@ export class ProjectStore {
   }
 
   /**
-   * Ensure the tenant's project list is loaded (F4).
+   * Ensure the tenant's project list is loaded.
    * Dedupes concurrent callers into ONE HTTP request and caches the result
    * until invalidated. Failures are not cached — a later call retries.
    */

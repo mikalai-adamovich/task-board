@@ -94,7 +94,7 @@ const projectPermissions: Record<string, ProjectRole[]> = {
   view_comment: [ProjectRole.PROJECT_ADMIN, ProjectRole.EDITOR, ProjectRole.VIEWER],
   manage_task_relationships: [ProjectRole.PROJECT_ADMIN, ProjectRole.EDITOR],
   manage_filters: [ProjectRole.PROJECT_ADMIN, ProjectRole.EDITOR, ProjectRole.VIEWER],
-  // DEC-021: task History is daily-use and visible to all project roles;
+  // Task History is daily-use and visible to all project roles;
   // administrative audit events stay PROJECT_ADMIN-only (+ tenant bypass).
   view_task_history: [ProjectRole.PROJECT_ADMIN, ProjectRole.EDITOR, ProjectRole.VIEWER],
   view_audit_events: [ProjectRole.PROJECT_ADMIN],
@@ -112,16 +112,12 @@ const projectPermissions: Record<string, ProjectRole[]> = {
  * - All authorization is enforced server-side.
  */
 export class RbacService {
-  /**
-   * Get the effective role description for a user.
-   * Returns the tenant role (which supersedes project role when Owner/Admin).
-   */
-  getEffectiveRole(tenantRole: TenantRole, projectRole?: ProjectRole | null): string {
-    if (tenantRole === TenantRole.OWNER || tenantRole === TenantRole.ADMIN) {
-      return tenantRole;
-    }
-    return projectRole ?? 'MEMBER';
-  }
+  // `getEffectiveRole(tenantRole, projectRole)` was removed as dead code.
+  // It had no caller: authorization goes through `can()` / `ensurePermission()`,
+  // which encode the same "tenant Owner/Admin supersedes the project role" rule
+  // directly in the RBAC matrix — the authoritative copy. A descriptive helper
+  // that nothing reads is a second copy of a security rule, i.e. drift waiting to
+  // happen; the rule and its tests stay in `can()`.
 
   /**
    * Check if the given role combination permits the specified action.
@@ -206,5 +202,27 @@ export function ensurePermission(
   }
 }
 
+// guardrail:no-module-level-service 2026-09-29 — `RbacService` holds no state
+// and no database handle: `can()` is a pure read of the RBAC matrix, and
+// `ensurePermission()` deliberately constructs its own throwaway instance rather
+// than depending on this binding. A module-level instance therefore captures
+// nothing request-scoped, which is what P-02 forbids. See
+// `rules/guardrails.guardrail.test.ts`.
 /** Singleton RBAC service instance */
 export const rbacService = new RbacService();
+
+/**
+ * "may this tenant role administer the workspace itself?" — the
+ * `manage_tenant` row of the matrix, named.
+ *
+ * Twelve request-path guards used to answer this with a hand-written
+ * `role !== TenantRole.OWNER && role !== TenantRole.ADMIN` (tenant.service,
+ * tenant-member.service, project.service). Each was a second copy of a rule the
+ * matrix already owns, and the copies could only ever drift apart. This predicate
+ * keeps ONE allow-list — the matrix's — while leaving each caller's own 403
+ * message intact, which is why the guards keep throwing their domain errors
+ * rather than routing through `ensurePermission`.
+ */
+export function isTenantAdmin(tenantRole: TenantRole | string): boolean {
+  return rbacService.can(tenantRole, null, 'manage_tenant');
+}

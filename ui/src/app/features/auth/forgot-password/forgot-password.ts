@@ -2,6 +2,7 @@ import { Component, inject, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { form, FormField, FormRoot, submit, schema, required, email } from '@angular/forms/signals';
+import { FieldControl } from '@app/shared/field-control/field-control';
 import { AuthClient } from '@services/auth-client';
 import { HlmCardImports } from '@spartan-ng/helm/card';
 import { HlmFieldImports } from '@spartan-ng/helm/field';
@@ -17,6 +18,7 @@ interface ForgotPasswordModel {
 
 @Component({
   imports: [
+    FieldControl,
     HlmAlertImports,
     RouterLink,
     TranslocoPipe,
@@ -33,11 +35,11 @@ interface ForgotPasswordModel {
 })
 export class ForgotPassword {
   private readonly authClient = inject(AuthClient);
-  protected readonly error = signal('');
+  private readonly error = signal('');
   /** Set once a request has been made — shows the neutral confirmation afterwards */
-  protected readonly submitted = signal(false);
+  private readonly submitted = signal(false);
   private readonly model = signal<ForgotPasswordModel>({ email: '' });
-  protected readonly forgotForm = form(
+  private readonly forgotForm = form(
     this.model,
     schema<ForgotPasswordModel>((field) => {
       required(field.email, { message: 'validation.emailRequired' });
@@ -52,7 +54,7 @@ export class ForgotPassword {
     },
   );
 
-  protected async requestReset(): Promise<void> {
+  private async requestReset(): Promise<void> {
     this.error.set('');
 
     try {

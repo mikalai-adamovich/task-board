@@ -14,29 +14,6 @@ export const ErrorResponseSchema = z.object({
 });
 
 /**
- * Wrapped error response matching the v5 structured error model.
- */
-export const WrappedErrorResponseSchema = z.object({
-  error: ErrorResponseSchema,
-});
-
-/**
- * Pagination query parameters accepted by list endpoints.
- * Per v5 spec: page >= 1, limit 1–100, sort format field:direction.
- */
-export const PaginationQuerySchema = z.object({
-  /** 1-based page number */
-  page: z.coerce.number().int().min(1).default(1),
-  /** Number of items per page (1-100) */
-  limit: z.coerce.number().int().min(1).max(100).default(30),
-  /** Sort field and direction (e.g., "createdAt:desc") */
-  sort: z
-    .string()
-    .regex(/^[a-zA-Z_][a-zA-Z0-9_.]*:(asc|desc)$/)
-    .default('createdAt:desc'),
-});
-
-/**
  * Pagination metadata included in paginated responses.
  */
 export const PaginationMetaSchema = z.object({
@@ -46,31 +23,19 @@ export const PaginationMetaSchema = z.object({
   totalPages: z.number().int().nonnegative(),
 });
 
-/**
- * Generic paginated response wrapper.
- * Factory function that creates a paginated response schema for any item schema.
- *
- * Response shape: `{ data: T[], pagination: { page, limit, total, totalPages } }`
- */
-export function createPaginatedResponseSchema<T extends z.ZodType>(itemSchema: T) {
-  return z.object({
-    /** Array of items for the current page */
-    data: z.array(itemSchema),
-    /** Pagination metadata */
-    pagination: PaginationMetaSchema,
-  });
-}
-
-/**
- * Common list query parameters combining pagination with search.
- */
-export const ListQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(100).default(30),
-  sort: z
-    .string()
-    .regex(/^[a-zA-Z_][a-zA-Z0-9_.]*:(asc|desc)$/)
-    .default('createdAt:desc'),
-  /** Optional search/filter string */
-  search: z.string().optional(),
-});
+// NOTE: `WrappedErrorResponseSchema`, the two free-form sort query schemas
+// (see `sort-field.guardrail.test.ts`) and the generic paginated-response factory
+// were removed as dead code.
+//
+// The two sort schemas were additionally a latent NoSQL/DoS vector: their `sort`
+// accepted ANY field name, so wiring either one up would have let a client sort
+// on an arbitrary, unindexed, dotted field — a guaranteed COLLSCAN. They were
+// never wired up (`TaskQuerySchema` uses a closed 11-field allow-list; the audit
+// list hard-codes `createdAt`), but "unreachable today" is not a property a
+// schema should rely on. `schemas/sort-field.guardrail.test.ts` now asserts
+// behaviourally that no arbitrary-field sort regex can come back, and sweeps
+// `schemas/` + `validators/` for the pattern so a permissive sort cannot be
+// reintroduced unwired.
+//
+// The response wrapper is likewise gone: no response was ever validated with it,
+// which is why it could sit here claiming to be the envelope contract.

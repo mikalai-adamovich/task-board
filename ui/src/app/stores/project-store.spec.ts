@@ -213,7 +213,7 @@ describe('ProjectStore — background members + reactive projectRole', () => {
     expect(store.projectRole()).toBeNull();
   });
 
-  // ── F4: shared tenant-scoped project-list cache ─────────────────────────────
+  // ── Shared tenant-scoped project-list cache ─────────────────────────────────
 
   function tenantProject(tenantId: string, id: string): Project {
     return { ...makeProject(id), tenantId } as unknown as Project;

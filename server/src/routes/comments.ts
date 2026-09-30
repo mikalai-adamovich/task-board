@@ -1,62 +1,64 @@
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import type { AppEnv } from '../types/context.js';
-import { validateBody } from '../middleware/validation.js';
+import { param, pathParamValidation, validateBody } from '../middleware/validation.js';
 import { CreateCommentSchema, UpdateCommentSchema } from '../schemas/comment.js';
+import type { CallerContext } from '../services/tenant-assert.js';
+
+/**
+ * The caller context is ALWAYS forwarded to the service
+ * layer. It is taken from the request context set by the auth /
+ * tenant-context middleware — never from the path or the body — and the
+ * service treats it as required (missing → 401, foreign tenant → 404).
+ *
+ * The audit context (`{ tenantId, projectId }`) that the route used to
+ * assemble by hand is now derived INSIDE the service from the tenant-asserted
+ * task, so a route can no longer supply a mismatched project.
+ */
+function callerContext(c: Context<AppEnv>): CallerContext {
+  return { tenantId: c.get('tenantId'), userId: c.get('userId'), userRole: c.get('tenantRole') };
+}
 
 export function createCommentRoutes(): Hono<AppEnv> {
   const router = new Hono<AppEnv>();
 
+  // Every path parameter of every route below is parsed with Zod before its
+  // handler runs (see middleware/validation.ts + validators/path-params.ts).
+  router.use('*', pathParamValidation());
+
+  /**
+   * Bare task ids are tenant-asserted inside the service, and
+   * authorization (create_comment / edit_comment / delete_comment) is enforced
+   * there after the task's project is resolved — the route paths carry no
+   * projectId.
+   */
   router.get('/tasks/:taskId/comments', async (c) => {
-    const taskId = c.req.param('taskId');
-    const tenantId = c.get('tenantId');
-    // M-02: bare task ids are tenant-asserted inside the service
-    const comments = await c.get('svc').comments.getCommentsByTask(taskId, tenantId);
+    const taskId = param(c, 'taskId');
+    const comments = await c.get('svc').comments.getCommentsByTask(taskId, callerContext(c));
 
     return c.json({ data: comments });
   });
 
   router.post('/tasks/:taskId/comments', validateBody(CreateCommentSchema), async (c) => {
-    const taskId = c.req.param('taskId');
-    const userId = c.get('userId');
-    const tenantId = c.get('tenantId');
-    const tenantRole = c.get('tenantRole');
+    const taskId = param(c, 'taskId');
     const body = c.req.valid('json');
-    // Authorization (create_comment) is enforced inside the service after the
-    // task's project is resolved — the route path carries no projectId.
-    // M-06: resolve the task once via the comment service's own task repo so
-    // the action is audit-logged with its tenant/project context.
-    const task = await c.get('svc').comments.resolveTask(taskId);
-    const comment = await c
-      .get('svc')
-      .comments.createComment(taskId, userId, body, { tenantId, projectId: task.projectId }, tenantRole);
+    const comment = await c.get('svc').comments.createComment(taskId, body, callerContext(c));
 
     return c.json({ data: comment }, 201);
   });
 
   router.patch('/comments/:commentId', validateBody(UpdateCommentSchema), async (c) => {
-    const commentId = c.req.param('commentId');
-    const userId = c.get('userId');
-    const tenantId = c.get('tenantId');
-    const tenantRole = c.get('tenantRole');
+    const commentId = param(c, 'commentId');
     const body = c.req.valid('json');
-    // M-06: resolve the comment's task once so the update is audit-logged.
-    const task = await c.get('svc').comments.resolveTaskForComment(commentId);
-    const comment = await c
-      .get('svc')
-      .comments.updateComment(commentId, userId, tenantRole, body, { tenantId, projectId: task.projectId });
+    const comment = await c.get('svc').comments.updateComment(commentId, body, callerContext(c));
 
     return c.json({ data: comment });
   });
 
   router.delete('/comments/:commentId', async (c) => {
-    const commentId = c.req.param('commentId');
-    const userId = c.get('userId');
-    const tenantId = c.get('tenantId');
-    const tenantRole = c.get('tenantRole');
-    // M-06: resolve the comment's task once so the delete is audit-logged.
-    const task = await c.get('svc').comments.resolveTaskForComment(commentId);
+    const commentId = param(c, 'commentId');
 
-    await c.get('svc').comments.deleteComment(commentId, userId, tenantRole, { tenantId, projectId: task.projectId });
+    await c.get('svc').comments.deleteComment(commentId, callerContext(c));
 
     return c.json({ data: { success: true } });
   });

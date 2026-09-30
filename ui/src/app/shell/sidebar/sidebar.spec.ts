@@ -183,7 +183,7 @@ describe('Sidebar', () => {
     expect(footer).not.toBeNull();
     expect(toggle).not.toBeNull();
     expect(footer?.classList.contains('flex')).toBe(true);
-    // P13b: HlmSidebarFooter sets `flex flex-col` — only `items-end` (cross
+    // HlmSidebarFooter sets `flex flex-col` — only `items-end` (cross
     // axis) pins the toggle to the bottom-RIGHT; `justify-end` was vertical.
     expect(footer?.classList.contains('items-end')).toBe(true);
     expect(footer?.classList.contains('flex-col')).toBe(true);

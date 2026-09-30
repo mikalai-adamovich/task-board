@@ -1,5 +1,5 @@
 /**
- * R3-P7 — Audit-log enrichment: resolves entity ids into human-readable labels
+ * Audit-log enrichment: resolves entity ids into human-readable labels
  * so the UI never renders raw UUIDs.
  *
  * Batching contract: for a single page of events, each referenced collection is

@@ -1,4 +1,4 @@
-<!-- Q2 (F-05): full-height flex column — exactly viewport minus the app header
+<!-- Full-height flex column — exactly viewport minus the app header
      (--header-height: 2.5rem below lg, 4rem from lg) and the shell <main> vertical
      padding (p-3 → 1.5rem below lg, p-6 → 3rem from lg); the member table fills the
      rest so its pagination stays at the page bottom. -->
@@ -7,9 +7,9 @@
 >
   <!-- Page header -->
   <div class="mb-6 flex items-center justify-between">
-    <h2 class="text-2xl font-bold text-foreground">{{ 'projectMembers.title' | transloco }}</h2>
+    <h1 class="text-2xl font-bold text-foreground">{{ 'projectMembers.title' | transloco }}</h1>
     <div class="flex items-center gap-2">
-      <!-- Q9 (RQ-04 ⑤): compact/comfortable density toggle (device-local preference) -->
+      <!-- Compact/comfortable density toggle (device-local preference) -->
       <button
         hlmBtn
         variant="outline"
@@ -27,7 +27,7 @@
     </div>
   </div>
 
-  <!-- Shared member table (U4) — full-height + Auto rows-per-page (Q2/F-05) -->
+  <!-- Shared member table — full-height + Auto rows-per-page -->
   <div class="flex min-h-0 flex-1 flex-col">
     <ui-member-table
       variant="project"
@@ -80,12 +80,18 @@
             id="member-userid"
             type="text"
             [formField]="addMemberForm.userId"
+            uiFieldControl
             [placeholder]="'projectMembers.userIdPlaceholder' | transloco"
           />
+          @if (addMemberForm.userId().touched() && addMemberForm.userId().errors().length) {
+            <hlm-field-error class="block">{{
+              addMemberForm.userId().errors()[0]?.message | transloco
+            }}</hlm-field-error>
+          }
         </hlm-field>
         <hlm-field>
           <label hlmFieldLabel for="member-role">{{ 'projectMembers.role' | transloco }}</label>
-          <hlm-native-select id="member-role" [formField]="addMemberForm.role">
+          <hlm-native-select id="member-role" [formField]="addMemberForm.role" uiFieldControl>
             @for (role of projectRoles; track role) {
               <option hlmNativeSelectOption [value]="role">{{ role }}</option>
             }
@@ -94,12 +100,7 @@
       </form>
       <hlm-dialog-footer>
         <button hlmBtn variant="outline" hlmDialogClose>{{ 'projectMembers.cancel' | transloco }}</button>
-        <button
-          hlmBtn
-          type="submit"
-          form="add-member-form"
-          [disabled]="addMemberForm().invalid() || addMemberForm().submitting()"
-        >
+        <button hlmBtn type="submit" form="add-member-form" [disabled]="addMemberForm().submitting()">
           @if (addMemberForm().submitting()) {
             <hlm-spinner /> {{ 'projectMembers.adding' | transloco }}
           } @else {

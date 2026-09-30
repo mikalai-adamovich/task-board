@@ -9,7 +9,7 @@ export interface UserProjectBoardPreference {
   /** Project ID */
   projectId: string;
   /**
-   * Visible task-table columns for this project (R3-P4). Null = default set.
+   * Visible task-table columns for this project. Null = default set.
    * `key`/`title` are always part of the effective set regardless of this value.
    */
   taskTableColumns: TaskTableColumnKey[] | null;
@@ -21,5 +21,5 @@ export interface UserProjectBoardPreference {
 
 /** Update user project board preference request body type (partial update) */
 export interface UpdateUserProjectBoardPreference {
-  taskTableColumns?: TaskTableColumnKey[] | null;
+  taskTableColumns?: TaskTableColumnKey[] | null | undefined;
 }

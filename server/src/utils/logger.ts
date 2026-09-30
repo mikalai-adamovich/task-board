@@ -1,5 +1,5 @@
 /**
- * Minimal structured logger (S-19).
+ * Minimal structured logger.
  *
  * Writes single-line JSON to `console` — one parseable object per line:
  * ```json

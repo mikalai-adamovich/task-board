@@ -11,7 +11,7 @@ import { HlmCardImports } from '@spartan-ng/helm/card';
 import { HlmTextareaImports } from '@spartan-ng/helm/textarea';
 import { HlmAvatarImports } from '@spartan-ng/helm/avatar';
 import { HlmDialogImports } from '@spartan-ng/helm/dialog';
-import { finalize } from 'rxjs';
+import { finalize, of } from 'rxjs';
 import { rxResource } from '@angular/core/rxjs-interop';
 import type { Comment } from '@task-board/shared';
 import { injectToasts } from '@app/shared/utils/toast-utils';
@@ -50,9 +50,11 @@ export class CommentThread {
   readonly canEdit = input<boolean>(false);
   /** Initials of the current user for the new-comment avatar fallback */
   protected readonly currentUserInitials = computed(() => initials(this.authStore.currentUser()?.displayName ?? null));
+  // No request until the task id is meaningful (a blank id would hit
+  // `/tasks//comments` and poison the resource with the SPA-fallback HTML).
   private readonly commentsResource = rxResource({
     params: () => ({ taskId: this.taskId() }),
-    stream: ({ params }) => this.commentClient.list(params.taskId),
+    stream: ({ params }) => (params.taskId ? this.commentClient.list(params.taskId) : of([] as Comment[])),
     defaultValue: [],
   });
   protected readonly comments = computed(() => (this.commentsResource.hasValue() ? this.commentsResource.value() : []));
@@ -60,17 +62,17 @@ export class CommentThread {
   private readonly actionError = signal('');
   protected readonly error = computed(() => this.actionError() || this.loadError());
   // New comment form
-  protected readonly newBody = signal('');
-  protected readonly submitting = signal(false);
+  private readonly newBody = signal('');
+  private readonly submitting = signal(false);
   // Inline edit state
-  protected readonly editingId = signal<string | null>(null);
-  protected readonly editBody = signal('');
-  protected readonly savingEdit = signal(false);
+  private readonly editingId = signal<string | null>(null);
+  private readonly editBody = signal('');
+  private readonly savingEdit = signal(false);
   /** Whether the inline edit editor has finished initializing (swap views only when ready) */
-  protected readonly editReady = signal(false);
+  private readonly editReady = signal(false);
   // Delete confirmation
-  protected readonly showDeleteConfirm = signal(false);
-  protected readonly commentToDelete = signal<Comment | null>(null);
+  private readonly showDeleteConfirm = signal(false);
+  private readonly commentToDelete = signal<Comment | null>(null);
 
   protected submitComment(): void {
     const body = this.newBody().trim();
@@ -104,7 +106,7 @@ export class CommentThread {
     this.editReady.set(false);
   }
 
-  protected cancelEdit(): void {
+  private cancelEdit(): void {
     this.editingId.set(null);
     this.editBody.set('');
     this.editReady.set(false);

@@ -1,8 +1,16 @@
-import { Component, effect, inject, signal } from '@angular/core';
+import { Component, DestroyRef, effect, inject, signal } from '@angular/core';
 import { Router } from '@angular/router';
+import { Subscription } from 'rxjs';
 import { TranslocoPipe } from '@jsverse/transloco';
-import { TenantRole, generateSlugFromName, isValidTenantSlug } from '@task-board/shared';
+import {
+  TenantRole,
+  TENANT_DESCRIPTION_MAX_LENGTH,
+  TENANT_NAME_MAX_LENGTH,
+  generateSlugFromName,
+  isValidTenantSlug,
+} from '@task-board/shared';
 import { form, FormField, FormRoot, schema, required, maxLength, validate } from '@angular/forms/signals';
+import { FieldControl } from '@app/shared/field-control/field-control';
 import { TenantStore } from '@stores/tenant-store';
 import { AuthStore } from '@stores/auth-store';
 import { BillingClient, CheckoutContext, FREE_PLAN_ID } from '@services/billing-client';
@@ -18,7 +26,7 @@ import { HlmAlertImports } from '@spartan-ng/helm/alert';
 import { provideIcons, NgIcon } from '@ng-icons/core';
 import { lucideCheck } from '@ng-icons/lucide';
 
-/** Steps of the first-tenant onboarding journey (DEC-022): details → plan → checkout → confirmation. */
+/** Steps of the first-tenant onboarding journey: details → plan → checkout → confirmation. */
 type OnboardingStep = 'details' | 'plan' | 'checkout' | 'confirmation';
 
 interface WorkspaceModel {
@@ -32,6 +40,7 @@ const SLUG_CHECK_DEBOUNCE_MS = 300;
 
 @Component({
   imports: [
+    FieldControl,
     HlmAlertImports,
     TranslocoPipe,
     FormField,
@@ -49,26 +58,30 @@ const SLUG_CHECK_DEBOUNCE_MS = 300;
   templateUrl: './create-workspace.html',
 })
 export class CreateWorkspace {
+  private readonly destroyRef = inject(DestroyRef);
   private readonly router = inject(Router);
   private readonly tenantStore = inject(TenantStore);
   private readonly authStore = inject(AuthStore);
   private readonly billing = inject(BillingClient);
   private readonly tenantClient = inject(TenantClient);
-  protected readonly error = signal('');
-  protected readonly step = signal<OnboardingStep>('details');
-  protected readonly confirming = signal(false);
-  protected readonly creating = signal(false);
+  private readonly error = signal('');
+  private readonly step = signal<OnboardingStep>('details');
+  private readonly confirming = signal(false);
+  private readonly creating = signal(false);
   /** Live availability state of the slug field (debounced server check). */
-  protected readonly slugAvailability = signal<'idle' | 'checking' | 'available' | 'taken'>('idle');
+  private readonly slugAvailability = signal<'idle' | 'checking' | 'available' | 'taken'>('idle');
   /** Set once the user edits the slug by hand — stops auto-generation from the name. */
   private readonly slugManuallyEdited = signal(false);
-  protected readonly model = signal<WorkspaceModel>({ name: '', description: '', slug: '' });
+  private readonly model = signal<WorkspaceModel>({ name: '', description: '', slug: '' });
   protected readonly workspaceForm = form(
     this.model,
     schema<WorkspaceModel>((field) => {
       required(field.name, { message: 'validation.workspaceNameRequired' });
-      maxLength(field.name, 100, { message: 'validation.nameMax' });
-      maxLength(field.description, 120, { message: 'validation.descriptionMax' });
+      // The server's bounds, not hand-typed twins of them. The create
+      // form used to hard-code 100 while the rename form and the server both
+      // used TENANT_NAME_MAX_LENGTH, so one field had two limits in one session.
+      maxLength(field.name, TENANT_NAME_MAX_LENGTH, { message: 'validation.nameMax' });
+      maxLength(field.description, TENANT_DESCRIPTION_MAX_LENGTH, { message: 'validation.descriptionMax' });
       validate(field.slug, ({ value }) => {
         const slug = value();
 
@@ -123,6 +136,7 @@ export class CreateWorkspace {
     // Debounced live availability check against GET /api/tenants/slug-available.
     let lastCheckedSlug = '';
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let slugCheckSubscription: Subscription | null = null;
 
     effect(() => {
       const slug = this.model().slug;
@@ -152,7 +166,7 @@ export class CreateWorkspace {
 
       timer = setTimeout(() => {
         timer = null;
-        this.tenantClient.isSlugAvailable(slug).subscribe({
+        slugCheckSubscription = this.tenantClient.isSlugAvailable(slug).subscribe({
           next: (available) => {
             // Ignore stale responses for a slug that has since changed.
             if (this.model().slug === slug) {
@@ -166,6 +180,20 @@ export class CreateWorkspace {
           },
         });
       }, SLUG_CHECK_DEBOUNCE_MS);
+    });
+
+    // The debounce timer outlives the component unless it is cancelled: leaving
+    // the page inside the 300 ms window fired `isSlugAvailable(slug)` for a
+    // destroyed component and wrote its state. The in-flight SUBSCRIPTION is
+    // cancelled too, so a response that lands mid-teardown cannot write either.
+    this.destroyRef.onDestroy(() => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      lastCheckedSlug = '';
+      slugCheckSubscription?.unsubscribe();
+      slugCheckSubscription = null;
     });
   }
 

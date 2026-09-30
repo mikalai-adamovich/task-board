@@ -1,5 +1,5 @@
 /**
- * Tests for the unified TenantHome component (DEC-033).
+ * Tests for the unified TenantHome component.
  *
  * Covers:
  * - Projects grid rendering with slug-based links
@@ -113,7 +113,7 @@ describe('TenantHome', () => {
   let projectClientMock: { list: ReturnType<typeof vi.fn>; create: ReturnType<typeof vi.fn> };
   let taskClientMock: { getMyTasks: ReturnType<typeof vi.fn> };
   let tenantClientMock: { listMembers: ReturnType<typeof vi.fn> };
-  // Real signal so tests can simulate switching the active workspace (Round 5 F-01)
+  // Real signal so tests can simulate switching the active workspace
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let tenantStoreMock: { activeTenant: WritableSignal<any> };
   let authStoreMock: { currentUser: ReturnType<typeof vi.fn>; tenantRole: ReturnType<typeof vi.fn> };
@@ -209,7 +209,54 @@ describe('TenantHome', () => {
     expect(tenantClientMock.listMembers).not.toHaveBeenCalled();
   });
 
-  // ── Round 5 F-01: resources must re-run when the active workspace changes ──
+  // ── The pending-invitation summary is an rxResource, not an effect ─────────
+
+  it('should request the member list exactly ONCE per tenant (resource, no duplicate effect run)', async () => {
+    await setup({ role: 'OWNER' });
+
+    for (let i = 0; i < 20 && component.pendingInvites().length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    await settle(fixture);
+
+    expect(tenantClientMock.listMembers).toHaveBeenCalledTimes(1);
+    expect(tenantClientMock.listMembers).toHaveBeenCalledWith('t1');
+    expect(component.pendingInvites()).toHaveLength(1);
+    expect(component.loadingInvites()).toBe(false);
+  });
+
+  it('should NOT request members while the active tenant is unresolved (F21)', async () => {
+    await setup({ role: 'OWNER' });
+    tenantClientMock.listMembers.mockClear();
+    tenantStoreMock.activeTenant.set(null);
+
+    await settle(fixture);
+    await new Promise((r) => setTimeout(r, 10));
+    await settle(fixture);
+
+    expect(tenantClientMock.listMembers).not.toHaveBeenCalled();
+    expect(component.pendingInvites()).toEqual([]);
+  });
+
+  it('should re-request the member list when the active tenant switches (F21)', async () => {
+    await setup({ role: 'OWNER' });
+
+    for (let i = 0; i < 20 && component.pendingInvites().length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+
+    tenantStoreMock.activeTenant.set({ ...mockTenant, id: 't2', slug: 'globex', name: 'Globex' });
+
+    for (let i = 0; i < 20 && tenantClientMock.listMembers.mock.calls.length < 2; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    await settle(fixture);
+
+    expect(tenantClientMock.listMembers).toHaveBeenCalledTimes(2);
+    expect(tenantClientMock.listMembers).toHaveBeenLastCalledWith('t2');
+  });
+
+  // ── Resources must re-run when the active workspace changes ────────────────
 
   it('should re-fetch projects and my tasks when the active tenant switches (Round 5 F-01)', async () => {
     await setup();

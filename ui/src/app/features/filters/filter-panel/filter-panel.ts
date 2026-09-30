@@ -5,6 +5,7 @@ import { lucideCheck, lucidePencil, lucideTrash2 } from '@ng-icons/lucide';
 import { rxResource } from '@angular/core/rxjs-interop';
 import { of, tap } from 'rxjs';
 import { form, FormField, FormRoot, required, schema } from '@angular/forms/signals';
+import { FieldControl } from '@app/shared/field-control/field-control';
 import { FilterClient } from '@services/filter-client';
 import { ProjectRefStore } from '@stores/project-ref-store';
 import { HlmButtonImports } from '@spartan-ng/helm/button';
@@ -57,6 +58,7 @@ export function stableValue(value: unknown): string {
 @Component({
   selector: 'ui-filter-panel',
   imports: [
+    FieldControl,
     ConfirmDialog,
     HlmAlertImports,
     TranslocoPipe,
@@ -100,7 +102,7 @@ export class FilterPanel {
       f.reporterIds?.length ||
       f.sprintIds?.length ||
       f.labelIds?.length ||
-      // Q12: date-range criteria captured from the URL count as active state too
+      // Date-range criteria captured from the URL count as active state too
       f.createdFrom ||
       f.createdTo ||
       f.updatedFrom ||
@@ -122,7 +124,7 @@ export class FilterPanel {
     stream: ({ params }) => (params.projectId ? this.filterClient.list(params.projectId) : of([] as Filter[])),
     defaultValue: [] as Filter[],
   });
-  protected readonly filters = computed(() => (this.viewsResource.hasValue() ? this.viewsResource.value() : []));
+  private readonly filters = computed(() => (this.viewsResource.hasValue() ? this.viewsResource.value() : []));
   protected readonly loading = computed(() => this.viewsResource.isLoading());
   /** V9-5: rxResource.error() returns `undefined` (not null) on success — coerce to boolean */
   protected readonly loadError = computed(() => Boolean(this.viewsResource.error()));
@@ -136,14 +138,32 @@ export class FilterPanel {
   protected readonly priorityOptions = PRIORITY_OPTIONS;
   /**
    * Working copy of the criteria edited by the panel's fields. Re-seeded from
-   * `currentFilters` whenever the parent state changes (e.g. after apply/clear).
+   * `currentFilters` whenever the parent's state GENUINELY changes (a different
+   * set of criteria, e.g. after apply/clear or loading another saved view).
    */
-  protected readonly draft = signal<FilterCriteria>({});
+  private readonly draft = signal<FilterCriteria>({});
+  /**
+   * Structural fingerprint of the criteria the draft was last seeded from
+   * (see `stableValue`). A plain field, NOT a signal — the seeding effect must
+   * not re-trigger on its own write.
+   */
+  private seededFrom: string | null = null;
 
   constructor() {
     effect(() => this.refStore.ensure(this.projectId(), ['statuses', 'types', 'sprints', 'labels', 'members']));
-    // Re-seed the draft when the parent's current filters change
-    effect(() => this.draft.set({ ...this.currentFilters() }));
+    // Re-seed the draft when the parent's current filters genuinely change.
+    // A background refresh (refetch, router re-emission, parent re-render)
+    // hands us a NEW object with the SAME content; seeding from it would wipe
+    // whatever the user is currently typing. Comparing the structural
+    // fingerprint keeps in-progress edits and only re-seeds on a real change.
+    effect(() => {
+      const incoming = stableValue(this.currentFilters());
+
+      if (this.seededFrom === incoming) return;
+
+      this.seededFrom = incoming;
+      this.draft.set({ ...this.currentFilters() });
+    });
   }
 
   /** First id of a single-value criteria key (for select bindings) */
@@ -176,7 +196,7 @@ export class FilterPanel {
   }
 
   /** Emit the edited criteria — the parent maps them onto its URL params */
-  protected applyDraft(): void {
+  private applyDraft(): void {
     this.filterApplied.emit({ filters: this.draft(), sort: this.currentSort() });
   }
 
@@ -186,28 +206,28 @@ export class FilterPanel {
     this.applyDraft();
   }
   // ─── Saved views: save / rename / delete / active detection ────────────────
-  protected readonly saving = signal(false);
-  protected readonly showSaveForm = signal(false);
+  private readonly saving = signal(false);
+  private readonly showSaveForm = signal(false);
   private readonly saveModel = signal<ViewNameForm>({ name: '' });
-  protected readonly saveForm = form(
+  private readonly saveForm = form(
     this.saveModel,
     schema<ViewNameForm>((field) => {
       required(field.name, { message: 'filters.nameRequired' });
     }),
   );
   /** View currently being renamed (drives the rename dialog) */
-  protected readonly renameTarget = signal<Filter | null>(null);
-  protected readonly renaming = signal(false);
+  private readonly renameTarget = signal<Filter | null>(null);
+  private readonly renaming = signal(false);
   private readonly renameModel = signal<ViewNameForm>({ name: '' });
-  protected readonly renameForm = form(
+  private readonly renameForm = form(
     this.renameModel,
     schema<ViewNameForm>((field) => {
       required(field.name, { message: 'filters.nameRequired' });
     }),
   );
   // Delete confirmation
-  protected readonly showDeleteConfirm = signal(false);
-  protected readonly filterToDelete = signal<Filter | null>(null);
+  private readonly showDeleteConfirm = signal(false);
+  private readonly filterToDelete = signal<Filter | null>(null);
   /**
    * The view whose stored criteria+sort exactly match the current URL-derived
    * state (order-insensitive deep compare). Powers the active checkmark.
@@ -256,7 +276,7 @@ export class FilterPanel {
     this.renameForm().reset({ name: view.name });
   }
 
-  protected closeRename(): void {
+  private closeRename(): void {
     this.renameTarget.set(null);
   }
 
@@ -303,7 +323,7 @@ export class FilterPanel {
         this.showDeleteConfirm.set(false);
         this.filterToDelete.set(null);
         this.viewsResource.reload();
-        // Q11 (DEC-053): undo recreates the saved view with the same name,
+        // Undo recreates the saved view with the same name,
         // criteria and sort. The new view gets a new id and belongs to the
         // current user — acceptable for a personal saved view.
         this.notify.successWithUndo('toasts.deleted', () =>

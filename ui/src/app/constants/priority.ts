@@ -77,12 +77,8 @@ export const TenantStatusVariantMap = {
   DELETION_PENDING: 'destructive',
 } as const;
 
-/** Project status mapped to badge variants. */
-export const ProjectStatusVariantMap = {
-  ACTIVE: 'default',
-  ARCHIVED: 'secondary',
-  DELETION_PENDING: 'destructive',
-} as const;
+// `ProjectStatusVariantMap` was removed as dead code — a byte-for-byte copy
+// of `TenantStatusVariantMap` with no consumer, i.e. two names for one mapping.
 
 /** Semantic hlm-badge variants keyed by task-type key (task/bug/story). Custom types fall back to outline. */
 export const TaskTypeVariantMap = {

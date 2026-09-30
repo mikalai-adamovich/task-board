@@ -100,7 +100,8 @@
       "email": "Email",
       "submit": "Send reset link",
       "submitting": "Sending",
-      "backToLogin": "Back to sign in"
+      "backToLogin": "Back to sign in",
+      "failed": "재설정 링크를 보내지 못했습니다. 다시 시도해 주세요."
     },
     "resetPassword": {
       "title": "Reset password",
@@ -110,7 +111,10 @@
       "confirmPassword": "Confirm password",
       "submit": "Reset password",
       "submitting": "Resetting",
-      "backToLogin": "Back to sign in"
+      "backToLogin": "Back to sign in",
+      "invalidToken": "이 재설정 링크는 유효하지 않거나 만료되었습니다. 새 링크를 요청해 주세요.",
+      "passwordsNotMatch": "비밀번호가 일치하지 않습니다.",
+      "success": "비밀번호가 업데이트되었습니다"
     }
   },
   "landing": {
@@ -179,7 +183,9 @@
       "checking": "Checking availability",
       "taken": "This URL is already taken",
       "available": "This URL is available",
-      "hint": "Lowercase letters, numbers and hyphens only."
+      "hint": "Lowercase letters, numbers and hyphens only.",
+      "invalid": "소문자, 숫자, 하이픈만 사용할 수 있습니다",
+      "required": "워크스페이스 URL은 필수입니다"
     },
     "plan": {
       "title": "Choose a plan",
@@ -303,7 +309,9 @@
     "expired": "만료됨",
     "editMemberTitle": "멤버 편집",
     "editMemberDesc": "멤버의 이름, 이메일, 역할 및 만료일을 수정합니다.",
-    "clearExpiration": "지우기"
+    "clearExpiration": "지우기",
+    "removeConfirm": "이 멤버를 제거하시겠습니까?",
+    "removeMemberTitle": "멤버 제거"
   },
   "projects": {
     "createTitle": "프로젝트 만들기",
@@ -350,7 +358,9 @@
     "viewAllTasks": "View all tasks",
     "sprintDates": "{{start}} ~ {{end}}",
     "board": "보드",
-    "manageBoard": "컬럼 구성"
+    "manageBoard": "컬럼 구성",
+    "archivedBanner": "이 프로젝트는 보관되어 읽기 전용입니다.",
+    "deletionPendingBanner": "이 프로젝트는 삭제가 예약되어 읽기 전용입니다."
   },
   "boardView": {
     "loading": "보드 로딩 중",
@@ -370,7 +380,9 @@
     "allAssignees": "모든 담당자",
     "currentUser": "나",
     "unassigned": "미할당",
-    "allPriorities": "모든 우선순위"
+    "allPriorities": "모든 우선순위",
+    "moveTaskTitle": "작업 이동",
+    "moveTaskDesc": "이 작업을 이동할 열을 선택하세요."
   },
   "priority": {
     "low": "낮음",
@@ -449,7 +461,8 @@
     "editDatesTitle": "스프린트 날짜 편집",
     "startDateLabel": "시작일",
     "endDateLabel": "종료일",
-    "saveDates": "날짜 저장"
+    "saveDates": "날짜 저장",
+    "removeTaskFromSprint": "{{name}} 스프린트에서 제거"
   },
   "docs": {
     "title": "문서",
@@ -533,7 +546,8 @@
     "typeRequired": "작업 유형은 필수입니다",
     "statusRequired": "상태는 필수입니다",
     "priorityRequired": "우선순위는 필수입니다",
-    "titleMaxLength": "Title must be at most 200 characters"
+    "titleMaxLength": "Title must be at most 200 characters",
+    "descriptionMax": "설명은 최대 120자 이하여야 합니다"
   },
   "errors": {
     "unexpected": "예기치 않은 오류가 발생했습니다. 다시 시도해 주세요.",
@@ -544,6 +558,7 @@
     "forbidden": "이 동작을 수행할 권한이 없습니다.",
     "conflict": "이 리소스는 다른 사용자에 의해 변경되었습니다. 다시 로드하고 시도하세요.",
     "validation": "입력 내용을 확인하고 다시 시도하세요.",
+    "payloadTooLarge": "요청이 너무 큽니다. 전송하는 데이터 양을 줄인 뒤 다시 시도하세요.",
     "badRequest": "요청이 잘못되었습니다. 입력 내용을 확인하세요.",
     "tooManyRequests": "요청이 너무 많습니다. 잠시 뒤 다시 시도하세요.",
     "unknown": "알 수 없는 오류가 발생했습니다.",
@@ -561,12 +576,19 @@
     "tenantArchived": "이 워크스페이스는 아카이브되얰 있습니다. 변경하려면 복원하세요.",
     "projectKeyImmutable": "프로젝트 키를 변경할 수 없습니다. 이 프로젝트에 작업이 이미 존재합니다.",
     "taskTypeInUse": "이 작업 유형은 기존 작업에 사용 중입니다. 삭제하기 전에 대체 유형을 선택하세요.",
-    "statusInUse": "이 상태는 기존 작업에 사용 중입니다. 삭제하기 전에 대체 상태를 선택하세요."
+    "statusInUse": "이 상태는 기존 작업에 사용 중입니다. 삭제하기 전에 대체 상태를 선택하세요.",
+    "slugTaken": "이 URL은 이미 사용 중입니다",
+    "invalidResetToken": "이 비밀번호 재설정 링크는 유효하지 않거나 만료되었습니다. 새 링크를 요청하세요.",
+    "rateLimited": "시도가 너무 많습니다. 잠시 후 다시 시도하세요.",
+    "queryTimeout": "요청이 너무 오래 걸려 취소되었습니다. 다시 시도하세요.",
+    "taskNumberUnavailable": "지금 태스크 번호를 할당할 수 없습니다. 잠시 후 다시 시도하세요.",
+    "tooManyRequestsAfter": "요청이 너무 많습니다. {{seconds}}초 후에 다시 시도하세요."
   },
   "toasts": {
     "created": "생성되었습니다",
     "updated": "업데이트되었습니다",
-    "deleted": "삭제되었습니다"
+    "deleted": "삭제되었습니다",
+    "saved": "저장되었습니다"
   },
   "common": {
     "cancel": "취소",
@@ -574,7 +596,8 @@
     "delete": "삭제",
     "undo": "실행 취소",
     "undoSuccess": "작업이 취소되었습니다",
-    "charCount": "{{count}}/{{max}}"
+    "charCount": "{{count}}/{{max}}",
+    "undoFailed": "작업을 취소할 수 없습니다"
   },
   "labelManager": {
     "createDesc": "이 프로젝트에 새 라벨을 만듭니다.",
@@ -722,7 +745,9 @@
       "apply": "적용",
       "clear": "지우기",
       "selectAll": "모두 선택",
-      "selectRow": "행 선택"
+      "selectRow": "행 선택",
+      "partial": "{{count}}개의 작업이 업데이트되었습니다. {{failed}}개 실패했습니다.",
+      "success": "{{count}}개의 작업이 업데이트되었습니다"
     }
   },
   "comments": {
@@ -783,7 +808,9 @@
     "apply": "Apply",
     "rename": "이름 바꾸기",
     "renameTitle": "필터 이름 바꾸기",
-    "renaming": "이름 변경 중"
+    "renaming": "이름 변경 중",
+    "nameRequired": "필터 이름은 필수입니다",
+    "renameError": "필터 이름을 변경하지 못했습니다."
   },
   "auditLog": {
     "time": "시간",
@@ -808,6 +835,7 @@
     "codeBlock": "코드 블록",
     "raw": "소스",
     "wysiwyg": "WYSIWYG",
+    "editor": "리치 텍스트 에디터",
     "showRaw": "Markdown 표시",
     "showWysiwyg": "리치 텍스트 에디터 표시",
     "rawPlaceholder": "여기에 Markdown을 입력하세요",
@@ -856,7 +884,10 @@
     "saveColumns": "변경 사항 저장",
     "columnIndex": "컬럼 {{index}}",
     "emptyColumnHint": "상태를 하나 이상 지정하세요",
-    "unassignedStatuses": "보드에 표시되지 않음: {{names}}"
+    "unassignedStatuses": "보드에 표시되지 않음: {{names}}",
+    "moveUpColumn": "컬럼 {{index}} 위로 이동",
+    "moveDownColumn": "컬럼 {{index}} 아래로 이동",
+    "removeColumnIndex": "컬럼 {{index}} 삭제"
   },
   "taskCreate": {
     "title": "Create task",
@@ -903,7 +934,8 @@
     "projectSwitcher": "프로젝트 전환",
     "goTasks": "작업으로 이동",
     "goBoard": "보드로 이동",
-    "toggleSidebar": "사이드바 전환"
+    "toggleSidebar": "사이드바 전환",
+    "moveCard": "포커스된 카드를 다른 열로 이동"
   },
   "tableDensity": {
     "comfortable": "기본",
@@ -921,5 +953,17 @@
     "modeLight": "라이트",
     "modeDark": "다크",
     "deferredToast": "테마가 저장되었습니다. 자동 모드가 {{mode}}(으)로 전환될 때 적용되거나, 지금 모드를 {{mode}}(으)로 전환하세요."
+  },
+  "a11y": {
+    "skipToContent": "본문으로 건너뛰기",
+    "filterColumn": "{{column}} 기준으로 필터링"
+  },
+  "pageTitles": {
+    "workspace": "워크스페이스",
+    "project": "프로젝트",
+    "board": "보드",
+    "task": "작업",
+    "sprint": "스프린트",
+    "projectGeneral": "일반 설정"
   }
 }

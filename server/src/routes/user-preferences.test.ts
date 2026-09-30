@@ -8,14 +8,19 @@
  *
  * These routes have no `requirePermission` gate — preferences are strictly
  * per-user, so authorization is implicit (userId comes from the JWT).
+ *
+ * The project-scoped pair lives in its own factory
+ * (`createProjectPreferencesRoutes`) because it is mounted INSIDE the
+ * tenant-scoped sub-app; it additionally asserts project ownership.
  */
 import { describe, it, expect, vi } from 'vitest';
 import { Hono } from 'hono';
 import { sign } from 'hono/jwt';
-import { createUserPreferencesRoutes } from './user-preferences.js';
+import { createProjectPreferencesRoutes, createUserPreferencesRoutes } from './user-preferences.js';
 import { UserPreferencesService } from '../services/user-preferences.service.js';
 import { errorHandler } from '../middleware/error-handler.js';
 import { authMiddleware } from '../middleware/auth.js';
+import { NotFoundError } from '../errors/app-error.js';
 import type { AppEnv } from '../types/context.js';
 
 // ─── Mocks ───────────────────────────────────────────────────────────────────
@@ -66,7 +71,7 @@ vi.mock('../services/user-preferences.service.js', () => ({
 const TEST_ENV = { JWT_SECRET: 'test-secret', MONGODB_URI: '', ALLOWED_ORIGINS: '*' };
 const VALID_UUID = USER_ID;
 
-function createTestApp() {
+function createTestApp(getProject: () => Promise<unknown> = () => Promise.resolve({ id: PROJECT_ID })) {
   const app = new Hono<AppEnv>();
 
   app.onError(errorHandler);
@@ -77,11 +82,18 @@ function createTestApp() {
     c.set('userId', VALID_UUID);
     c.set('tenantId', TENANT_ID);
     c.set('tenantRole', 'OWNER' as const);
-    c.set('svc', { preferences: new MockPrefs() } as never);
+    c.set('svc', {
+      preferences: new MockPrefs(),
+      // The project-scoped PATCH now resolves the project through the
+      // WRITE seam, so the double exposes it. It delegates to the same lookup
+      // the GET uses, which keeps the 404-on-foreign-project case intact.
+      projects: { getProject: vi.fn(getProject), assertProjectWritable: vi.fn(getProject) },
+    } as never);
     await next();
   });
 
   app.route('/api', createUserPreferencesRoutes());
+  app.route('/api', createProjectPreferencesRoutes());
 
   return app;
 }
@@ -250,6 +262,25 @@ describe('PATCH /api/projects/:projectId/preferences (taskTableColumns only — 
     const res = await patchJson(app, `/api/projects/${PROJECT_ID}/preferences`, { taskTableColumns: null });
 
     expect(res.status).toBe(200);
+  });
+
+  // The project id is now validated against the caller's tenant.
+  it('returns 404 when the project belongs to another tenant', async () => {
+    const app = createTestApp(() => Promise.reject(new NotFoundError('Project not found')));
+    const res = await getJson(app, `/api/projects/${PROJECT_ID}/preferences`);
+
+    expect(res.status).toBe(404);
+
+    const body = (await res.json()) as { error: { code: string } };
+
+    expect(body.error.code).toBe('NOT_FOUND');
+  });
+
+  it('returns 404 on PATCH when the project belongs to another tenant', async () => {
+    const app = createTestApp(() => Promise.reject(new NotFoundError('Project not found')));
+    const res = await patchJson(app, `/api/projects/${PROJECT_ID}/preferences`, { taskTableColumns: null });
+
+    expect(res.status).toBe(404);
   });
 
   it('returns 400 when no preference field is provided', async () => {

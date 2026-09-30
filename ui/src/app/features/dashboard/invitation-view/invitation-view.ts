@@ -35,8 +35,8 @@ export class InvitationView {
   private readonly notify = injectToasts();
   readonly invitations = input<MyInvitation[]>([]);
   readonly invitationHandled = output();
-  protected readonly acceptingId = signal<string | null>(null);
-  protected readonly decliningId = signal<string | null>(null);
+  private readonly acceptingId = signal<string | null>(null);
+  private readonly decliningId = signal<string | null>(null);
   /** Shared badge-class helper (see constants/priority.ts) */
   protected readonly roleBadgeVariant = roleBadgeVariant;
 

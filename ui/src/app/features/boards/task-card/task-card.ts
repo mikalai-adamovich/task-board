@@ -22,10 +22,18 @@ export class TaskCard {
   /** Resolved issue-type display name (from the shared reference-data store) */
   readonly typeName = input<string>('');
   readonly taskClick = output<BoardTask>();
+  /**
+   * a11y: keyboard equivalent of the (pointer-only) CDK drag. `v` while the
+   * card has focus asks the board to offer a "move to column" picker, so a
+   * keyboard or screen-reader user can move a card between columns at all.
+   * The card is a `role="button"`, so a nested move button is not an option —
+   * a documented shortcut on the focusable card is the honest alternative.
+   */
+  readonly moveRequested = output<BoardTask>();
   readonly dragStart = output<{ task: BoardTask; dragEvent: DragEvent }>();
   private readonly i18n = inject(TranslocoService);
 
-  /** Translated priority label (P11); unknown values render verbatim. */
+  /** Translated priority label; unknown values render verbatim. */
   protected priorityLabel(priorityLevel: TaskPriorityLevel): string {
     const key = priorityLabelKey(priorityLevel);
 

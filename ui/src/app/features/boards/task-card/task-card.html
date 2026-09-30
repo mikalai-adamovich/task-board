@@ -1,11 +1,17 @@
-<!-- N-10: keyboard-operable card — Enter and Space both activate (Space also
-     prevents the page scroll that a bare Space keydown would trigger). -->
+<!-- Keyboard-operable card — Enter and Space both activate (Space also
+     prevents the page scroll that a bare Space keydown would trigger).
+     a11y: `v` opens the "move to column" picker — the keyboard path that
+     replaces the pointer-only CDK drag. Advertised via `aria-keyshortcuts`
+     (assisted tech reads it out) and in the app's shortcut-help dialog. The
+     global hotkey service ignores `v` entirely, so there is no conflict. -->
 <div
   class="cursor-pointer rounded-md border border-border bg-card p-3 shadow-sm transition-all hover:shadow-md hover:border-primary/30"
   role="button"
   tabindex="0"
+  aria-keyshortcuts="v"
   (keydown.enter)="taskClick.emit(task())"
   (keydown.space)="$event.preventDefault(); taskClick.emit(task())"
+  (keydown.v)="$event.preventDefault(); moveRequested.emit(task())"
 >
   <!-- Top row: task key left, priority right. Middle: title only, clamped to
        2 lines with ellipsis. Bottom: issue type left, assignee right. The card
@@ -17,7 +23,7 @@
     </span>
   </div>
 
-  <h4 class="mt-1 line-clamp-2 text-sm font-medium text-foreground" [title]="task().title">{{ task().title }}</h4>
+  <h3 class="mt-1 line-clamp-2 text-sm font-medium text-foreground" [title]="task().title">{{ task().title }}</h3>
 
   <div class="mt-2 flex items-center justify-between">
     <!-- Issue type (resolved via the shared reference-data store) -->

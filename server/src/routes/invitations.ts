@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { AppEnv } from '../types/context.js';
-import { authMiddleware } from '../middleware/auth.js';
+import { param, pathParamValidation } from '../middleware/validation.js';
 
 // ─── Invitation Routes ──────────────────────────────────────────────────────
 
@@ -12,8 +12,19 @@ import { authMiddleware } from '../middleware/auth.js';
 export function createInvitationRoutes(): Hono<AppEnv> {
   const router = new Hono<AppEnv>();
 
-  // All routes require auth
-  router.use('*', authMiddleware);
+  // `:invitationId` is validated before any handler runs.
+  router.use('*', pathParamValidation());
+
+  // All routes require auth. This mount was a SECOND `authMiddleware` on a
+  // sub-app already mounted behind one in `app.ts` (`app.route('/api/invitations',
+  // …)` sits after `app.use('/api/*', authMiddleware)`), so every invitation
+  // request paid two full authentications: a user lookup each, plus — when an
+  // `X-Tenant-Id` header is present — a concurrent membership resolution each.
+  // There is no authorization consequence (the handlers re-check the invitee),
+  // but the cost is real and the duplication is invisible to a reader. If this
+  // router is ever mounted somewhere WITHOUT the parent guard, the mount must
+  // come back; the guardrail below fails the build if the app stops guarding
+  // `/api/invitations` upstream.
 
   /**
    * GET /invitations/my — pending invitations for the authenticated user.
@@ -31,7 +42,7 @@ export function createInvitationRoutes(): Hono<AppEnv> {
    */
   router.post('/:invitationId/accept', async (c) => {
     const userId = c.get('userId');
-    const invitationId = c.req.param('invitationId');
+    const invitationId = param(c, 'invitationId');
 
     await c.get('svc').tenantMembers.acceptInvitation(invitationId, userId);
 
@@ -43,7 +54,7 @@ export function createInvitationRoutes(): Hono<AppEnv> {
    */
   const decline = async (c: Context) => {
     const userId = c.get('userId');
-    const invitationId = c.req.param('invitationId');
+    const invitationId = param(c, 'invitationId');
 
     await c.get('svc').tenantMembers.declineInvitation(invitationId, userId);
 

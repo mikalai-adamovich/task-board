@@ -23,6 +23,12 @@ export interface BoardConfig {
   projectId: string;
   /** Ordered workflow columns; each groups one or more statuses */
   columns: BoardColumn[];
+  /**
+   * Optimistic-concurrency version, mirroring `Task.version`
+   * exactly. The client sends the value it read; a save whose version is stale
+   * is refused with 409 rather than silently discarding the other admin's edit.
+   */
+  version: number;
   /** Creation timestamp (ISO 8601) */
   createdAt: string;
   /** Last update timestamp (ISO 8601) */
@@ -31,7 +37,16 @@ export interface BoardConfig {
 
 /** Update-board request body type (columns/workflow only) */
 export interface UpdateBoardColumns {
-  columns: { id?: string; statusIds: string[]; position: number }[];
+  // `id` comes straight from a Zod object where the key may be present with
+  // value `undefined`, hence the explicit `| undefined`.
+  columns: { id?: string | undefined; statusIds: string[]; position: number }[];
+  /**
+   * REQUIRED, exactly like `UpdateTask.version`. The whole `columns`
+   * array is replaced on every save, so without a version two admins editing the
+   * workflow lose one another's work with a 200 and an audit event that looks
+   * ordinary.
+   */
+  version: number;
 }
 
 /**

@@ -2,18 +2,27 @@ import { Service, inject } from '@angular/core';
 import { HttpClient, HttpParams } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { API_BASE_URL } from '@app/api-url.token';
-import type { AuditEvent, AuditEntityType, PaginatedResponse } from '@task-board/shared';
+import type { AuditEvent, AuditEntityType, AuditAction, SortDirection, PaginatedResponse } from '@task-board/shared';
 
-/** R3-P7: list filters — all optional, URL-synced by the AuditLogViewer. */
+/**
+ * List filters — all optional, URL-synced by the AuditLogViewer.
+ *
+ * `action` was a hand-copied `'CREATED' | 'UPDATED' | 'DELETED'` and `sort`
+ * a hand-copied `'asc' | 'desc'`; both are the shared `AuditAction` /
+ * `SortDirection` unions the server's `AuditQuerySchema` validates against, so
+ * the client can no longer send a value the server would reject. `| undefined`
+ * is required because the viewer builds the params object with
+ * `signal() || undefined` for "no filter".
+ */
 export interface AuditListParams {
-  page?: number;
-  limit?: number;
-  entityType?: AuditEntityType;
-  action?: 'CREATED' | 'UPDATED' | 'DELETED';
+  page?: number | undefined;
+  limit?: number | undefined;
+  entityType?: AuditEntityType | undefined;
+  action?: AuditAction | undefined;
   /** Actor user id */
-  actorId?: string;
+  actorId?: string | undefined;
   /** Time sort direction — server default is desc (newest first) */
-  sort?: 'asc' | 'desc';
+  sort?: SortDirection | undefined;
 }
 
 /**
@@ -48,10 +57,7 @@ export class AuditClient {
     });
   }
 
-  /** List audit events for a tenant (paginated, enriched with human-readable labels) */
-  listByTenant(tenantId: string, params: AuditListParams = {}): Observable<PaginatedResponse<AuditEvent>> {
-    return this.http.get<PaginatedResponse<AuditEvent>>(`${this.apiBaseUrl}/tenants/${tenantId}/audit`, {
-      params: this.buildParams(params),
-    });
-  }
+  // `listByTenant()` was removed as dead code — the audit log is only ever
+  // opened per project (`listByProject`). Note the `listByTenant` identifiers in
+  // `sprint-list.spec.ts` are a SprintClient mock, a different object.
 }

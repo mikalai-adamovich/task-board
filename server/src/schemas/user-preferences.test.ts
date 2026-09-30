@@ -50,7 +50,7 @@ describe('UpdateUserGlobalSettingsSchema', () => {
     expect(() => UpdateUserGlobalSettingsSchema.parse({ dateFormat: 'dd.mm.yyyy' })).toThrow();
   });
 
-  // ── P12 (DEC-056): free-form date format ──────────────────────────────────
+  // ── Free-form date format ─────────────────────────────────────────────────
 
   it('accepts a custom whitelisted dateFormat (P12)', () => {
     const result = UpdateUserGlobalSettingsSchema.parse({ dateFormat: 'DD MMM YY' });

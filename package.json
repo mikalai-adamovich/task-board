@@ -25,7 +25,7 @@
     "test:server": "npm test --workspace=server",
     "test:ui": "npm test --workspace=ui",
     "test:e2e": "npm run e2e --workspace=ui",
-    "typecheck": "npm run build:shared && npm run typecheck --workspace=shared && npm run typecheck --workspace=server",
+    "typecheck": "npm run build --workspace=shared && npm run typecheck --workspace=shared && npm run typecheck --workspace=server",
     "check:fast": "npm run build:shared && npm run lint && npm run typecheck && npm run typecheck --workspace=@task-board/ui",
     "check": "npm run check:fast && npm run test --workspace=@task-board/server && npm run test --workspace=@task-board/ui",
     "check:harness": "node .harness/runtime/harness.mjs self-test && node .harness/tests/compatibility.mjs",
@@ -41,18 +41,23 @@
     "@eslint/js": "^10.0.1",
     "@eslint/markdown": "^8.0.3",
     "@stylistic/eslint-plugin": "^5.10.0",
-    "@typescript-eslint/eslint-plugin": "^8.63.0",
-    "@typescript-eslint/parser": "^8.63.0",
-    "eslint": "^10.8.0",
+    "@typescript-eslint/eslint-plugin": "^8.68.0",
+    "@typescript-eslint/parser": "^8.68.0",
+    "eslint": "^10.9.1",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-prettier": "^5.5.6",
-    "husky": "^9.0.0",
+    "husky": "^9.1.7",
     "lint-staged": "^17.4.1",
-    "prettier": "^3.0.0",
-    "typescript": "~6.0.0",
-    "typescript-eslint": "^8.0.0"
+    "prettier": "^3.9.6",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.68.0"
   },
   "allowScripts": {
     "bcrypt@6.0.0": true
+  },
+  "overrides": {
+    "smol-toml": "1.9.0",
+    "brace-expansion@>=2.0.0 <3.0.0": "2.1.7",
+    "brace-expansion@>=5.0.0 <6.0.0": "5.0.12"
   }
 }

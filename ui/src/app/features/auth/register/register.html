@@ -1,8 +1,9 @@
-<!-- R3-P6: viewport minus the sticky app header (--header-height) so the page never scrolls -->
+<!-- Viewport minus the sticky app header (--header-height) so the page never scrolls -->
 <div class="flex min-h-[calc(100dvh-var(--header-height))] items-center justify-center bg-muted/50">
   <hlm-card class="w-full max-w-md">
     <hlm-card-header>
-      <h3 hlmCardTitle>{{ 'auth.register.title' | transloco }}</h3>
+      <!-- a11y: exactly one <h1> per page — the card title IS the page heading -->
+      <h1 hlmCardTitle>{{ 'auth.register.title' | transloco }}</h1>
       <p hlmCardDescription>{{ 'auth.register.description' | transloco }}</p>
     </hlm-card-header>
 
@@ -22,11 +23,14 @@
               id="displayName"
               type="text"
               [formField]="registerForm.displayName"
+              uiFieldControl
               autocomplete="name"
               placeholder="John Doe"
             />
             @if (registerForm.displayName().touched() && registerForm.displayName().errors().length) {
-              <p hlm-field-error>{{ registerForm.displayName().errors()[0]?.message | transloco }}</p>
+              <hlm-field-error class="block">{{
+                registerForm.displayName().errors()[0]?.message | transloco
+              }}</hlm-field-error>
             }
           </hlm-field>
 
@@ -37,11 +41,14 @@
               id="email"
               type="email"
               [formField]="registerForm.email"
+              uiFieldControl
               autocomplete="email"
               placeholder="you&#64;example.com"
             />
             @if (registerForm.email().touched() && registerForm.email().errors().length) {
-              <p hlm-field-error>{{ registerForm.email().errors()[0]?.message | transloco }}</p>
+              <hlm-field-error class="block">{{
+                registerForm.email().errors()[0]?.message | transloco
+              }}</hlm-field-error>
             }
           </hlm-field>
 
@@ -52,11 +59,14 @@
               id="password"
               type="password"
               [formField]="registerForm.password"
+              uiFieldControl
               autocomplete="new-password"
               placeholder="••••••••"
             />
             @if (registerForm.password().touched() && registerForm.password().errors().length) {
-              <p hlm-field-error>{{ registerForm.password().errors()[0]?.message | transloco }}</p>
+              <hlm-field-error class="block">{{
+                registerForm.password().errors()[0]?.message | transloco
+              }}</hlm-field-error>
             }
           </hlm-field>
 
@@ -67,11 +77,14 @@
               id="confirmPassword"
               type="password"
               [formField]="registerForm.confirmPassword"
+              uiFieldControl
               autocomplete="new-password"
               placeholder="••••••••"
             />
             @if (registerForm.confirmPassword().touched() && registerForm.confirmPassword().errors().length) {
-              <p hlm-field-error>{{ registerForm.confirmPassword().errors()[0]?.message | transloco }}</p>
+              <hlm-field-error class="block">{{
+                registerForm.confirmPassword().errors()[0]?.message | transloco
+              }}</hlm-field-error>
             }
           </hlm-field>
         </hlm-field-group>
@@ -79,13 +92,7 @@
     </div>
 
     <hlm-card-footer class="flex-col gap-2">
-      <button
-        hlmBtn
-        type="submit"
-        form="register-form"
-        class="w-full"
-        [disabled]="registerForm().invalid() || registerForm().submitting()"
-      >
+      <button hlmBtn type="submit" form="register-form" class="w-full" [disabled]="registerForm().submitting()">
         @if (registerForm().submitting()) {
           <hlm-spinner /> {{ 'auth.register.submitting' | transloco }}
         } @else {

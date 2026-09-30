@@ -54,12 +54,12 @@ export class BoardColumns {
   private readonly authStore = inject(AuthStore);
   private readonly projectStore = inject(ProjectStore);
   private readonly notify = injectToasts();
-  /** F2: statuses come from the shared ProjectRefStore cache */
+  /** Statuses come from the shared ProjectRefStore cache */
   private readonly refStore = inject(ProjectRefStore);
   /** Bound via withComponentInputBinding() — receives project key from route */
   readonly projectKey = input.required<string>();
   /** Resolved project UUID from the store */
-  protected readonly projectId = computed(() => this.projectStore.activeProject()?.id ?? '');
+  private readonly projectId = computed(() => this.projectStore.activeProject()?.id ?? '');
   /**
    * Whether the current user can manage the workflow (PROJECT_ADMIN+).
    * Tenant OWNER/ADMIN bypass project role checks.
@@ -75,19 +75,27 @@ export class BoardColumns {
   protected readonly loading = computed(() => this.boardResource.isLoading());
   private readonly loadError = signal('');
   protected readonly error = computed(() => (this.loadError() ? this.loadError() : ''));
-  // F2: shared cache — no per-page duplicate request
-  protected readonly statuses = computed(() =>
+  // Shared cache — no per-page duplicate request
+  private readonly statuses = computed(() =>
     this.refStore
       .statusEntities(this.projectId())
       .slice()
       .sort((a, b) => a.position - b.position),
   );
   /** Draft columns being edited — seeded from the board once it loads. */
-  protected readonly columns = signal<EditableColumn[]>([]);
+  private readonly columns = signal<EditableColumn[]>([]);
   private readonly dirty = signal(false);
-  protected readonly isDirty = computed(() => this.dirty());
+  /**
+   * The version of the board this draft was seeded from, sent back
+   * on save. Without it a second admin's save silently overwrites this one; with
+   * it the server answers 409 and the draft is left untouched for the user to
+   * reconcile. Seeded whenever the board loads and refreshed after a successful
+   * save, so a retry after a 409 re-reads the current version on reload.
+   */
+  private readonly boardVersion = signal(1);
+  private readonly isDirty = computed(() => this.dirty());
   /** A column must group at least one status for the payload to be valid. */
-  protected readonly canSave = computed(
+  private readonly canSave = computed(
     () => this.isDirty() && this.columns().length > 0 && this.columns().every((col) => col.statusIds.length > 0),
   );
 
@@ -99,6 +107,7 @@ export class BoardColumns {
 
       if (board && !this.dirty()) {
         this.columns.set(board.columns.map((col) => ({ id: col.id, statusIds: [...col.statusIds] })));
+        this.boardVersion.set(board.version);
       }
     });
 
@@ -108,7 +117,7 @@ export class BoardColumns {
       }
     });
 
-    // F2: load statuses through the shared cache; reading entities keeps the
+    // Load statuses through the shared cache; reading entities keeps the
     // effect reactive — after an invalidate() (status mutations) it re-runs.
     effect(() => {
       const pid = this.projectId();
@@ -125,7 +134,7 @@ export class BoardColumns {
   }
 
   /** Statuses assigned to NO column — surfaced so nothing silently disappears. */
-  protected readonly unassignedStatuses = computed(() => {
+  private readonly unassignedStatuses = computed(() => {
     const assigned = new Set(this.columns().flatMap((col) => col.statusIds));
 
     return this.statuses().filter((status) => !assigned.has(status.id));
@@ -187,17 +196,21 @@ export class BoardColumns {
     if (!this.canSave()) return;
 
     try {
-      await firstValueFrom(
+      const saved = await firstValueFrom(
         this.boardClient.updateColumns(this.projectId(), {
           columns: this.columns().map((col, position) => ({ id: col.id, statusIds: col.statusIds, position })),
+          version: this.boardVersion(),
         }),
       );
+
       this.dirty.set(false);
+      this.boardVersion.set(saved.version);
 
       // Re-seed the draft from the saved state so ids match the server.
       const board = await firstValueFrom(this.boardClient.getForProject(this.projectId()));
 
       this.columns.set(board.columns.map((col) => ({ id: col.id, statusIds: [...col.statusIds] })));
+      this.boardVersion.set(board.version);
       this.notify.success('toasts.updated');
     } catch (err) {
       this.notify.error(getErrorMessage(err));

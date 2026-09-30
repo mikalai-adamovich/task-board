@@ -13,7 +13,7 @@ export const BULK_UNASSIGNED = '__unassigned__';
 export const BULK_NO_SPRINT = '__no_sprint__';
 
 /**
- * M-13 (4.2): bulk-actions bar extracted from the TaskTable composition root.
+ * Bulk-actions bar extracted from the TaskTable composition root.
  * Presentational: the selection set, the exactly-one-field contract and the
  * API call stay in the parent; this component renders the bar and emits the
  * chosen field / actions.

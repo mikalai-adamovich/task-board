@@ -21,23 +21,37 @@ on:
 #   PROJECT_NAME — Cloudflare Pages project name (https://PROJECT_NAME.pages.dev)
 
 concurrency:
-  group: cd-${{ github.event.workflow_run.head_branch }}
+  group: cd-${{ github.workflow }}-${{ github.event.workflow_run.head_branch }}
   cancel-in-progress: false
+
+# Least privilege. This job deploys to Cloudflare and MongoDB using
+# repository SECRETS and VARIABLES — not the GITHUB_TOKEN — so it needs no write scope
+# on the repository at all. `contents: read` is the bare minimum: actions/checkout
+# must clone the commit. Explicitly declaring it prevents the job from inheriting a
+# broader default token, so a compromised build step cannot push, tag, or release.
+permissions:
+  contents: read
 
 jobs:
   deploy:
     name: deploy
     runs-on: ubuntu-latest
+    # Ceiling for a deploy that builds the UI, runs migrations and publishes to
+    # Cloudflare. Generous headroom over the normal ~5 minutes; a hang must not hold
+    # the job open indefinitely.
+    timeout-minutes: 30
+    permissions:
+      contents: read
     if: >-
       github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
     steps:
       - name: Checkout (the exact commit CI validated)
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24'
           cache: 'npm'
@@ -45,8 +59,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # @task-board/shared resolves to shared/dist (package.json "main"), which is
-      # gitignored — the UI build fails without this step.
+      # `@task-board/shared` is a TYPE-only package (no runtime library) and now
+      # resolves to its SOURCE from every consumer (`shared/package.json`'s
+      # entry point is `src/index.ts`, and no tsconfig re-declares a mapping), so
+      # this step is no longer what makes the UI build work — it type-checks the
+      # package standalone. It is kept because the root `typecheck` and `test`
+      # scripts run it too, and removing it here alone would make CD the only
+      # pipeline that does not.
       - name: Build shared package
         run: npm run build --workspace=shared
 
@@ -69,35 +88,23 @@ jobs:
       - name: Build frontend
         run: npm run build --workspace=@task-board/ui
 
-      # Schema migrations run OUTSIDE the Worker request path (the Worker no
-      # longer migrates on cold start). They are additive and idempotent, so
-      # running them BEFORE the deploy is safe for the still-running old
-      # Worker (old code tolerates new indexes) and guarantees the new code
-      # never serves traffic without its indexes. A failure here fails the
-      # job before anything is deployed.
-      - name: Run database migrations
-        working-directory: server
-        env:
-          MONGODB_URI: ${{ secrets.MONGODB_URI }}
-        run: npx -y tsx scripts/migrate.ts
+      # Content-hash the runtime assets (105 themes, 11 translations,
+      # the favicon) and complete `_headers` with the matching cache policy, so
+      # the deployed tree is the one CI verified. This MUST run after the build
+      # and before the Pages deploy below, and the deploy must keep pointing at
+      # `ui/dist/ui/browser` — the hashed files and the header file live in that
+      # directory. The script verifies its own output and exits non-zero.
+      - name: Content-hash the runtime assets and write the cache policy
+        run: node ui/scripts/hash-runtime-assets.mjs
 
-      # --var overrides the dev defaults in server/wrangler.toml [vars] for this
-      # deployment only: strict production boot checks (M-09), the Pages origin
-      # for CORS, and the correct base URL for invitation/reset email links.
-      # DB_CLIENT_MODE=durable: the Hono app + persistent MongoClient run inside
-      # MongoHonoDurableObject (see docs/do-proposal.md). The plain-Worker
-      # singleton experiment failed (workerd#2721, error 1101) — never return to
-      # it; the proven rollback path is DB_CLIENT_MODE=per-request.
-      - name: Deploy backend to Cloudflare Workers
-        working-directory: server
-        run: >-
-          npx wrangler deploy --var DB_CLIENT_MODE:durable --var ENVIRONMENT:production --var
-          ALLOWED_ORIGINS:https://${{ vars.PROJECT_NAME }}.pages.dev --var FRONTEND_URL:https://${{ vars.PROJECT_NAME
-          }}.pages.dev
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-
+      # Secrets BEFORE the deploy, not after. `wrangler.toml:38-43` documents that
+      # MONGODB_URI and JWT_SECRET come ONLY from secrets, so for the window
+      # between `wrangler deploy` and `wrangler secret put` the live Worker had
+      # neither a database URI nor a signing key: every request 503'd and JWT
+      # signing threw. That window is not hypothetical — it is the whole duration
+      # of a FIRST deploy and of every secret rotation. Secrets first is also
+      # what Cloudflare documents: `secret put` provisions the secret against the
+      # script, so a subsequent `deploy` publishes code that already has them.
       # printf '%s' (not a heredoc) so no trailing newline lands in the secret
       # value — a "\n" suffix can break the MongoDB connection string.
       - name: Set Worker secrets
@@ -114,6 +121,41 @@ jobs:
           if [ -n "$RESEND_API_KEY" ]; then
             printf '%s' "$RESEND_API_KEY" | npx wrangler secret put RESEND_API_KEY
           fi
+
+      # Schema migrations run OUTSIDE the Worker request path (the Worker no
+      # longer migrates on cold start). They are additive and idempotent, so
+      # running them BEFORE the deploy is safe for the still-running old
+      # Worker (old code tolerates new indexes) and guarantees the new code
+      # never serves traffic without its indexes. A failure here fails the
+      # job before anything is deployed.
+      #
+      # `tsx@<exact>` — NOT a bare `npx -y tsx`. tsx is in no package.json and
+      # in no lockfile entry, so an unpinned spec resolved to whatever the
+      # registry served as `latest` and executed it with the Atlas URI, the JWT
+      # signing secret and the Cloudflare token in the environment. The exact pin
+      # is enforced by the `npx` tooling scan in ci.yml.
+      - name: Run database migrations
+        working-directory: server
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+        run: npx -y tsx@4.23.15 scripts/migrate.ts
+
+      # --var overrides the dev defaults in server/wrangler.toml [vars] for this
+      # deployment only: strict production boot checks, the Pages origin
+      # for CORS, and the correct base URL for invitation/reset email links.
+      # DB_CLIENT_MODE=durable: the Hono app + persistent MongoClient run inside
+      # MongoHonoDurableObject (see docs/do-proposal.md). The plain-Worker
+      # singleton experiment failed (workerd#2721, error 1101) — never return to
+      # it; the proven rollback path is DB_CLIENT_MODE=per-request.
+      - name: Deploy backend to Cloudflare Workers
+        working-directory: server
+        run: >-
+          npx wrangler deploy --var DB_CLIENT_MODE:durable --var ENVIRONMENT:production --var
+          ALLOWED_ORIGINS:https://${{ vars.PROJECT_NAME }}.pages.dev --var FRONTEND_URL:https://${{ vars.PROJECT_NAME
+          }}.pages.dev
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       # Idempotent: creates the project on the first run, skips when it already
       # exists. No `|| true` — a real failure (e.g. the API token lacking the
@@ -153,3 +195,41 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           PROJECT_NAME: ${{ vars.PROJECT_NAME }}
+
+      # The Pages smoke-check above proves the FRONTEND is up. Nothing proved the
+      # API was up: `grep -rn readyz .github/` matched no workflow, so a Worker
+      # that deployed and then answered 503 on every request — a failed
+      # MONGODB_URI, a missing JWT_SECRET, a boot-check rejection — still left
+      # CD green. This step is the counterpart and it FAILS the job.
+      #
+      # Bounded retry, not a bare curl: `wrangler deploy` returns once the upload
+      # is accepted, and a Durable-Object-backed Worker can take a moment to
+      # answer its first request. 12 attempts x 10 s = 120 s ceiling, then exit 1.
+      # A 503 is deliberately NOT retried away silently — it is the exact signal
+      # this step exists to catch, so it is reported and the job fails.
+      - name: Post-deploy API readiness check (fails the job)
+        run: |
+          BASE="${API_URL%/}"
+          for i in $(seq 1 12); do
+            # `|| true`, not `|| echo "000"`: on a connection failure curl still
+            # writes "000" via -w AND exits non-zero, so the `||` branch would
+            # append a second "000" and the log would read "000000".
+            CODE=$(curl -s -o /tmp/readyz.json -w '%{http_code}' "$BASE/readyz" 2>/dev/null || true)
+            [ -n "$CODE" ] || CODE=000
+            echo "attempt $i: GET $BASE/readyz -> $CODE"
+            if [ "$CODE" = "200" ]; then
+              echo "API reported ready: $(cat /tmp/readyz.json)"
+              exit 0
+            fi
+            if [ "$CODE" = "503" ]; then
+              echo "API answered 503 — the deployment is not serving. Failing now."
+              cat /tmp/readyz.json || true
+              exit 1
+            fi
+            sleep 10
+          done
+          echo "API did not become ready within 120s — last code $CODE"
+          cat /tmp/readyz.json 2>/dev/null || true
+          exit 1
+        env:
+          API_URL: ${{ vars.API_URL }}

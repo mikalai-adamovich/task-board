@@ -536,4 +536,84 @@ describe('PreferencesStore (per-project preferences cache)', () => {
 
     expect(store.getTaskTableColumns('p1')).toEqual(['key', 'title']);
   });
+
+  // ── The session load is an rxResource, not an effect + promise ─────────────
+
+  it('should load preferences once the session becomes authenticated (F21)', async () => {
+    await createModule();
+
+    const authStore = TestBed.inject(AuthStore);
+
+    authStore.setSession({
+      token: 'fake-jwt',
+      user: { id: 'user-1', email: 'test@example.com', displayName: 'Test' } as User,
+    });
+
+    const store = TestBed.inject(PreferencesStore);
+
+    // The resource issues the request on the first flush — no effect, no
+    // hand-rolled promise, and no second request when the payload arrives.
+    TestBed.tick();
+
+    const req = httpMock.expectOne('http://localhost/api/preferences');
+
+    req.flush({
+      data: {
+        userId: 'user-1',
+        zoom: 130,
+        theme: 'dark',
+        themeMode: 'dark',
+        lightTheme: null,
+        darkTheme: 'nord',
+        language: 'en',
+        pageSize: 50,
+        dateFormat: null,
+        timeFormat: null,
+        updatedAt: new Date().toISOString(),
+      },
+    });
+    await Promise.resolve();
+    TestBed.tick();
+
+    expect(store.zoom()).toBe(130);
+    expect(store.pageSize()).toBe(50);
+    expect(store.darkTheme()).toBe('nord');
+    expect(document.documentElement.style.getPropertyValue('font-size')).toBe('130%');
+  });
+
+  it('should NOT request preferences while logged out (F21)', async () => {
+    await createModule();
+
+    TestBed.inject(PreferencesStore);
+    TestBed.tick();
+
+    httpMock.expectNone('http://localhost/api/preferences');
+  });
+
+  it('should swallow a failed session load instead of leaking an unhandled rejection (F21)', async () => {
+    await createModule();
+
+    const authStore = TestBed.inject(AuthStore);
+
+    authStore.setSession({
+      token: 'fake-jwt',
+      user: { id: 'user-1', email: 'test@example.com', displayName: 'Test' } as User,
+    });
+
+    const store = TestBed.inject(PreferencesStore);
+
+    TestBed.tick();
+
+    const req = httpMock.expectOne('http://localhost/api/preferences');
+
+    req.flush({ error: { message: 'boom' } }, { status: 500, statusText: 'Server Error' });
+    await Promise.resolve();
+    TestBed.tick();
+
+    // Defaults are untouched and nothing was applied. Before the fix this path
+    // was a bare `loadPreferences()` call whose rejected promise nobody caught —
+    // Vitest reports that as an unhandled rejection and fails the run.
+    expect(store.zoom()).toBe(100);
+    expect(store.pageSize()).toBe(20);
+  });
 });

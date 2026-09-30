@@ -26,7 +26,7 @@ import { PreferencesStore } from '@stores/preferences-store';
 })
 export class ThemeModeSwitch {
   private readonly elementRef = inject<ElementRef<HTMLElement>>(ElementRef);
-  protected readonly preferencesStore = inject(PreferencesStore);
+  private readonly preferencesStore = inject(PreferencesStore);
   /** Emitted on ArrowDown — the host moves focus to the region below (theme listbox). */
   public readonly navigateDown = output();
 

@@ -36,11 +36,11 @@ export class TaskRelationshipRepository extends BaseRepository<TaskRelationshipD
     return docs.map(toDomain);
   }
 
-  async findBySourceAndTarget(sourceTaskId: string, targetTaskId: string): Promise<TaskRelationship | null> {
-    const doc = await this.collection.findOne({ sourceTaskId, targetTaskId });
-
-    return doc ? toDomain(doc) : null;
-  }
+  // `findBySourceAndTarget(source, target)` was removed as dead code.
+  // `create()` no longer runs a check-then-act pre-check — F11 replaced it with the
+  // unique `{projectId, sourceTaskId, targetTaskId}` index plus
+  // `withConflictOnDuplicate`, so the pre-check had no callers left (and a pre-check
+  // without the index would have been a duplicate-insert race anyway).
 
   async create(input: {
     projectId: string;

@@ -1,8 +1,14 @@
 import type { MiddlewareHandler } from 'hono';
 import type { AppEnv } from '../types/context.js';
+import {
+  SERVER_TIMINGS_HEADER,
+  createServerTimings,
+  formatServerTimings,
+  runWithServerTimings,
+} from '../utils/timings.js';
 
 /**
- * Request-ID middleware (M-10).
+ * Request-ID middleware.
  *
  * Assigns every request a correlation id:
  * - A well-formed incoming `X-Request-Id` header is trusted (lets callers /
@@ -14,6 +20,15 @@ import type { AppEnv } from '../types/context.js';
  *
  * Must be mounted FIRST in the middleware chain so every downstream log line
  * and error response can be correlated.
+ *
+ * This is also where the per-request `Server-Timings` accumulator is
+ * created and rendered — deliberately the SAME middleware rather than a second
+ * one, so there is exactly one place that owns "what every response carries"
+ * and the timings cover the whole chain, including everything this middleware
+ * wraps. The header is written in a `finally`, so it is present on success
+ * responses, on inline responses (404 / 405 / `DB_UNAVAILABLE`) AND on error
+ * responses rendered afterwards by `app.onError` — a slow failure is precisely
+ * the response whose timings nobody can afford to lose.
  */
 
 const REQUEST_ID_HEADER = 'X-Request-Id';
@@ -31,11 +46,19 @@ export function resolveRequestId(incoming: string | undefined): string {
 
 export const requestIdMiddleware: MiddlewareHandler<AppEnv> = async (c, next) => {
   const requestId = resolveRequestId(c.req.header(REQUEST_ID_HEADER));
+  const timings = createServerTimings();
 
   c.set('requestId', requestId);
   // Set before `next()` so Hono merges it into whatever response the chain
   // produces — including error responses from `app.onError`.
   c.header(REQUEST_ID_HEADER, requestId);
 
-  await next();
+  try {
+    await runWithServerTimings(timings, next);
+  } finally {
+    // `c.header()` writes onto the response Hono is currently building, so
+    // setting it once the chain has settled still reaches the bytes on the
+    // wire — and, in the catch path, the response `app.onError` builds next.
+    c.header(SERVER_TIMINGS_HEADER, formatServerTimings(timings));
+  }
 };

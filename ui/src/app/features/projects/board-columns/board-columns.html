@@ -1,7 +1,7 @@
 <div class="mx-auto max-w-6xl">
   <!-- Page header -->
   <div class="mb-6">
-    <h2 class="text-2xl font-bold text-foreground">{{ 'projectSettings.board' | transloco }}</h2>
+    <h1 class="text-2xl font-bold text-foreground">{{ 'projectSettings.board' | transloco }}</h1>
     <p class="mt-1 text-sm text-muted-foreground">{{ 'projectSettings.boardDesc' | transloco }}</p>
   </div>
 
@@ -37,6 +37,7 @@
                   size="icon-sm"
                   [disabled]="i === 0"
                   [hlmTooltip]="'projectSettings.moveUp' | transloco"
+                  [attr.aria-label]="'projectSettings.moveUpColumn' | transloco: { index: i + 1 }"
                   (click)="moveColumn(i, -1)"
                 >
                   <ng-icon name="lucideArrowUp" />
@@ -47,6 +48,7 @@
                   size="icon-sm"
                   [disabled]="i === columns().length - 1"
                   [hlmTooltip]="'projectSettings.moveDown' | transloco"
+                  [attr.aria-label]="'projectSettings.moveDownColumn' | transloco: { index: i + 1 }"
                   (click)="moveColumn(i, 1)"
                 >
                   <ng-icon name="lucideArrowDown" />
@@ -57,6 +59,7 @@
                   size="icon-sm"
                   [disabled]="columns().length <= 1"
                   [hlmTooltip]="'projectSettings.removeColumn' | transloco"
+                  [attr.aria-label]="'projectSettings.removeColumnIndex' | transloco: { index: i + 1 }"
                   (click)="removeColumn(i)"
                 >
                   <ng-icon name="lucideTrash2" />

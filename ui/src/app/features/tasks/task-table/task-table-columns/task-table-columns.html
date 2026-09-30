@@ -1,4 +1,4 @@
-<!-- R3-P4: column-chooser popover (toolbar instance) -->
+<!-- Column-chooser popover (toolbar instance) -->
 <hlm-popover [state]="showColumnChooser() ? 'open' : 'closed'" (stateChanged)="onChooserStateChange($event)">
   <button
     hlmPopoverTrigger
@@ -10,12 +10,12 @@
     <ng-icon name="lucideColumns2" />
   </button>
   <hlm-popover-content *hlmPopoverPortal class="w-56" align="end">
-    <!-- Round-5 P9: shared chooser content (header + Select all + rows) -->
+    <!-- Shared chooser content (header + Select all + rows) -->
     <ng-container [ngTemplateOutlet]="columnChooserContent" />
   </hlm-popover-content>
 </hlm-popover>
 
-<!-- R3-P4: header context menu — an invisible 0×0 anchor positioned at the
+<!-- Header context menu — an invisible 0×0 anchor positioned at the
      cursor on `contextmenu`; the Helm dropdown-menu opens from it. -->
 <span #ctxAnchor class="pointer-events-none fixed z-50 block size-0" [hlmDropdownMenuTrigger]="headerContextMenu">
 </span>
@@ -33,7 +33,7 @@
   </hlm-dropdown-menu>
 </ng-template>
 
-<!-- Round-5 P9 (item 24): cursor-anchored column chooser — same hidden-anchor
+<!-- Cursor-anchored column chooser — same hidden-anchor
      pattern as the context menu. `onHeaderContextMenu` positions this trigger
      button at the contextmenu coordinates; the context-menu "Select columns"
      item flips `showContextColumnChooser`, opening the popover at the cursor
@@ -55,11 +55,11 @@
   </hlm-popover-content>
 </hlm-popover>
 
-<!-- Round-5 P9 (item 25): shared column-chooser content, rendered by BOTH the
+<!-- Shared column-chooser content, rendered by BOTH the
      toolbar popover and the cursor-anchored popover. Dialog-style header
      (left-aligned title + × close) and a Select-all row over the non-pinned
      columns; pinned Key/Title stay always visible. -->
-<!-- P13b: the × header row is LAST in DOM (with `order-first` keeping it
+<!-- The × header row is LAST in DOM (with `order-first` keeping it
      visually on top) so the popover's autoFocus — first tabbable element —
      lands on the Select-all checkbox, not the × (whose focus-tooltip used to
      hang over the button). -->
@@ -87,7 +87,7 @@
     }
   </div>
   <div class="order-first flex items-center justify-between gap-2 px-1 pb-2">
-    <h3 class="text-base leading-none font-medium">{{ 'taskTable.selectColumns' | transloco }}</h3>
+    <h2 class="text-base leading-none font-medium">{{ 'taskTable.selectColumns' | transloco }}</h2>
     <button
       hlmBtn
       variant="ghost"

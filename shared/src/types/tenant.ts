@@ -11,7 +11,7 @@ export interface Tenant {
   id: string;
   /** Tenant display name */
   name: string;
-  /** Globally unique URL slug, auto-generated from the name (DEC-032) */
+  /** Globally unique URL slug, auto-generated from the name */
   slug: string;
   /** Optional description of the tenant */
   description: string | null;
@@ -25,18 +25,24 @@ export interface Tenant {
   updatedAt: string;
 }
 
-/** Create tenant request body type */
+/**
+ * Create tenant request body type.
+ *
+ * `| undefined` on every optional field — these interfaces model Zod parse
+ * output and `exactOptionalPropertyTypes` distinguishes "key absent" from
+ * "key present with value undefined". See `CreateProject` for the rationale.
+ */
 export interface CreateTenant {
   name: string;
-  /** Optional URL slug; auto-generated from the name when omitted (DEC-032) */
-  slug?: string;
-  description?: string;
+  /** Optional URL slug; auto-generated from the name when omitted */
+  slug?: string | undefined;
+  description?: string | undefined;
 }
 
-/** Update tenant request body type */
+/** Update tenant request body type — see {@link CreateTenant} */
 export interface UpdateTenant {
-  name?: string;
-  description?: string;
+  name?: string | undefined;
+  description?: string | undefined;
 }
 
 /** Invitation embedded in a TenantMember */
@@ -65,7 +71,7 @@ export interface TenantMember {
   status: MemberStatus;
   /**
    * Membership expiration timestamp (ISO 8601, null = no expiration).
-   * DEC-055: on/after this date the member is treated as ACCESS_REVOKED
+   * On/after this date the member is treated as ACCESS_REVOKED
    * (lazy evaluation at access time) — the membership record, projects and
    * roles are kept so access can be restored anytime.
    */

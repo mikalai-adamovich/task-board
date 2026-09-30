@@ -9,6 +9,7 @@ import { HlmInputImports } from '@spartan-ng/helm/input';
 import { HlmButtonImports } from '@spartan-ng/helm/button';
 import { HlmSpinnerImports } from '@spartan-ng/helm/spinner';
 import { getErrorMessage } from '@app/shared/utils/error-utils';
+import { FieldControl } from '@app/shared/field-control/field-control';
 import { HlmAlertImports } from '@spartan-ng/helm/alert';
 
 interface LoginModel {
@@ -21,6 +22,7 @@ interface LoginModel {
     HlmAlertImports,
     RouterLink,
     TranslocoPipe,
+    FieldControl,
     FormField,
     FormRoot,
     HlmCardImports,
@@ -35,9 +37,9 @@ interface LoginModel {
 export class Login {
   private readonly authStore = inject(AuthStore);
   private readonly router = inject(Router);
-  protected readonly error = signal('');
+  private readonly error = signal('');
   private readonly model = signal<LoginModel>({ email: '', password: '' });
-  protected readonly loginForm = form(
+  private readonly loginForm = form(
     this.model,
     schema<LoginModel>((field) => {
       required(field.email, { message: 'validation.emailRequired' });

@@ -9,6 +9,7 @@
     (hlmDropdownMenuOpened)="onMenuOpened()"
     (hlmDropdownMenuClosed)="onMenuClosed()"
     [tooltip]="collapsedTooltip() ?? ('projectSwitcher.selectProject' | transloco)"
+    [attr.aria-label]="collapsedTooltip() ?? ('projectSwitcher.selectProject' | transloco)"
   >
     <ng-icon name="lucideFolderKanban" />
   </button>

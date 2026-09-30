@@ -19,7 +19,7 @@
             <ng-icon name="lucideBuilding2" class="size-6 text-primary" />
           </div>
           <div class="flex-1">
-            <h3 class="text-lg font-semibold text-foreground">{{ 'welcome.createWorkspace.title' | transloco }}</h3>
+            <h2 class="text-lg font-semibold text-foreground">{{ 'welcome.createWorkspace.title' | transloco }}</h2>
             <p class="mt-1 text-sm text-muted-foreground">
               {{ 'welcome.createWorkspace.description' | transloco }}
             </p>
@@ -32,7 +32,7 @@
     <!-- Free Plan Info -->
     <hlm-card>
       <div hlmCardContent class="pt-6">
-        <h3 class="text-sm font-semibold text-foreground">{{ 'welcome.freePlan.title' | transloco }}</h3>
+        <h2 class="text-sm font-semibold text-foreground">{{ 'welcome.freePlan.title' | transloco }}</h2>
         <ul class="mt-3 flex flex-col gap-2 text-sm text-muted-foreground">
           <li class="flex items-center gap-2">
             <ng-icon name="lucideCheck" class="size-4 text-green-600" />
@@ -56,7 +56,7 @@
         <div hlmCardContent class="pt-6">
           <div class="mb-3 flex items-center gap-2">
             <ng-icon name="lucideMail" class="size-4 text-muted-foreground" />
-            <h3 class="text-sm font-semibold text-foreground">{{ 'welcome.pendingInvitations' | transloco }}</h3>
+            <h2 class="text-sm font-semibold text-foreground">{{ 'welcome.pendingInvitations' | transloco }}</h2>
           </div>
           <div class="flex flex-col gap-3">
             @for (invitation of invitations(); track invitation.id) {

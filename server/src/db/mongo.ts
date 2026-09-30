@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { ClientSession, Collection, Db, MongoClient } from 'mongodb';
+import type { ClientSession, Collection, Db, Document, MongoClient } from 'mongodb';
+import { getServerTimings, trackDbCall, trackDbValue } from '../utils/timings.js';
 
 /**
  * MongoDB client lifecycle for Cloudflare Workers.
@@ -58,13 +59,22 @@ async function createConnectedClient(uri: string): Promise<MongoClient> {
   // Dynamic import required — MongoDB's BSON module calls crypto.randomBytes()
   // at module load time, which Cloudflare Workers forbids at global scope.
   const { MongoClient: MC } = await import('mongodb');
-  // NOTE: do NOT set a non-default connectTimeoutMS here. In driver 7.6.0 it is
-  // applied as `socket.setTimeout(connectTimeoutMS)` (cmap/connect.js), i.e. it
-  // acts as an IDLE-socket timeout: with the previous value of 5_000 every
-  // connection idle ≥5s was killed (reason='error') and the next request paid a
-  // full TLS+auth reconnect (~90-190ms, outliers to 2.4s) — the root cause of
-  // the periodic latency spikes (see product-analysis/100-performance.md).
-  // Driver default (30_000) covers all interactive idle gaps.
+  // Do NOT set a non-default `connectTimeoutMS` here, and do not credit it with
+  // an effect it does not have. What driver 7.6.0 actually does
+  // (`node_modules/mongodb/lib/cmap/connect.js`):
+  //   :303  socket.setTimeout(connectTimeoutMS)   — while ESTABLISHING;
+  //   :337  socket.setTimeout(0)                  — in the `finally`, i.e. the
+  //                                               timeout is REMOVED the moment
+  //                                               the connection is up.
+  // So it is a connection-ESTABLISHMENT timeout that the driver then clears, not
+  // an idle-socket timeout: it cannot kill a pooled connection that is already
+  // established. The earlier claim in this file (and in `AGENTS.md`) that the
+  // non-default 5_000 value "was the root cause of the periodic latency spikes"
+  // is REFUTED by that source and has been removed — the mitigation below is
+  // kept on its own merits, not as a fix for an incident it did not cause.
+  // Whether the periodic spikes are still unexplained: see
+  // `product-analysis/100-performance-optimizations.md` and the two open items
+  // in `AGENTS.md` §Performance forensics.
   const client = new MC(uri, {
     maxPoolSize: 5,
     minPoolSize: 0,
@@ -85,6 +95,15 @@ async function createConnectedClient(uri: string): Promise<MongoClient> {
  * instead of awaiting a poisoned (rejected) promise forever.
  */
 export async function getMongoClient(uri: string, mode: MongoClientMode = 'singleton'): Promise<MongoClient> {
+  // Acquiring the client IS a database access — a cold connect costs
+  // hundreds of milliseconds, and on a warm pool the awaited cached promise
+  // costs ~0. That difference is the single most useful number for the
+  // unexplained pre-DB stall, so it is measured here rather than
+  // in the DB middleware of `app.ts`.
+  return trackDbCall(() => resolveMongoClient(uri, mode));
+}
+
+async function resolveMongoClient(uri: string, mode: MongoClientMode): Promise<MongoClient> {
   if (mode === 'per-request') {
     return createConnectedClient(uri);
   }
@@ -144,11 +163,47 @@ export function getDb(): Db {
  * const user = await users.findOne({ email: 'test@example.com' });
  * ```
  */
-export function getCollection<T extends import('mongodb').Document>(name: string): Collection<T> {
-  return getDb().collection<T>(name);
+export function getCollection<T extends Document>(name: string): Collection<T> {
+  return timedCollection(getDb().collection<T>(name));
 }
 
-// ─── Transactions (DEC-025) ──────────────────────────────────────────────────
+/**
+ * Wrap a collection so that every operation issued through it is measured
+ * for the `Server-Timings` header.
+ *
+ * This is the ONLY place repositories are instrumented — no per-repository
+ * opt-in, so a repository added tomorrow is timed automatically and the 20
+ * existing ones did not have to be touched. The wrapper is a transparent proxy:
+ * non-function properties (and symbol-keyed driver internals) are passed
+ * through, and methods are invoked with the RAW collection as `this` so the
+ * driver's own internal property access can never re-enter the proxy.
+ *
+ * Outside a request (migrations, CLI scripts, unit tests) there is no timings
+ * store and the wrapper short-circuits to the plain collection.
+ */
+function timedCollection<T extends Document>(collection: Collection<T>): Collection<T> {
+  const timings = getServerTimings();
+
+  if (!timings) {
+    return collection;
+  }
+
+  return new Proxy(collection, {
+    get(target, prop, receiver) {
+      const value: unknown = Reflect.get(target, prop, receiver);
+
+      if (typeof prop === 'symbol' || typeof value !== 'function') {
+        return value;
+      }
+
+      const method = value as (...args: unknown[]) => unknown;
+
+      return (...args: unknown[]) => trackDbValue(() => method.apply(target, args), timings);
+    },
+  });
+}
+
+// ─── Transactions ────────────────────────────────────────────────────────────
 
 /**
  * Thrown when the connected MongoDB topology does not support multi-document
@@ -212,9 +267,9 @@ export function isTransactionsUnsupportedError(err: unknown): boolean {
 
 /**
  * Run `fn` inside a MongoDB multi-document transaction on the current
- * request's client (DEC-025). The session is committed automatically by the
+ * request's client. The session is committed automatically by the
  * driver's `withTransaction` retry wrapper; any error thrown by `fn` aborts
- * the transaction so **nothing becomes visible** (BR-003 atomic project seed).
+ * the transaction so **nothing becomes visible** (atomic project seed).
  *
  * Must be called within a `runWithDb()` context — the underlying
  * `MongoClient` is taken from the request-scoped `Db`.

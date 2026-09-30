@@ -12,8 +12,10 @@ coverage/
 .harness/state/regress-trials/
 # Harness gate modules are frozen executable fixtures outside the root ESLint/Prettier policy.
 .harness/tests/*.mjs
-# Agent scratch is disposable: never committed, never reviewed, never formatted. A probe left in it must cost the
-# next `npm run lint` nothing at all.
+# Agent scratch is disposable: never committed, never reviewed, never formatted, and the home of Playwright's HTML
+# report. A probe left in it must cost the next `npm run lint` nothing at all.
 .agent-scratch/
-# `product-analysis/` is deliberately NOT listed: it is already prettier-clean, so the hook has nothing to rewrite
-# there, and it is live documentation rather than a frozen evidence record.
+
+# `docs/` mirrors the `docs/` entry in eslint.config.js's `ignores`
+# block, so `npm run lint` and `lint-staged` cover exactly the same set of files.
+docs/

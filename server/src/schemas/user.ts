@@ -22,15 +22,7 @@ export const UserSchema = z.object({
   deletedAt: z.iso.datetime().nullable(),
 });
 
-/**
- * Schema for creating a new user (registration).
- * Includes the plaintext password which will be hashed server-side.
- */
-export const CreateUserSchema = z.object({
-  email: z.email({ message: 'Invalid email address', pattern: z.regexes.html5Email }),
-  password: z
-    .string()
-    .min(8, 'Password must be at least 8 characters')
-    .max(128, 'Password must be at most 128 characters'),
-  displayName: z.string().min(1, 'Display name is required').max(100, 'Display name must be at most 100 characters'),
-});
+// `CreateUserSchema` was removed as dead code. Registration is served by
+// `RegisterSchema` in this same file (which also applies the tenant-slug rules);
+// this one had no caller and, being a second definition of the same body, could
+// only drift from the endpoint that actually validates it.

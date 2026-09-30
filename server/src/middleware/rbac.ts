@@ -29,7 +29,7 @@ import type { PermissionAction } from '../services/rbac.service.js';
  */
 export function requirePermission(action: PermissionAction, projectLevel = false) {
   return createMiddleware<AppEnv>(async (c, next) => {
-    // Defense-in-depth (S-18): authMiddleware runs first on all protected routes
+    // Defense-in-depth: authMiddleware runs first on all protected routes
     // and sets `userId`; assert it so a misconfigured route chain can never
     // authorize an unauthenticated request based on a stale/injected role.
     if (!c.get('userId')) {

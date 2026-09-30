@@ -5,7 +5,7 @@ import { DatePipe } from '@angular/common';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { NgIcon, provideIcons } from '@ng-icons/core';
 import { lucideCheck, lucidePencil, lucideX } from '@ng-icons/lucide';
-import { firstValueFrom } from 'rxjs';
+import { firstValueFrom, of } from 'rxjs';
 import { TaskClient } from '@services/task-client';
 import { LabelClient } from '@services/label-client';
 import { AuthStore } from '@stores/auth-store';
@@ -38,7 +38,7 @@ import { HlmAlertImports } from '@spartan-ng/helm/alert';
 import { ConfirmDialog } from '@app/shared/confirm-dialog/confirm-dialog';
 
 /**
- * Single-view task page (R3-P5): title and description are Atlassian-style
+ * Single-view task page: title and description are Atlassian-style
  * click-to-edit inline fields; side-panel selects stay immediate-apply.
  * There is no separate edit mode / Edit button.
  */
@@ -72,8 +72,8 @@ export class TaskDetail implements OnInit {
   protected readonly priorityLevels = TASK_PRIORITY_LEVELS;
   private readonly i18n = inject(TranslocoService);
 
-  /** Translated priority label (P11); unknown values render verbatim. */
-  protected priorityLabel(priorityLevel: TaskPriorityLevel): string {
+  /** Translated priority label; unknown values render verbatim. */
+  private priorityLabel(priorityLevel: TaskPriorityLevel): string {
     const key = priorityLabelKey(priorityLevel);
 
     return key ? this.i18n.translate(key) : String(priorityLevel);
@@ -84,9 +84,9 @@ export class TaskDetail implements OnInit {
   private readonly authStore = inject(AuthStore);
   private readonly projectStore = inject(ProjectStore);
   private readonly preferencesStore = inject(PreferencesStore);
-  /** R3-P8: DatePipe token derived from the user's date/time format preference */
+  /** DatePipe token derived from the user's date/time format preference */
   protected readonly dateTimeFmt = this.preferencesStore.dateTimePipeFormat;
-  /** P12 (item 28): active language passed as the DatePipe locale for localized month names */
+  /** Active language passed as the DatePipe locale for localized month names */
   protected readonly lang = this.preferencesStore.language;
   private readonly refStore = inject(ProjectRefStore);
   private readonly router = inject(Router);
@@ -96,30 +96,33 @@ export class TaskDetail implements OnInit {
    * withComponentInputBinding() — the server resolves it to the task.
    */
   readonly taskNumber = input.required<string>();
+  // No request until the URL segment is meaningful — a blank `taskNumber`
+  // (e.g. navigating to `…/tasks/` before the segment is bound) would hit
+  // `GET /tasks/` and poison the resource with the SPA-fallback HTML.
   private readonly taskResource = rxResource<Task | null, { taskNumber: string }>({
     params: () => ({ taskNumber: this.taskNumber() }),
-    stream: ({ params }) => this.taskClient.getById(params.taskNumber),
+    stream: ({ params }) => (params.taskNumber ? this.taskClient.getById(params.taskNumber) : of(null)),
     defaultValue: null,
   });
-  protected readonly task = computed(() => (this.taskResource.hasValue() ? this.taskResource.value() : null));
-  protected readonly projectId = computed(() => this.task()?.projectId ?? '');
+  private readonly task = computed(() => (this.taskResource.hasValue() ? this.taskResource.value() : null));
+  private readonly projectId = computed(() => this.task()?.projectId ?? '');
   // ─── Inline edit state (Atlassian inline-edit pattern) ──────────────────────
-  protected readonly editingTitle = signal(false);
-  protected readonly titleDraft = signal('');
-  protected readonly editingDescription = signal(false);
-  protected readonly descriptionDraft = signal('');
-  protected readonly error = signal('');
-  protected readonly currentUserId = signal('');
-  protected readonly showDeleteConfirm = signal(false);
-  protected readonly showConflictDialog = signal(false);
-  protected readonly conflictMessage = signal('');
+  private readonly editingTitle = signal(false);
+  private readonly titleDraft = signal('');
+  private readonly editingDescription = signal(false);
+  private readonly descriptionDraft = signal('');
+  private readonly error = signal('');
+  private readonly currentUserId = signal('');
+  private readonly showDeleteConfirm = signal(false);
+  private readonly showConflictDialog = signal(false);
+  private readonly conflictMessage = signal('');
   private readonly taskToDelete = signal<Task | null>(null);
   // ─── Reference data via the shared per-project store ───────────────────────
-  protected readonly statusOptions = computed(() => this.refStore.options(this.projectId(), 'statuses'));
-  protected readonly typeOptions = computed(() => this.refStore.options(this.projectId(), 'types'));
-  protected readonly sprintOptions = computed(() => this.refStore.options(this.projectId(), 'sprints'));
-  protected readonly labelOptions = computed(() => this.refStore.options(this.projectId(), 'labels'));
-  protected readonly memberOptions = computed(() => this.refStore.options(this.projectId(), 'members'));
+  private readonly statusOptions = computed(() => this.refStore.options(this.projectId(), 'statuses'));
+  private readonly typeOptions = computed(() => this.refStore.options(this.projectId(), 'types'));
+  private readonly sprintOptions = computed(() => this.refStore.options(this.projectId(), 'sprints'));
+  private readonly labelOptions = computed(() => this.refStore.options(this.projectId(), 'labels'));
+  private readonly memberOptions = computed(() => this.refStore.options(this.projectId(), 'members'));
   /** Resolved entity names for display */
   protected readonly statusName = computed(() => {
     const t = this.task();
@@ -150,9 +153,9 @@ export class TaskDetail implements OnInit {
   protected readonly assigneeItemToString = (id: string) => this.memberOptions().find((o) => o.id === id)?.name ?? id;
   protected readonly sprintItemToString = (id: string) => this.sprintOptions().find((o) => o.id === id)?.name ?? id;
   protected readonly priorityItemToString = (value: TaskPriorityLevel) => this.priorityLabel(value);
-  // ─── Labels: case-insensitive autocomplete + create-new (BR-019, R3-P5) ─────
+  // ─── Labels: case-insensitive autocomplete + create-new ─────
   /** Free-text search buffer for the label autocomplete */
-  protected readonly labelSearch = signal('');
+  private readonly labelSearch = signal('');
   /** Existing labels matching the search, excluding already-applied ones */
   protected readonly filteredLabelOptions = computed(() => {
     const search = this.labelSearch().toLowerCase();
@@ -201,7 +204,7 @@ export class TaskDetail implements OnInit {
   }
 
   /** Whether the current user may edit task fields (Editor+ or tenant ADMIN+) */
-  protected canEdit(): boolean {
+  private canEdit(): boolean {
     return canWrite(this.projectStore.projectRole(), this.authStore.tenantRole());
   }
 
@@ -288,7 +291,7 @@ export class TaskDetail implements OnInit {
 
     if (!id) {
       const name = option.name.trim().toLowerCase();
-      // Case-insensitive reuse of an existing project label (BR-019)
+      // Case-insensitive reuse of an existing project label
       const existing = this.labelOptions().find((o) => o.name.toLowerCase() === name);
 
       if (existing) {
@@ -325,7 +328,7 @@ export class TaskDetail implements OnInit {
 
   // ─── Generic single-field update (Jira-style immediate apply) ───────────────
 
-  /** P14 (item 32): typed single-field update — `field` is constrained to the
+  /** Typed single-field update — `field` is constrained to the
    * updatable `UpdateTask` keys. Template selects may emit null/undefined while
    * settling; the value is forwarded verbatim (server validates the body). */
   /** Select values arrive as strings — coerce to the numeric priority level. */
@@ -333,7 +336,7 @@ export class TaskDetail implements OnInit {
     this.updateField('priorityLevel', Number(value) as UpdateTask['priorityLevel']);
   }
 
-  protected updateField<K extends keyof UpdateTask>(field: K, value: UpdateTask[K] | null | undefined): void {
+  private updateField<K extends keyof UpdateTask>(field: K, value: UpdateTask[K] | null | undefined): void {
     const t = this.task();
 
     if (!t) return;

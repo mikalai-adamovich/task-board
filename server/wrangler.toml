@@ -23,8 +23,13 @@ minify = true
 # INSUFFICIENT_INVOCATIONS with single-user traffic).
 region = "aws:eu-central-1"
 
-# Durable Object holding the Hono app + persistent MongoClient. Only used
-# when DB_CLIENT_MODE=durable; the production default stays per-request.
+# Durable Object holding the Hono app + persistent MongoClient. Only used when
+# DB_CLIENT_MODE=durable, which IS what production runs: `.github/workflows/cd.yml`
+# passes `--var DB_CLIENT_MODE:durable` on the deploy line. This file does not
+# set the variable, so a local `wrangler dev` (or any deploy that omits the
+# `--var`) falls back to `per-request` at `app.ts` — the proven rollback path.
+# The DO instance count is a security parameter, not only a performance one:
+# see the comment at `src/index.ts`.
 [durable_objects]
 bindings = [{ name = "MONGO_DO", class_name = "MongoHonoDurableObject" }]
 
@@ -41,6 +46,24 @@ new_sqlite_classes = ["MongoHonoDurableObject"]
 # empty string over the real secret on every deploy). Local dev reads them from
 # server/.dev.vars (gitignored); production sets them via `wrangler secret put`
 # in .github/workflows/cd.yml.
+
+# ── C-2 (item 9): the scheduled purge. ────────────────────────────────────────────
+# A two-phase delete with nothing to execute it is a promise the product cannot
+# keep, so the Worker exports a `scheduled` handler (see `src/index.ts`) and this
+# is what makes the platform call it. Once a day, shortly after midnight UTC.
+#
+# The grace period is 30 days (DELETION_GRACE_PERIOD_MS), so daily granularity
+# costs at most 24 extra hours of retention on a deletion and buys a batch small
+# enough to finish inside a scheduled invocation. It is NOT a TTL index on
+# `deletionScheduledAt`: TTL deletes one document when a date on THAT document
+# passes, which cannot run an ordered cascade across ten collections and would
+# also delete the row recording a FAILED purge. The reasoning is in
+# `src/services/purge.service.ts`.
+#
+# Changing the schedule here changes when data is destroyed — treat it as a
+# product change, not a tuning knob.
+[triggers]
+crons = ["17 3 * * *"]
 
 # Comma-separated list of allowed origins for CORS.
 # Local dev default; production overrides it via `wrangler deploy --var` in CD.

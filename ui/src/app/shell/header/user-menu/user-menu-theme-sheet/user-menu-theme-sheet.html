@@ -13,7 +13,12 @@
     [attr.aria-label]="'userMenu.chooseTheme' | transloco"
   >
     <hlm-sheet-header class="grid grid-cols-[1fr_auto_1fr] items-center gap-2 p-3">
-      <h3 hlm-sheet-title class="text-lg font-semibold text-foreground justify-self-start">
+      <!-- a11y: the vendored HlmSheetTitle is the ATTRIBUTE directive `[hlmSheetTitle]`
+           (ui/libs/ui/sheet/src/lib/hlm-sheet-title.ts) — there is no `<hlm-sheet-title>`
+           element. It host-directives BrnDialogTitle, which stamps the id the CDK
+           container points `aria-labelledby` at; the dash-case spelling left that id
+           unset, so the sheet had a dangling aria-labelledby and no accessible name. -->
+      <h3 hlmSheetTitle class="text-lg font-semibold text-foreground justify-self-start">
         {{ 'userMenu.themes' | transloco }}
       </h3>
       <ui-theme-mode-switch (navigateDown)="focusThemeGrid()" />

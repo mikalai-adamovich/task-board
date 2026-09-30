@@ -1,5 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import type { Collection } from 'mongodb';
+// guardrail:no-base-repository 2026-09-29 — every read and write is keyed by the
+// `(userId, projectId)` pair; the `id` field exists only because the upsert's
+// `$setOnInsert` writes one. The base's `findById`/`delete` would address an
+// identity no query in this repository ever uses, inventing a second way to
+// reach a preference row. See `rules/guardrails.guardrail.test.ts` (P-03).
 import type {
   TaskTableColumnKey,
   UpdateUserProjectBoardPreference,
@@ -16,7 +21,7 @@ export interface UserPreferencesDocument {
   id: string;
   userId: string;
   projectId: string;
-  /** R3-P4: visible task-table columns; null/absent = default set. */
+  /** Visible task-table columns; null/absent = default set. */
   taskTableColumns?: TaskTableColumnKey[] | null;
   createdAt: Date;
   updatedAt: Date;

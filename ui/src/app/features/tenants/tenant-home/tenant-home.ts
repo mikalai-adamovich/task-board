@@ -14,6 +14,7 @@ import {
 import { rxResource } from '@angular/core/rxjs-interop';
 import { of } from 'rxjs';
 import { form, FormField, FormRoot, schema, required, maxLength } from '@angular/forms/signals';
+import { FieldControl } from '@app/shared/field-control/field-control';
 import type { TaskPriorityLevel } from '@task-board/shared';
 import type { BrnDialogState } from '@spartan-ng/brain/dialog';
 import { HlmBadgeImports } from '@spartan-ng/helm/badge';
@@ -61,6 +62,7 @@ interface MyTaskItem {
 @Component({
   selector: 'ui-tenant-home',
   imports: [
+    FieldControl,
     HlmAlertImports,
     HlmEmptyImports,
     RouterLink,
@@ -95,7 +97,7 @@ export class TenantHome {
   private readonly projectClient = inject(ProjectClient);
   private readonly taskClient = inject(TaskClient);
   private readonly tenantClient = inject(TenantClient);
-  protected readonly tenantStore = inject(TenantStore);
+  private readonly tenantStore = inject(TenantStore);
   private readonly authStore = inject(AuthStore);
   /** Shared badge helpers (see constants/priority.ts) */
   protected readonly statusBadgeVariant = statusBadgeVariant;
@@ -103,7 +105,7 @@ export class TenantHome {
   protected readonly priorityBadgeVariant = priorityBadgeVariant;
   private readonly i18n = inject(TranslocoService);
 
-  /** Translated priority label (P11) for the "My Tasks" widget; unknown values render verbatim. */
+  /** Translated priority label for the "My Tasks" widget; unknown values render verbatim. */
   protected priorityLabel(priorityLevel: TaskPriorityLevel): string {
     const key = priorityLabelKey(priorityLevel);
 
@@ -111,18 +113,18 @@ export class TenantHome {
   }
   protected readonly TenantStatus = TenantStatus;
   protected readonly TenantRole = TenantRole;
-  protected readonly tenant = computed(() => this.tenantStore.activeTenant());
-  protected readonly role = computed(() => this.authStore.tenantRole());
-  protected readonly isOwnerOrAdmin = computed(() => hasMinTenantRole(this.role(), TenantRole.ADMIN));
+  private readonly tenant = computed(() => this.tenantStore.activeTenant());
+  private readonly role = computed(() => this.authStore.tenantRole());
+  private readonly isOwnerOrAdmin = computed(() => hasMinTenantRole(this.role(), TenantRole.ADMIN));
   // ─── Projects grid ────────────────────────────────────────────────────────
-  // F4: the project list comes from the shared tenant-scoped cache in
+  // The project list comes from the shared tenant-scoped cache in
   // ProjectStore (ProjectSwitcher reads the SAME cache — one GET /projects per
   // tenant session instead of two independent fetches). Invalidation (see
   // upsertProject / invalidateProjectList) re-triggers the ensure effect below.
   private readonly projectStore = inject(ProjectStore);
   /** Active tenant id — both the read and the ensure effect track this */
   private readonly activeTenantId = computed(() => this.tenantStore.activeTenant()?.id ?? '');
-  protected readonly projects = computed(() => this.projectStore.projectList(this.activeTenantId()));
+  private readonly projects = computed(() => this.projectStore.projectList(this.activeTenantId()));
   protected readonly loadingProjects = computed(
     () => this.activeTenantId() !== '' && this.projectStore.isProjectListLoading(this.activeTenantId()),
   );
@@ -144,13 +146,28 @@ export class TenantHome {
     });
   });
   // ─── Pending invitations summary (admins) ────────────────────────────────
-  protected readonly pendingInvites = signal<TenantMember[]>([]);
-  protected readonly loadingInvites = signal(false);
+  // Converted from `effect` + manual `subscribe()`. The resource cancels
+  // the in-flight request on teardown/param change (no write after destroy, no
+  // subscription leak) and surfaces failures through `error()` instead of an
+  // unhandled subscription. The `tenantId` param is blank for non-admins, so
+  // the request is skipped entirely in that case.
+  private readonly invitesResource = rxResource({
+    params: () => ({ tenantId: this.isOwnerOrAdmin() ? (this.tenant()?.id ?? '') : '' }),
+    stream: ({ params }) =>
+      params.tenantId ? this.tenantClient.listMembers(params.tenantId) : of([] as TenantMember[]),
+    defaultValue: [] as TenantMember[],
+  });
+  protected readonly pendingInvites = computed(() => {
+    if (!this.invitesResource.hasValue()) return [];
+
+    return this.invitesResource.value().filter((m) => m.invitation?.status === InvitationStatus.PENDING);
+  });
+  protected readonly loadingInvites = computed(() => this.invitesResource.isLoading());
   // ─── Create project dialog ────────────────────────────────────────────────
-  protected readonly showCreateModal = signal(false);
+  private readonly showCreateModal = signal(false);
   private readonly actionError = signal('');
   protected readonly error = computed(() => this.actionError());
-  protected readonly model = signal<CreateProjectForm>({
+  private readonly model = signal<CreateProjectForm>({
     name: '',
     key: '',
     description: '',
@@ -174,7 +191,7 @@ export class TenantHome {
             })
             .subscribe({
               next: (project) => {
-                // F4: patch the SHARED cache — the sidebar ProjectSwitcher sees
+                // Patch the SHARED cache — the sidebar ProjectSwitcher sees
                 // the new project immediately (no extra GET /projects).
                 this.projectStore.upsertProject(project);
                 this.showCreateModal.set(false);
@@ -191,9 +208,11 @@ export class TenantHome {
   );
 
   constructor() {
-    // F4: load the project list through the shared cache. Reading
-    // projectList() keeps the effect reactive — after invalidateProjectList()
-    // the effect re-runs and refetches.
+    // Load the project list through the shared cache. This effect performs
+    // no fetching of its own: `ensureProjectList()` is the shared, deduped,
+    // signal-backed cache loader (an imperative `ensure` by design), and
+    // reading `projectList()` keeps the effect reactive — after
+    // `invalidateProjectList()` it re-runs and refetches.
     effect(() => {
       const tenantId = this.activeTenantId();
 
@@ -202,22 +221,6 @@ export class TenantHome {
       this.projectStore.projectList(tenantId);
       void this.projectStore.ensureProjectList(tenantId).catch(() => {
         // Non-critical: the grid stays empty; a later navigation retries.
-      });
-    });
-
-    // Pending-invitation summary for admins (DEC-033)
-    effect(() => {
-      const tenant = this.tenant();
-
-      if (!this.isOwnerOrAdmin() || !tenant) return;
-
-      this.loadingInvites.set(true);
-      this.tenantClient.listMembers(tenant.id).subscribe({
-        next: (members) => {
-          this.pendingInvites.set(members.filter((m) => m.invitation?.status === InvitationStatus.PENDING));
-          this.loadingInvites.set(false);
-        },
-        error: () => this.loadingInvites.set(false),
       });
     });
   }

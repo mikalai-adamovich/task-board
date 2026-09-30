@@ -12,34 +12,51 @@ import type {
   BulkUpdateTasksResult,
 } from '@task-board/shared';
 
-/** Query params for filtering tasks */
+/**
+ * Query params for filtering tasks.
+ *
+ * Every optional field carries `| undefined`. `TaskTable.taskQuery` is a
+ * `computed` that always returns the FULL filter set, using `undefined` for
+ * "no filter" (`filterStatus() || undefined`), and `exactOptionalPropertyTypes`
+ * forbids that on a bare `field?: T`. `fetchList` already treats `undefined`
+ * and "absent" identically (it only serialises truthy values), so this is a
+ * type-level statement of the existing runtime contract, not a behaviour change.
+ */
 export interface TaskQuery {
-  projectId?: string;
-  sprintId?: string | null;
-  assigneeId?: string;
-  reporterId?: string;
-  statusId?: string;
-  priorityLevel?: number;
-  typeId?: string;
-  labelId?: string;
-  search?: string;
-  page?: number;
-  limit?: number;
-  /** Sort field and direction, e.g. "createdAt:desc" */
-  sort?: string;
-  /** Board view: lightweight card projection (dedicated BoardTask DTO) */
-  view?: 'board';
-  /** Q13/F-01: inclusive ISO date (`YYYY-MM-DD`) range filters */
-  createdFrom?: string;
-  createdTo?: string;
-  updatedFrom?: string;
-  updatedTo?: string;
+  projectId?: string | undefined;
+  /** Exact sprint — mutually exclusive with `hasSprint` (server rejects both together). */
+  sprintId?: string | null | undefined;
   /**
-   * F5 (perf audit #2): omit `description` from the response (~40% smaller
+   * Tri-state "has a sprint" filter, mirroring the server's
+   * `TaskQuerySchema.hasSprint`. `false` requests the BACKLOG (tasks with no
+   * sprint) — previously inexpressible, so the Sprints page counter silently
+   * fell back to "all project tasks". `undefined` sends no filter at all.
+   */
+  hasSprint?: boolean | undefined;
+  assigneeId?: string | undefined;
+  reporterId?: string | undefined;
+  statusId?: string | undefined;
+  priorityLevel?: number | undefined;
+  typeId?: string | undefined;
+  labelId?: string | undefined;
+  search?: string | undefined;
+  page?: number | undefined;
+  limit?: number | undefined;
+  /** Sort field and direction, e.g. "createdAt:desc" */
+  sort?: string | undefined;
+  /** Board view: lightweight card projection (dedicated BoardTask DTO) */
+  view?: 'board' | undefined;
+  /** Inclusive ISO date (`YYYY-MM-DD`) range filters */
+  createdFrom?: string | undefined;
+  createdTo?: string | undefined;
+  updatedFrom?: string | undefined;
+  updatedTo?: string | undefined;
+  /**
+   * Omit `description` from the response (~40% smaller
    * payload for lists). Only views that render the description (the board's
    * task-card preview) must NOT set this.
    */
-  excludeDescription?: boolean;
+  excludeDescription?: boolean | undefined;
 }
 
 /** Paginated list response shape */
@@ -103,7 +120,7 @@ export class TaskClient {
       params = params.set(`cursor.${columnId}`, cursor);
     }
 
-    if (query.sprintId) params = params.set('sprintId', query.sprintId);
+    if (query.sprintId?.trim()) params = params.set('sprintId', query.sprintId.trim());
     if (query.assigneeId) params = params.set('assigneeId', query.assigneeId);
     if (query.priorityLevel !== undefined) params = params.set('priorityLevel', String(query.priorityLevel));
 
@@ -115,7 +132,16 @@ export class TaskClient {
   private fetchList<T>(projectId: string, query: TaskQuery): Observable<PaginatedResponse<T>> {
     let params = new HttpParams();
 
-    if (query.sprintId !== undefined) params = params.set('sprintId', query.sprintId ?? '');
+    // `sprintId: null` (and any blank value) means "absent" and the
+    // parameter must be OMITTED, not sent as `sprintId=`. The server's
+    // `TaskQuerySchema.sprintId` is `uuid().optional()` — an empty string fails
+    // validation, so the whole request 400s. Same "empty means absent"
+    // convention as every other param below; the trim() keeps a whitespace-only
+    // value out of the query too, since `'   '` is truthy in JS but is not a
+    // valid id either. To filter BY the backlog, pass `hasSprint: false` —
+    // omitting `sprintId` means "no sprint filtering", not "no sprint".
+    if (query.sprintId?.trim()) params = params.set('sprintId', query.sprintId.trim());
+    if (query.hasSprint !== undefined) params = params.set('hasSprint', String(query.hasSprint));
     if (query.assigneeId) params = params.set('assigneeId', query.assigneeId);
     if (query.reporterId) params = params.set('reporterId', query.reporterId);
     if (query.statusId) params = params.set('statusId', query.statusId);
@@ -135,7 +161,7 @@ export class TaskClient {
     return this.http.get<PaginatedResponse<T>>(`${this.baseUrl}/projects/${projectId}/tasks`, { params });
   }
 
-  /** S-05: per-status task counts for the project overview (one aggregation) */
+  /** Per-status task counts for the project overview (one aggregation) */
   statusSummary(projectId: string): Observable<{ statusId: string; count: number }[]> {
     return this.http
       .get<{ data: { statusId: string; count: number }[] }>(
@@ -161,7 +187,7 @@ export class TaskClient {
     return this.http.patch<{ data: Task }>(`${this.baseUrl}/tasks/${id}`, data).pipe(map((res) => res.data));
   }
 
-  /** Q10 (RQ-04 ③): bulk status/assignee/sprint update for the tasks table */
+  /** Bulk status/assignee/sprint update for the tasks table */
   bulkUpdate(projectId: string, body: BulkUpdateTasks): Observable<BulkUpdateTasksResult> {
     return this.http
       .patch<{ data: BulkUpdateTasksResult }>(`${this.baseUrl}/projects/${projectId}/tasks/bulk`, body)

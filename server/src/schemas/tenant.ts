@@ -1,4 +1,5 @@
 import * as z from 'zod';
+import { TenantRole } from '@task-board/shared';
 import {
   TenantRoleValues,
   MemberStatusValues,
@@ -6,6 +7,10 @@ import {
   InvitationStatusValues,
   TENANT_SLUG_MAX_LENGTH,
   TENANT_SLUG_PATTERN,
+  // The client mirrors these bounds in its forms, so they live in the
+  // shared package and BOTH sides derive from them.
+  TENANT_NAME_MAX_LENGTH,
+  TENANT_DESCRIPTION_MAX_LENGTH,
 } from '@task-board/shared';
 import {
   uuid,
@@ -18,7 +23,7 @@ import {
 } from '../validators/common.js';
 
 /**
- * Tenant slug validator (DEC-032): lowercase `[a-z0-9-]`, no leading/trailing
+ * Tenant slug validator: lowercase `[a-z0-9-]`, no leading/trailing
  * hyphen, max 48 characters.
  */
 export const tenantSlug = () =>
@@ -35,9 +40,9 @@ export const tenantSlug = () =>
  */
 export const TenantSchema = z.object({
   id: uuid(),
-  name: nonEmptyString(200, 'Tenant name'),
+  name: nonEmptyString(TENANT_NAME_MAX_LENGTH, 'Tenant name'),
   slug: tenantSlug(),
-  description: nullableOptionalString(120),
+  description: nullableOptionalString(TENANT_DESCRIPTION_MAX_LENGTH),
   status: z.enum(TenantStatusValues),
   deletionScheduledAt: nullableIsoDateTime(),
   createdAt: isoDateTime(),
@@ -46,16 +51,16 @@ export const TenantSchema = z.object({
 
 /**
  * Schema for creating a new tenant. The slug is optional — it is generated
- * from the name when omitted (DEC-032).
+ * from the name when omitted.
  */
 export const CreateTenantSchema = z.object({
-  name: nonEmptyString(200, 'Tenant name'),
+  name: nonEmptyString(TENANT_NAME_MAX_LENGTH, 'Tenant name'),
   slug: tenantSlug().optional(),
-  description: optionalString(120),
+  description: optionalString(TENANT_DESCRIPTION_MAX_LENGTH),
 });
 
 /**
- * Query schema for GET /tenants/slug-available (DEC-032).
+ * Query schema for GET /tenants/slug-available.
  */
 export const SlugAvailableQuerySchema = z.object({
   slug: z.string().min(1),
@@ -65,24 +70,27 @@ export const SlugAvailableQuerySchema = z.object({
  * Schema for updating an existing tenant.
  */
 export const UpdateTenantSchema = z.object({
-  name: nonEmptyString(200, 'Tenant name').optional(),
-  description: optionalString(120),
+  name: nonEmptyString(TENANT_NAME_MAX_LENGTH, 'Tenant name').optional(),
+  description: optionalString(TENANT_DESCRIPTION_MAX_LENGTH),
 });
 
+// `TenantMemberSchema` was removed as dead code (unwired response schema —
+// it validated nothing; the membership contract is the shared `TenantMember`
+// interface).
+
 /**
- * Tenant membership schema.
+ * Roles a tenant member can be invited/updated TO — ADMIN or MEMBER, never
+ * OWNER (ownership transfer is a separate, explicit operation).
+ *
+ * This replaces the positional slice `TenantRoleValues[1..2] as
+ * [string, ...string[]]`. That cast WIDENED the inferred field type back to
+ * `string`, so `InviteMemberSchema.shape.role` was typed `string` even though it
+ * only accepted two values at runtime — the schema and the shared union
+ * disagreed in the type system, and `schemas/shared-parity.test.ts` (compile-time
+ * gate) fails on it. Naming the two members from the shared constant also stops
+ * the slice from silently changing meaning if `TenantRole` is ever reordered.
  */
-export const TenantMemberSchema = z.object({
-  id: uuid(),
-  tenantId: uuid(),
-  userId: uuid(),
-  role: z.enum(TenantRoleValues),
-  status: z.enum(MemberStatusValues),
-  /** DEC-055: membership expiration (null = never expires) */
-  expiresAt: nullableIsoDateTime(),
-  createdAt: isoDateTime(),
-  updatedAt: isoDateTime(),
-});
+const INVITEABLE_ROLES = [TenantRole.ADMIN, TenantRole.MEMBER] as const;
 
 /**
  * Schema for inviting a new member to a tenant.
@@ -90,23 +98,20 @@ export const TenantMemberSchema = z.object({
  */
 export const InviteMemberSchema = z.object({
   email: email(),
-  role: z.enum([TenantRoleValues[1], TenantRoleValues[2]] as [string, ...string[]]),
+  role: z.enum(INVITEABLE_ROLES),
 });
 
-/**
- * Schema for updating a member's role.
- */
-export const UpdateMemberRoleSchema = z.object({
-  role: z.enum([TenantRoleValues[1], TenantRoleValues[2]] as [string, ...string[]]),
-});
+// `UpdateMemberRoleSchema` was removed as dead code — superseded by
+// `UpdateMemberSchema` (the DEC-055 full member PATCH), which the
+// PATCH /:tenantId/members/:memberUserId route actually validates.
 
 /**
- * DEC-055: full member update — role, expiration date and the underlying
+ * Full member update — role, expiration date and the underlying
  * user's profile (display name / email). All fields optional; the service
  * applies only the provided ones.
  */
 export const UpdateMemberSchema = z.object({
-  role: z.enum([TenantRoleValues[1], TenantRoleValues[2]] as [string, ...string[]]).optional(),
+  role: z.enum(INVITEABLE_ROLES).optional(),
   /** ISO 8601 datetime or null (null clears the expiration) */
   expiresAt: nullableIsoDateTime().optional(),
   /** Updates the underlying USER record's display name */
@@ -143,7 +148,7 @@ export const MyInvitationSchema = z.object({
   userId: z.string(),
   role: z.enum(TenantRoleValues),
   status: z.enum(MemberStatusValues),
-  /** DEC-055: membership expiration (null = never expires) */
+  /** Membership expiration (null = never expires) */
   expiresAt: nullableIsoDateTime(),
   invitation: InvitationSchema.nullable(),
   /** Resolved user display name (null if user deleted/not found) */
@@ -156,9 +161,6 @@ export const MyInvitationSchema = z.object({
   updatedAt: isoDateTime(),
 });
 
-/**
- * Tenant entity with the current user's role.
- */
-export const TenantWithRoleSchema = TenantSchema.extend({
-  role: z.enum(TenantRoleValues),
-});
+// `TenantWithRoleSchema` was removed as dead code (unwired response schema);
+// the tenant-with-role shape is the shared `MyInvitation`/`TenantMember`
+// projections the routes actually return.

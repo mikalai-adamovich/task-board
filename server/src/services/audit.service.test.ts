@@ -89,6 +89,70 @@ describe('AuditService (DEC-028 actor snapshot at write time)', () => {
     expect(events[1].entityId).toBe('task-2');
   });
 
+  it('D-11: a batch never shares one createdAt — two events must not tie on the list sort key', async () => {
+    // The property: the timestamps `logMany` hands the repository are DISTINCT
+    // and increasing in batch order. The old code stamped the whole batch with
+    // one `new Date()`, so a 500-task bulk update wrote 500 events whose
+    // relative order in the audit list was whatever the database felt like.
+    // Asserted as a property (no duplicates, strictly increasing), so a fix that
+    // stamps them differently still passes.
+    const auditRepo = createMockAuditRepo();
+    const service = new AuditService(auditRepo, createMockUserRepo());
+
+    await service.logMany(
+      'user-1',
+      Array.from({ length: 25 }, (_unused, i) => ({
+        tenantId: 'tenant-1',
+        projectId: 'project-1',
+        entityType: 'TASK' as const,
+        entityId: `task-${i}`,
+        action: 'UPDATED' as const,
+      })),
+    );
+
+    const stamps = (auditRepo.createMany.mock.calls.at(0)?.[0] ?? []).map((e: { createdAt: Date }) =>
+      e.createdAt.getTime(),
+    );
+
+    expect(stamps).toHaveLength(25);
+    expect(new Set(stamps).size, 'two events in the batch share a createdAt').toBe(25);
+    expect(
+      [...stamps].sort((a, b) => a - b),
+      'stamps must increase in batch order',
+    ).toEqual(stamps);
+  });
+
+  it('D-11: the batch cannot run the audit clock far into the future', async () => {
+    // Distinct stamps are not enough: a fix that "fixed" the tie by adding a
+    // second or a minute per event would make every timestamp a lie. The bound
+    // is the batch length — the stamps must stay within one millisecond per
+    // event of each other, which any per-event clock read also satisfies.
+    const auditRepo = createMockAuditRepo();
+    const service = new AuditService(auditRepo, createMockUserRepo());
+    const before = Date.now();
+
+    await service.logMany(
+      'user-1',
+      Array.from({ length: 10 }, (_unused, i) => ({
+        tenantId: 'tenant-1',
+        projectId: 'project-1',
+        entityType: 'TASK' as const,
+        entityId: `task-${i}`,
+        action: 'UPDATED' as const,
+      })),
+    );
+
+    const stamps = (auditRepo.createMany.mock.calls.at(0)?.[0] ?? []).map((e: { createdAt: Date }) =>
+      e.createdAt.getTime(),
+    );
+    const first = stamps[0] ?? before;
+    const last = stamps[stamps.length - 1] ?? first;
+
+    expect(first).toBeGreaterThanOrEqual(before);
+    expect(last - first).toBeLessThanOrEqual(stamps.length - 1);
+    expect(last - before).toBeLessThanOrEqual(stamps.length);
+  });
+
   it('TOP-3 №2: logMany is a no-op for an empty batch — no DB operations', async () => {
     const auditRepo = createMockAuditRepo();
     const userRepo = createMockUserRepo();
@@ -145,7 +209,7 @@ describe('AuditService (DEC-028 actor snapshot at write time)', () => {
   });
 });
 
-// ─── R3-P7: human-readable label enrichment ──────────────────────────────────
+// ─── Human-readable label enrichment ─────────────────────────────────────────
 
 function createMockEnrichmentRepos() {
   return {

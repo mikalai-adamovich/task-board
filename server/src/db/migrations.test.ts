@@ -2,6 +2,8 @@
  * Tests for idempotent data migrations.
  */
 import { describe, it, expect, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import {
   migrateInvitedMembershipsToRevoked,
   renameSeedStatusNames,
@@ -11,8 +13,92 @@ import {
   backfillMemberExpiresAt,
   migrateToSingleBoardPerProject,
   backfillTaskSortNames,
+  backfillTaskDescriptionText,
+  AUDIT_RETENTION_DAYS,
+  AUDIT_RETENTION_SECONDS,
   migrateTaskPriorityToLevel,
+  listIndexesSafely,
+  ensureCoreIndexes,
+  dropSupersededIndexes,
+  hasDuplicatesFor,
+  indexNameFor,
+  CORE_INDEXES,
+  SUPERSEDED_INDEXES,
 } from './migrations.js';
+
+// `import.meta.dirname` avoids the Workers-`URL` vs `node:url` `URL` clash.
+const REPO_DIR = dirname(import.meta.filename);
+const REPOSITORY_DIR = join(REPO_DIR, '..', 'repositories');
+/**
+ * The exact `(collection, keys, unique?)` triples F11 added, in the shape the
+ * guardrail assertions consume. Written out literally rather than derived from
+ * `CORE_INDEXES` on purpose: a test that reads the array it is supposed to police
+ * proves nothing. If an index is dropped or re-ordered, THESE literals fail.
+ *
+ * Two entries were REMOVED from this list, matching the two `CORE_INDEXES`
+ * entries removed in `migrations.ts`:
+ *   - `tenant_members {tenantId, status}` — its only serving query was
+ *     `TenantMemberRepository.countActiveByTenant`, dead code (no caller).
+ *   - `projects {key}` — added for `ProjectRepository.findByKey`, which looked a
+ *     project up by `key` ALONE (tenant-unsafe) and had no caller.
+ * Both drops were an approved decision; the guardrail assertions themselves are
+ * untouched and still police the remaining inventory in both directions.
+ */
+const F11_INDEXES: { collection: string; keys: Record<string, 1 | -1>; unique: boolean }[] = [
+  { collection: 'users', keys: { 'passwordReset.tokenHash': 1 }, unique: false },
+  { collection: 'tenant_members', keys: { userId: 1, role: 1 }, unique: false },
+  { collection: 'project_members', keys: { userId: 1 }, unique: false },
+  { collection: 'tasks', keys: { projectId: 1, typeId: 1 }, unique: false },
+  { collection: 'comments', keys: { taskId: 1, createdAt: 1 }, unique: false },
+  { collection: 'comments', keys: { id: 1 }, unique: true },
+  {
+    collection: 'task_relationships',
+    keys: { projectId: 1, sourceTaskId: 1, targetTaskId: 1 },
+    unique: true,
+  },
+  { collection: 'task_relationships', keys: { id: 1 }, unique: true },
+  // The three audit sort indexes grew a `_id` tiebreaker (the `-1` on
+  // `_id` is ALIGNED with `createdAt`, so one index serves both directions by
+  // reverse traversal). The `createdAt`-only specs they replaced are listed in
+  // `SUPERSEDED_INDEXES` and dropped by `dropSupersededIndexes`; a guardrail
+  // below asserts every one of them has its replacement BEFORE the drop runs.
+  { collection: 'audit_events', keys: { projectId: 1, 'actor.userId': 1, createdAt: -1, _id: -1 }, unique: false },
+  { collection: 'audit_events', keys: { projectId: 1, entityId: 1, createdAt: -1, _id: -1 }, unique: false },
+  { collection: 'audit_events', keys: { tenantId: 1, projectId: 1, createdAt: -1, _id: -1 }, unique: false },
+  { collection: 'filters', keys: { userId: 1, projectId: 1, name: 1 }, unique: true },
+  { collection: 'labels', keys: { projectId: 1, name: 1 }, unique: false },
+  { collection: 'statuses', keys: { projectId: 1, position: 1 }, unique: false },
+  { collection: 'task_types', keys: { projectId: 1, position: 1 }, unique: false },
+  { collection: 'sprints', keys: { projectId: 1, createdAt: -1 }, unique: false },
+];
+
+/** The `CORE_INDEXES` entry for a `(collection, keys)` pair, if declared. */
+function declared(collection: string, keys: Record<string, 1 | -1>) {
+  return CORE_INDEXES.find((entry) => entry.collection === collection && sameKeyOrder(entry.spec, keys));
+}
+
+/**
+ * Strips comments before a source check, so that DOCUMENTING a deleted query in
+ * a comment (which the F22 deletion notes legitimately do) cannot satisfy a
+ * contract row. Only executable code is inspected — this is the difference
+ * between "the repository still runs this query" and "the repository mentions
+ * this query", and one row here was satisfied by the latter alone.
+ */
+const code = (source: string): string => source.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
+/** Stable identity of an index: `collection` + the spec, key order included. */
+const indexId = (collection: string, spec: Record<string, 1 | -1>): string => `${collection}|${JSON.stringify(spec)}`;
+
+/**
+ * Deep-equal on the KEY ORDER, not on the object. `{a:1,b:1}` and `{b:1,a:1}`
+ * are different indexes to MongoDB and mean different things to the planner, so
+ * a `toEqual` on the object would happily pass a re-ordered index.
+ */
+function sameKeyOrder(a: Record<string, 1 | -1>, b: Record<string, 1 | -1>): boolean {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+
+  return aKeys.length === bKeys.length && aKeys.every((key, i) => key === bKeys[i] && a[key] === b[key]);
+}
 
 describe('migrateInvitedMembershipsToRevoked', () => {
   it('rewrites ACTIVE members with PENDING invitations to ACCESS_REVOKED', async () => {
@@ -121,7 +207,7 @@ describe('ensureTenantSlugIntegrity (M-04)', () => {
   });
 });
 
-// ─── DR-1 ────────────────────────────────────────────────────────────────────
+// ─── Seed-status display names ───────────────────────────────────────────────
 
 describe('renameSeedStatusNames (DR-1)', () => {
   function createStatusDb() {
@@ -301,9 +387,58 @@ describe('migrateToSingleBoardPerProject (doc 102)', () => {
 
     expect(boardsCollection.deleteMany).not.toHaveBeenCalled();
   });
+
+  // On a brand-new database the `boards` collection has never been
+  // created, so `boards.indexes()` answers NamespaceNotFound (code 26) instead
+  // of an empty list — which crashed the whole migration run and made a fresh
+  // environment impossible to bootstrap.
+  it('runs on a fresh database where the boards collection does not exist yet', async () => {
+    const { db, boardsCollection, projectsCollection, prefsCollection } = createBoardMigrationDb([], []);
+
+    // The driver raises NamespaceNotFound for a namespace that was never created.
+    boardsCollection.indexes.mockRejectedValue(Object.assign(new Error('ns not found'), { code: 26 }));
+
+    await expect(migrateToSingleBoardPerProject(db as never)).resolves.toBeUndefined();
+
+    // No legacy projectId_1 index to drop, and the rest of the migration still ran.
+    expect(boardsCollection.dropIndex).not.toHaveBeenCalledWith('projectId_1');
+    expect(projectsCollection.updateMany).toHaveBeenCalled();
+    expect(prefsCollection.updateMany).toHaveBeenCalled();
+  });
+
+  it('drops the legacy non-unique projectId_1 index when the collection does exist', async () => {
+    const { db, boardsCollection } = createBoardMigrationDb([], []);
+
+    boardsCollection.indexes.mockResolvedValue([{ name: 'projectId_1', key: { projectId: 1 }, unique: false }]);
+
+    await migrateToSingleBoardPerProject(db as never);
+
+    expect(boardsCollection.dropIndex).toHaveBeenCalledWith('projectId_1');
+  });
 });
 
-// ─── TOP-2: denormalized task sort names ─────────────────────────────────────
+describe('listIndexesSafely (M-030)', () => {
+  it('returns the real index list when the collection exists', async () => {
+    const indexes = [{ name: '_id_', key: { _id: 1 } }];
+    const collection = { indexes: vi.fn().mockResolvedValue(indexes) };
+
+    await expect(listIndexesSafely(collection)).resolves.toEqual(indexes);
+  });
+
+  it('treats NamespaceNotFound (code 26) as "no indexes"', async () => {
+    const collection = { indexes: vi.fn().mockRejectedValue(Object.assign(new Error('ns not found'), { code: 26 })) };
+
+    await expect(listIndexesSafely(collection)).resolves.toEqual([]);
+  });
+
+  it('re-throws every other error so real failures are not silently swallowed', async () => {
+    const collection = { indexes: vi.fn().mockRejectedValue(Object.assign(new Error('auth failed'), { code: 13 })) };
+
+    await expect(listIndexesSafely(collection)).rejects.toThrow('auth failed');
+  });
+});
+
+// ─── Denormalized task sort names ────────────────────────────────────────────
 
 function createSortNamesDb(statuses: { id: string; name: string }[], sprints: { id: string; name: string }[]) {
   const updateMany = vi.fn().mockResolvedValue({ modifiedCount: 1 });
@@ -451,6 +586,137 @@ function createPriorityDb(taskDocs: MockTask[], filterDocs: MockTask[] = []) {
   return { db: db as never, tasks, updateMany, dropIndex, updateOne };
 }
 
+describe('backfillTaskDescriptionText (N-5)', () => {
+  /**
+   * A `tasks` fake modelling only what the migration uses: a filtered, projected,
+   * limited read and a `bulkWrite`. The read RETURNS NOTHING once every pending
+   * document has been written, which is what makes the loop terminate — a fake
+   * that always returned the same rows would hang, and one that never returned
+   * any would pass every assertion vacuously.
+   */
+  function createTextBackfillDb(docs: { _id: string; description: string | null }[]) {
+    const pending = [...docs];
+    // The fake HONOURS `limit`, which is what makes the batching assertion
+    // meaningful: a fake that ignored it would return everything in one read and
+    // the loop's bound would be untested.
+    let batchSize = Number.POSITIVE_INFINITY;
+    const cursor = {
+      limit: vi.fn((size: number) => {
+        batchSize = size;
+
+        return cursor;
+      }),
+      toArray: vi.fn(async () => pending.splice(0, batchSize)),
+    };
+    const find = vi.fn().mockReturnValue(cursor);
+    // `modifiedCount` reflects the batch actually handed to it, not the total —
+    // a constant here would make the returned count a lie in exactly the case the
+    // test exists to exercise.
+    const bulkWrite = vi.fn(async (ops: unknown[]) => ({ modifiedCount: (ops as unknown[]).length }));
+    const db = { collection: vi.fn().mockReturnValue({ find, bulkWrite }) };
+
+    return { db, find, bulkWrite };
+  }
+
+  it('projects the Markdown description into plain text', async () => {
+    const { db, bulkWrite } = createTextBackfillDb([{ _id: 'oid-1', description: '**Bold** text' }]);
+    const written = await backfillTaskDescriptionText(db as never);
+
+    expect(written).toBe(1);
+
+    const ops = bulkWrite.mock.calls[0]?.[0] as { updateOne: { filter: unknown; update: { $set: unknown } } }[];
+
+    expect(ops[0]?.updateOne.filter).toEqual({ _id: 'oid-1' });
+    expect(ops[0]?.updateOne.update.$set).toEqual({ descriptionText: 'Bold text' });
+  });
+
+  it('only selects documents that have NO projection yet', async () => {
+    // The idempotence filter. A backfill that re-selected conformed documents
+    // would rewrite every task on every deploy, for no change.
+    const { db, find } = createTextBackfillDb([{ _id: 'oid-1', description: 'text' }]);
+
+    await backfillTaskDescriptionText(db as never);
+
+    expect(find).toHaveBeenCalledWith(
+      { descriptionText: { $exists: false }, description: { $exists: true, $ne: null } },
+      { projection: { _id: 1, description: 1 } },
+    );
+  });
+
+  it('is idempotent — a conformed database writes nothing and does not loop forever', async () => {
+    const { db, bulkWrite } = createTextBackfillDb([]);
+    const written = await backfillTaskDescriptionText(db as never);
+
+    expect(written).toBe(0);
+    expect(bulkWrite).not.toHaveBeenCalled();
+  });
+
+  it('never materialises a full task document', async () => {
+    // The reason the read is projected: a migration over a large table must not
+    // pull every field of every task into the Worker's heap to compute a string.
+    const { db, find } = createTextBackfillDb([{ _id: 'oid-1', description: 'text' }]);
+
+    await backfillTaskDescriptionText(db as never);
+
+    const options = find.mock.calls[0]?.[1] as { projection: Record<string, number> };
+
+    expect(Object.keys(options.projection).sort()).toEqual(['_id', 'description']);
+  });
+
+  it('handles several batches rather than loading the whole table', async () => {
+    const many = Array.from({ length: 1200 }, (_, index) => ({ _id: `oid-${index}`, description: 'x' }));
+    const { db, bulkWrite } = createTextBackfillDb(many);
+    const written = await backfillTaskDescriptionText(db as never);
+
+    // Bounded batches (TASK_TEXT_BACKFILL_BATCH = 500) rather than one
+    // unbounded read.
+    expect(bulkWrite).toHaveBeenCalledTimes(3);
+    expect(written).toBe(1200);
+  });
+});
+
+describe('the audit retention window (C-8)', () => {
+  it('is a positive number of days, and the seconds match it', () => {
+    // The window is a policy, not a constant someone typed once: these two rows
+    // fail if either becomes zero, negative, or inconsistent.
+    expect(AUDIT_RETENTION_DAYS).toBeGreaterThan(0);
+    expect(Number.isInteger(AUDIT_RETENTION_DAYS)).toBe(true);
+    expect(AUDIT_RETENTION_SECONDS).toBe(AUDIT_RETENTION_DAYS * 24 * 60 * 60);
+  });
+
+  it('is declared as a time-to-live index on createdAt', () => {
+    // The mechanism, asserted rather than described. A retention window that
+    // nothing enforces is a comment.
+    const ttl = CORE_INDEXES.find(
+      (entry) => entry.collection === 'audit_events' && JSON.stringify(entry.spec) === JSON.stringify({ createdAt: 1 }),
+    );
+
+    expect(ttl).toBeDefined();
+    expect(ttl?.options?.expireAfterSeconds).toBe(AUDIT_RETENTION_SECONDS);
+  });
+
+  it('is a single-field index, because a TTL index must be', () => {
+    // A compound TTL index is silently ignored by some server versions, which
+    // would leave the log unbounded while every comment claimed otherwise.
+    const ttl = CORE_INDEXES.find((entry) => entry.options?.expireAfterSeconds !== undefined);
+
+    expect(ttl).toBeDefined();
+    expect(Object.keys(ttl?.spec ?? {})).toEqual(['createdAt']);
+  });
+
+  it('the purge selection query is indexed on both entity collections', () => {
+    // Without these the once-a-day purge is a COLLSCAN of `projects` and
+    // `tenants`, both of which grow with the product.
+    for (const collection of ['projects', 'tenants']) {
+      const index = CORE_INDEXES.find(
+        (entry) => entry.collection === collection && entry.spec.status === 1 && entry.spec.deletionScheduledAt === 1,
+      );
+
+      expect(index, `${collection} has no {status, deletionScheduledAt} index`).toBeDefined();
+    }
+  });
+});
+
 describe('migrateTaskPriorityToLevel', () => {
   it('backfills LOW/MEDIUM/HIGH/CRITICAL → 0/1/2/3, unsets the old field and drops the legacy index', async () => {
     const docs: MockTask[] = [
@@ -508,3 +774,597 @@ describe('migrateTaskPriorityToLevel', () => {
     expect(updateMany).toHaveBeenCalledTimes(5); // 4 no-op backfill passes + the removal pass
   });
 });
+
+// ─── The missing-index backlog ────────────────────────────────────────────────
+
+describe('CORE_INDEXES (F11 additions)', () => {
+  it('declares every F11 index with the exact key order', () => {
+    const missing = F11_INDEXES.filter((index) => declared(index.collection, index.keys) === undefined).map(
+      (index) => `${index.collection} ${JSON.stringify(index.keys)}`,
+    );
+
+    expect(missing).toEqual([]);
+  });
+
+  it('declares the unique option on exactly the indexes that must be unique', () => {
+    for (const { collection, keys, unique } of F11_INDEXES) {
+      const entry = declared(collection, keys);
+
+      expect(entry, `${collection} ${JSON.stringify(keys)}`).toBeDefined();
+      expect(entry?.options?.unique ?? false, `${collection} ${JSON.stringify(keys)} unique`).toBe(unique);
+    }
+  });
+
+  it('declares no duplicate (collection, key) pairs', () => {
+    const seen = new Set<string>();
+    const duplicates: string[] = [];
+
+    for (const entry of CORE_INDEXES) {
+      // The key ORDER is part of the identity — `createIndex` would treat a
+      // re-ordered duplicate as a second index on the same collection.
+      const id = `${entry.collection}|${JSON.stringify(entry.spec)}`;
+
+      if (seen.has(id)) duplicates.push(id);
+      seen.add(id);
+    }
+
+    expect(duplicates).toEqual([]);
+  });
+
+  it('guards the risky unique indexes with the duplicate pre-check', () => {
+    // `createIndex({unique:true})` FAILS the whole build on existing duplicates,
+    // and this migration runs from CD against a database the old Worker still
+    // serves. Exactly the three check-then-act keys carry the guard; the
+    // `comments {id}` index deliberately does not (see the docblock).
+    const guarded = CORE_INDEXES.filter((entry) => entry.requiresDuplicateFreeData).map(
+      (entry) => `${entry.collection}|${JSON.stringify(entry.spec)}`,
+    );
+
+    expect(guarded.sort()).toEqual(
+      [
+        'filters|{"userId":1,"projectId":1,"name":1}',
+        'task_relationships|{"id":1}',
+        'task_relationships|{"projectId":1,"sourceTaskId":1,"targetTaskId":1}',
+      ].sort(),
+    );
+  });
+});
+
+describe('hasDuplicatesFor', () => {
+  function collectionReturning(groups: unknown[]) {
+    return { aggregate: vi.fn().mockReturnValue({ toArray: vi.fn().mockResolvedValue(groups) }) };
+  }
+
+  it('reports no duplicates for an empty result (a fresh collection)', async () => {
+    await expect(hasDuplicatesFor(collectionReturning([]), { id: 1 })).resolves.toEqual({
+      duplicate: false,
+      sample: [],
+    });
+  });
+
+  it('reports the offending groups so the migration can name them', async () => {
+    const group = { _id: { userId: 'u1', projectId: 'p1', name: 'Bug' }, count: 2 };
+    const result = await hasDuplicatesFor(collectionReturning([group]), { userId: 1, projectId: 1, name: 1 });
+
+    expect(result.duplicate).toBe(true);
+    expect(result.sample).toEqual([group]);
+  });
+
+  it('groups by the index keys and caps the materialised groups', async () => {
+    const collection = collectionReturning([]);
+    const spec: Record<string, 1 | -1> = { projectId: 1, sourceTaskId: 1, targetTaskId: 1 };
+
+    await hasDuplicatesFor(collection, spec);
+
+    expect(collection.aggregate).toHaveBeenCalledWith([
+      { $group: { _id: spec, count: { $sum: 1 } } },
+      { $match: { count: { $gt: 1 } } },
+      { $limit: 5 },
+    ]);
+  });
+});
+
+describe('ensureCoreIndexes (F11)', () => {
+  /** A db whose collections all answer the duplicate probe with "clean". */
+  function cleanDb() {
+    const createIndex = vi.fn().mockResolvedValue('built');
+    const collections = new Map<string, ReturnType<typeof cleanCollection>>();
+
+    function cleanCollection() {
+      return {
+        createIndex,
+        aggregate: vi.fn().mockReturnValue({ toArray: vi.fn().mockResolvedValue([]) }),
+      };
+    }
+
+    return {
+      createIndex,
+      aggregateCalls: () => collections,
+      db: {
+        collection: vi.fn((name: string) => {
+          if (!collections.has(name)) collections.set(name, cleanCollection());
+
+          return collections.get(name);
+        }),
+      },
+    };
+  }
+
+  it('creates every declared index (idempotency: createIndex on an identical index is a server no-op)', async () => {
+    const { db, createIndex } = cleanDb();
+
+    await ensureCoreIndexes(db as never);
+
+    expect(createIndex).toHaveBeenCalledTimes(CORE_INDEXES.length);
+    expect(createIndex).toHaveBeenCalledWith({ projectId: 1, 'actor.userId': 1, createdAt: -1, _id: -1 }, undefined);
+  });
+
+  it('probes the duplicate-free key BEFORE building a guarded unique index', async () => {
+    const { db, createIndex } = cleanDb();
+
+    await ensureCoreIndexes(db as never);
+
+    expect(createIndex).toHaveBeenCalledWith({ userId: 1, projectId: 1, name: 1 }, { unique: true });
+    expect(createIndex).toHaveBeenCalledWith({ projectId: 1, sourceTaskId: 1, targetTaskId: 1 }, { unique: true });
+  });
+
+  it('SKIPS a guarded unique index when duplicates exist, and keeps going', async () => {
+    const duplicate = { _id: { projectId: 'p1', sourceTaskId: 'a', targetTaskId: 'b' }, count: 2 };
+    const createIndex = vi.fn().mockResolvedValue('built');
+    const collection = {
+      createIndex,
+      aggregate: vi.fn().mockReturnValue({ toArray: vi.fn().mockResolvedValue([duplicate]) }),
+    };
+    const db = { collection: vi.fn().mockReturnValue(collection) };
+
+    // A duplicate is reported, not thrown: the deploy must not be blocked and
+    // the pre-existing (readable) rows must not be deleted.
+    await expect(ensureCoreIndexes(db as never)).resolves.toBeUndefined();
+
+    // Every guarded key is skipped …the non-guarded indexes are still built.
+    const built = createIndex.mock.calls.map((call) => JSON.stringify(call[0]));
+
+    expect(built).not.toContain(JSON.stringify({ projectId: 1, sourceTaskId: 1, targetTaskId: 1 }));
+    expect(built).not.toContain(JSON.stringify({ userId: 1, projectId: 1, name: 1 }));
+    expect(built).toContain(JSON.stringify({ projectId: 1, key: 1 }));
+  });
+
+  it('still builds the non-unique indexes when a guarded one is skipped', async () => {
+    const guardedId = JSON.stringify({ projectId: 1, sourceTaskId: 1, targetTaskId: 1 });
+    const built: string[] = [];
+    const db = {
+      collection: vi.fn(() => ({
+        createIndex: vi.fn((keys: unknown) => {
+          built.push(JSON.stringify(keys));
+
+          return Promise.resolve('built');
+        }),
+        // Only the relationship-edge key reports duplicates; every other
+        // collection probes clean.
+        aggregate: vi.fn((pipeline: [{ $group: { _id: unknown } }]) => ({
+          toArray: vi
+            .fn()
+            .mockResolvedValue(JSON.stringify(pipeline[0].$group._id) === guardedId ? [{ _id: {}, count: 2 }] : []),
+        })),
+      })),
+    };
+
+    await ensureCoreIndexes(db as never);
+
+    expect(built).not.toContain(guardedId);
+    // …and the additive, duplicate-free part of the backlog was still applied.
+    expect(built).toContain(JSON.stringify({ projectId: 1, 'actor.userId': 1, createdAt: -1, _id: -1 }));
+    expect(built).toContain(JSON.stringify({ taskId: 1, createdAt: 1 }));
+  });
+
+  it('D-10: REJECTS when an index build fails, and still ATTEMPTS every other index', async () => {
+    // This assertion used to be the opposite (`resolves.toBeUndefined`,
+    // "one bad index never aborts the run") and it pinned the defect: an
+    // `IndexOptionsConflict` or a `DuplicateKey` on `users.email` was logged
+    // and the deploy went green with the constraint existing only in the source
+    // tree. `scripts/migrate.ts` turns this rejection into a non-zero exit, so
+    // the CD job fails BEFORE the Worker deploy.
+    const createIndex = vi.fn().mockRejectedValue(Object.assign(new Error('IndexOptionsConflict'), { code: 85 }));
+    const dropIndex = vi.fn().mockResolvedValue(undefined);
+    const db = {
+      collection: vi.fn().mockReturnValue({
+        createIndex,
+        dropIndex,
+        aggregate: vi.fn().mockReturnValue({ toArray: vi.fn().mockResolvedValue([]) }),
+      }),
+    };
+
+    // Every index is still ATTEMPTED: one failure must not hide the state of
+    // the others, and the operator needs the full list in one run.
+    await expect(ensureCoreIndexes(db as never)).rejects.toThrow(/index build\(s\) failed/);
+    expect(createIndex).toHaveBeenCalledTimes(CORE_INDEXES.length);
+    expect(createIndex.mock.calls.map((call) => JSON.stringify(call[0]))).toContain(JSON.stringify({ id: 1 }));
+
+    // …and nothing is DROPPED on a failed run: the superseded indexes are
+    // still the only ones serving the old sort shape.
+    expect(dropIndex).not.toHaveBeenCalled();
+  });
+
+  it('D-10: the failure names the count AND the reason, so the log is actionable', async () => {
+    let call = 0;
+    const createIndex = vi.fn().mockImplementation(() => {
+      call += 1;
+
+      return call === 1
+        ? Promise.reject(Object.assign(new Error('E11000 duplicate key'), { code: 11000 }))
+        : Promise.resolve('built');
+    });
+    const db = {
+      collection: vi.fn().mockReturnValue({
+        createIndex,
+        dropIndex: vi.fn().mockResolvedValue(undefined),
+        aggregate: vi.fn().mockReturnValue({ toArray: vi.fn().mockResolvedValue([]) }),
+      }),
+    };
+
+    await expect(ensureCoreIndexes(db as never)).rejects.toThrow(
+      /1 of \d+ index build\(s\) failed.*E11000 duplicate key/s,
+    );
+  });
+});
+
+describe('superseded indexes (D-11)', () => {
+  /**
+   * The ONLY document field MongoDB itself guarantees is unique. A sort whose
+   * last key is one of these is a total order, which is the property the audit
+   * list's paging needs. A platform guarantee, not a list of this project's
+   * fields — the same kind of fact as the 16 MB BSON ceiling.
+   */
+  const MONGODB_UNIQUE_FIELDS = ['_id'];
+
+  it('every superseded index has a live replacement that is a strict extension of it', () => {
+    // A drop with no replacement would leave the query that the old index served
+    // unindexed. Derived, not listed: the replacement is found by asking
+    // CORE_INDEXES for an entry whose keys are the old keys plus at least one
+    // more, so adding a superseding index needs no edit here.
+    const orphans = SUPERSEDED_INDEXES.filter(({ collection, spec }) => {
+      const oldKeys = JSON.stringify(Object.entries(spec));
+
+      return !CORE_INDEXES.some((entry) => {
+        if (entry.collection !== collection) return false;
+
+        const newKeys = JSON.stringify(Object.entries(entry.spec));
+
+        return newKeys.startsWith(oldKeys.slice(0, -1)) && newKeys.length > oldKeys.length;
+      });
+    }).map(({ collection, spec }) => `${collection}|${indexNameFor(spec)}`);
+
+    expect(orphans).toEqual([]);
+  });
+
+  it('a superseded index is not still declared — it would be re-created on every deploy', () => {
+    const reDeclared = SUPERSEDED_INDEXES.filter(({ collection, spec }) =>
+      CORE_INDEXES.some((entry) => entry.collection === collection && sameKeyOrder(entry.spec, spec)),
+    );
+
+    expect(reDeclared).toEqual([]);
+  });
+
+  it('D-11: the sort the audit list issues ends on a field MongoDB guarantees unique', () => {
+    // The sort spec is READ FROM THE REPOSITORY, not copied here, so a fix
+    // written differently still passes and a regression cannot hide behind a
+    // stale literal. The property: an order over a field MongoDB guarantees is
+    // unique per document (`_id` is the only one) is a TOTAL order, so
+    // `.skip()/.limit()` paging over it neither duplicates nor drops a document.
+    // `createdAt` alone is a wall-clock millisecond and is not.
+    const source = readFileSync(join(REPOSITORY_DIR, 'audit-event.repository.ts'), 'utf8');
+    const sort = source.match(/\.sort\(\{([^}]*)\}\)/);
+
+    expect(sort, 'audit-event.repository.ts must still issue exactly one .sort({…})').not.toBeNull();
+
+    const fields = [...(sort?.[1] ?? '').matchAll(/([\w.]+)\s*:/g)].map((match) => match[1]);
+    const last = fields[fields.length - 1];
+
+    expect(fields.length, 'the sort must name its keys').toBeGreaterThan(1);
+    expect(MONGODB_UNIQUE_FIELDS, `${last} is not a MongoDB-unique field`).toContain(last);
+  });
+
+  it('D-11: the sort stays index-served — a declared audit index carries every sort key, in order', () => {
+    // Without this the tiebreaker would turn the list sort into a blocking SORT
+    // over the whole matched range, which on an append-only collection is worse
+    // than the tie it fixes. Derived from the SAME sort spec the test above
+    // reads, so the two cannot disagree.
+    const source = readFileSync(join(REPOSITORY_DIR, 'audit-event.repository.ts'), 'utf8');
+    const sort = source.match(/\.sort\(\{([^}]*)\}\)/);
+    const sortFields = [...(sort?.[1] ?? '').matchAll(/([\w.]+)\s*:/g)].map((match) => match[1] as string);
+    const serving = CORE_INDEXES.filter((entry) => {
+      if (entry.collection !== 'audit_events') return false;
+
+      const keys = Object.keys(entry.spec);
+
+      return sortFields.every((field, i) => keys[keys.length - sortFields.length + i] === field);
+    });
+
+    expect(serving.map((entry) => indexNameFor(entry.spec))).not.toEqual([]);
+  });
+
+  it('drops each superseded index by the name MongoDB would have given it', async () => {
+    const dropIndex = vi.fn().mockResolvedValue(undefined);
+    const db = { collection: vi.fn().mockReturnValue({ dropIndex }) };
+
+    await dropSupersededIndexes(db as never);
+
+    expect(dropIndex.mock.calls.map((call) => call[0])).toEqual(
+      SUPERSEDED_INDEXES.map(({ spec }) => indexNameFor(spec)),
+    );
+  });
+
+  it('a re-run is a no-op: an index that is already gone is not a failure', async () => {
+    const dropIndex = vi.fn().mockRejectedValue(Object.assign(new Error('index not found'), { code: 27 }));
+    const db = { collection: vi.fn().mockReturnValue({ dropIndex }) };
+
+    await expect(dropSupersededIndexes(db as never)).resolves.toBeUndefined();
+    expect(dropIndex).toHaveBeenCalledTimes(SUPERSEDED_INDEXES.length);
+  });
+});
+
+// ─── F11 guardrail: migrations ↔ repositories ─────────────────────────────────
+
+/**
+ * The query shapes F11 added an index for, cross-referenced against the
+ * repository source that issues them.
+ *
+ * The point of this file is that the two lists cannot drift apart silently. A
+ * query without a supporting index is the exact defect this guardrail exists to prevent
+ * (COLLSCANs, blocking SORTs, count-unfriendly prefixes), and nothing about it
+ * is visible at runtime — it only shows up as latency. Two assertions make it
+ * structural instead:
+ *
+ *   1. the repository really does filter/sort on those fields (the field literal
+ *      is present in the source that owns the query), and
+ *   2. a supporting index exists whose key list starts with the equality fields
+ *      in the same order, followed by the sort field.
+ *
+ * Deliberately scoped to the fields F11 touched: a general "every field in every
+ * repository must be indexed" check would have to parse arbitrary query
+ * construction, which is not what a test can assert honestly.
+ */
+interface ContractRow {
+  repository: string;
+  collection: string;
+  /**
+   * `query` (the default): the repository still runs a query this index serves,
+   * and `queryFields` must appear in its CODE (comments stripped).
+   * `constraint`: the serving query is gone and the index is retained as a
+   * uniqueness constraint, so the pairing this guardrail enforces is "no
+   * read-before-write pre-check replaced the index" instead of "the query is
+   * still there".
+   */
+  kind?: 'query' | 'constraint';
+  /** Field literals that must appear in the repository source (comments stripped). */
+  queryFields: string[];
+  /** Equality fields, in index order. */
+  equality: string[];
+  /** Sort field appended after the equality fields (omit for a pure filter). */
+  sort?: string;
+  sortDirection?: 1 | -1;
+}
+
+const F11_QUERY_CONTRACT: ContractRow[] = [
+  {
+    repository: 'comment.repository.ts',
+    collection: 'comments',
+    queryFields: ['{ taskId }', '.sort({ createdAt: 1 })'],
+    equality: ['taskId'],
+    sort: 'createdAt',
+  },
+  {
+    repository: 'sprint.repository.ts',
+    collection: 'sprints',
+    queryFields: ['{ projectId }', '.sort({ createdAt: -1 })'],
+    equality: ['projectId'],
+    sort: 'createdAt',
+    sortDirection: -1,
+  },
+  {
+    repository: 'status.repository.ts',
+    collection: 'statuses',
+    queryFields: ['{ projectId }', '.sort({ position: 1 })'],
+    equality: ['projectId'],
+    sort: 'position',
+  },
+  {
+    repository: 'label.repository.ts',
+    collection: 'labels',
+    queryFields: ['{ projectId }', '.sort({ name: 1 })'],
+    equality: ['projectId'],
+    sort: 'name',
+  },
+  {
+    repository: 'task-type.repository.ts',
+    collection: 'task_types',
+    queryFields: ['{ projectId }', '.sort({ position: 1 })'],
+    equality: ['projectId'],
+    sort: 'position',
+  },
+  // The `project.repository.ts / projects / key` contract entry was REMOVED
+  // together with `ProjectRepository.findByKey` (dead code) and its index. The
+  // remaining project lookups are `findOne({ tenantId, key })` (served by the
+  // pre-existing unique `{tenantId, key}`) and `findOne({ id })` (served by
+  // `{id: 1}`), neither of which F11 introduced.
+  {
+    repository: 'user.repository.ts',
+    collection: 'users',
+    queryFields: ["'passwordReset.tokenHash': tokenHash"],
+    equality: ['passwordReset.tokenHash'],
+  },
+  {
+    repository: 'project-member.repository.ts',
+    collection: 'project_members',
+    queryFields: ['find({ userId })'],
+    equality: ['userId'],
+  },
+  {
+    repository: 'task.repository.ts',
+    collection: 'tasks',
+    queryFields: ['countDocuments({ projectId, typeId }'],
+    equality: ['projectId', 'typeId'],
+  },
+  // The `{tenantId, status}` contract entry was REMOVED together with
+  // `TenantMemberRepository.countActiveByTenant` (dead code) and its F11 compound
+  // index. The sibling `{userId, role}` counter entry below is kept.
+  {
+    repository: 'tenant-member.repository.ts',
+    collection: 'tenant_members',
+    queryFields: ['countDocuments({ userId, role: TenantRole.OWNER })'],
+    equality: ['userId', 'role'],
+  },
+  {
+    repository: 'filter.repository.ts',
+    collection: 'filters',
+    queryFields: ['findOne({ userId, projectId, name })'],
+    equality: ['userId', 'projectId', 'name'],
+  },
+  // F22 deleted the serving query (`findBySourceAndTarget`) as dead code, but
+  // the row kept naming it — and kept passing, because the fragment it matched
+  // (`sourceTaskId, targetTaskId`) only survives in the comment that documents
+  // the deletion. The index stayed deliberately: it IS the duplicate guard
+  // `create()` relies on now (F11 + `withConflictOnDuplicate`), so the row
+  // became a constraint row. A `constraint` row asserts the index is still the
+  // thing preventing the duplicate: no exact-match pre-check reader may exist in
+  // the repository, because a pre-check is the race this index was added to
+  // close. Comments are stripped, so this cannot be satisfied by documentation.
+  {
+    kind: 'constraint',
+    repository: 'task-relationship.repository.ts',
+    collection: 'task_relationships',
+    queryFields: [],
+    equality: ['projectId', 'sourceTaskId', 'targetTaskId'],
+  },
+  // The three audit query shapes F11 indexed — one entry per shape, because the
+  // index each one needs has a different key list.
+  {
+    repository: 'audit-event.repository.ts',
+    collection: 'audit_events',
+    queryFields: ["query['actor.userId'] = options.actorId"],
+    equality: ['projectId', 'actor.userId'],
+    sort: 'createdAt',
+    sortDirection: -1,
+  },
+  {
+    repository: 'audit-event.repository.ts',
+    collection: 'audit_events',
+    queryFields: ['query.entityId = options.entityId'],
+    equality: ['projectId', 'entityId'],
+    sort: 'createdAt',
+    sortDirection: -1,
+  },
+  {
+    repository: 'audit-event.repository.ts',
+    collection: 'audit_events',
+    queryFields: ['= { tenantId }'],
+    equality: ['tenantId', 'projectId'],
+    sort: 'createdAt',
+    sortDirection: -1,
+  },
+];
+
+describe('index coverage guardrail (F11)', () => {
+  it('0: the scan actually reads repository sources (a rename must not silently disable it)', () => {
+    expect(F11_QUERY_CONTRACT.length).toBeGreaterThan(10);
+
+    for (const entry of F11_QUERY_CONTRACT) {
+      const source = readFileSync(join(REPOSITORY_DIR, entry.repository), 'utf8');
+
+      expect(source.length, entry.repository).toBeGreaterThan(0);
+    }
+  });
+
+  it('1: every query the F11 indexes serve still exists in its repository (comments stripped)', () => {
+    const missing: string[] = [];
+
+    for (const entry of F11_QUERY_CONTRACT) {
+      // Comments stripped: a deletion note that quotes the query it removed must
+      // not keep the row green. One row did exactly that until this change.
+      const source = code(readFileSync(join(REPOSITORY_DIR, entry.repository), 'utf8'));
+
+      if (entry.kind === 'constraint') {
+        // The index no longer serves a read — it IS the duplicate guard. The
+        // pairing it must keep is with the WRITE path: an exact-match pre-check
+        // (`findOne` / `findOneAndUpdate` / `countDocuments`) is the
+        // check-then-act race the unique index exists to close, so if one is
+        // present the index is no longer the guard.
+        const preCheck = source.match(/\b(?:findOneAndUpdate|findOne|countDocuments)\s*\(/);
+
+        if (preCheck) {
+          missing.push(
+            `${entry.repository}: read-before-write pre-check \`${preCheck[0]}\` — the unique index is the guard`,
+          );
+        }
+
+        continue;
+      }
+
+      for (const field of entry.queryFields) {
+        if (!source.includes(field)) missing.push(`${entry.repository}: ${field}`);
+      }
+    }
+
+    // A repository that dropped the query must also drop the index — this
+    // failure points at exactly that stale index.
+    expect(missing).toEqual([]);
+  });
+
+  it('2: every one of those queries has a supporting index with the right key order', () => {
+    const unsupported = F11_QUERY_CONTRACT.filter((entry) => supportingIndex(entry) === undefined).map(
+      ({ collection, equality, sort }) => `${collection}: ${[...equality, ...(sort ? [sort] : [])].join(' + ')}`,
+    );
+
+    expect(unsupported).toEqual([]);
+  });
+
+  it('3: every F11 index is explained — a declared query it serves, or a uniqueness constraint', () => {
+    // The third direction, and the one that was missing: the two directions
+    // above both walk CONTRACT → index. Nothing walked index → contract, so an
+    // F11 index added for a query nobody declared (or for nothing at all) was
+    // invisible: it would be created on every deploy and serve nothing.
+    const servedBy = new Set(
+      F11_QUERY_CONTRACT.map((entry) => supportingIndex(entry)).filter((id): id is string => id !== undefined),
+    );
+    const unexplained = F11_INDEXES.filter(
+      ({ collection, keys, unique }) => !unique && !servedBy.has(indexId(collection, keys)),
+    ).map(({ collection, keys }) => indexId(collection, keys));
+
+    expect(unexplained).toEqual([]);
+  });
+
+  it('3b: a contract row is either a served query or a uniqueness constraint — never neither', () => {
+    // A row that declares neither would make direction 3 pass vacuously for the
+    // index it names, so the two kinds are kept distinct and checked.
+    const queryRows = F11_QUERY_CONTRACT.filter((entry) => entry.kind !== 'constraint');
+
+    expect(queryRows.filter((entry) => entry.queryFields.length === 0)).toEqual([]);
+    expect(F11_QUERY_CONTRACT.filter((entry) => entry.kind === 'constraint').length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * The `CORE_INDEXES` entry that supports a contract row — it starts with the
+ * row's equality fields in order and either ends there (filter-only) or
+ * continues with the row's sort field — or `undefined` when nothing supports it.
+ */
+function supportingIndex(entry: ContractRow): string | undefined {
+  const { collection, equality, sort, sortDirection } = entry;
+  const matching = CORE_INDEXES.filter((candidate) => {
+    if (candidate.collection !== collection) return false;
+
+    const keys = Object.entries(candidate.spec);
+    const prefixMatches = equality.every((field, i) => keys[i]?.[0] === field && keys[i]?.[1] === 1);
+
+    if (!prefixMatches) return false;
+    if (!sort) return keys.length >= equality.length;
+    return keys[equality.length]?.[0] === sort && keys[equality.length]?.[1] === (sortDirection ?? 1);
+  });
+  // Several indexes can start with the equality fields (`{projectId, typeId}` and
+  // `{projectId, typeId, number}` both serve `countDocuments({projectId, typeId})`).
+  // The row is about the most specific one, so the shortest match wins — and the
+  // choice is deterministic rather than an artefact of declaration order.
+  const found = [...matching].sort((a, b) => Object.keys(a.spec).length - Object.keys(b.spec).length)[0];
+
+  return found === undefined ? undefined : indexId(found.collection, found.spec);
+}

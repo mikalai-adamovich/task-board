@@ -100,7 +100,8 @@
       "email": "Email",
       "submit": "Send reset link",
       "submitting": "Sending",
-      "backToLogin": "Back to sign in"
+      "backToLogin": "Back to sign in",
+      "failed": "リセットリンクを送信できませんでした。もう一度お試しください。"
     },
     "resetPassword": {
       "title": "Reset password",
@@ -110,7 +111,10 @@
       "confirmPassword": "Confirm password",
       "submit": "Reset password",
       "submitting": "Resetting",
-      "backToLogin": "Back to sign in"
+      "backToLogin": "Back to sign in",
+      "invalidToken": "このリセットリンクは無効か、有効期限が切れています。新しいリンクをリクエストしてください。",
+      "passwordsNotMatch": "パスワードが一致しません。",
+      "success": "パスワードを更新しました"
     }
   },
   "landing": {
@@ -179,7 +183,9 @@
       "checking": "Checking availability",
       "taken": "This URL is already taken",
       "available": "This URL is available",
-      "hint": "Lowercase letters, numbers and hyphens only."
+      "hint": "Lowercase letters, numbers and hyphens only.",
+      "invalid": "小文字、数字、ハイフンのみ使用できます",
+      "required": "ワークスペースの URL は必須です"
     },
     "plan": {
       "title": "Choose a plan",
@@ -303,7 +309,9 @@
     "expired": "期限切れ",
     "editMemberTitle": "メンバーを編集",
     "editMemberDesc": "メンバーの名前・メール・ロール・有効期限を更新します。",
-    "clearExpiration": "クリア"
+    "clearExpiration": "クリア",
+    "removeConfirm": "このメンバーを削除してもよろしいですか？",
+    "removeMemberTitle": "メンバーを削除"
   },
   "projects": {
     "createTitle": "プロジェクトを作成",
@@ -350,7 +358,9 @@
     "viewAllTasks": "View all tasks",
     "sprintDates": "{{start}} 〜 {{end}}",
     "board": "ボード",
-    "manageBoard": "カラムを設定"
+    "manageBoard": "カラムを設定",
+    "archivedBanner": "このプロジェクトはアーカイブ済みで、読み取り専用です。",
+    "deletionPendingBanner": "このプロジェクトは削除が予定されており、読み取り専用です。"
   },
   "boardView": {
     "loading": "ボードを読み込み中",
@@ -370,7 +380,9 @@
     "allAssignees": "すべての担当者",
     "currentUser": "自分",
     "unassigned": "未割り当て",
-    "allPriorities": "すべての優先度"
+    "allPriorities": "すべての優先度",
+    "moveTaskTitle": "タスクを移動",
+    "moveTaskDesc": "このタスクを移動するカラムを選択してください。"
   },
   "priority": {
     "low": "低",
@@ -449,7 +461,8 @@
     "editDatesTitle": "スプリント日付の編集",
     "startDateLabel": "開始日",
     "endDateLabel": "終了日",
-    "saveDates": "日付を保存"
+    "saveDates": "日付を保存",
+    "removeTaskFromSprint": "{{name}} をスプリントから削除"
   },
   "docs": {
     "title": "ドキュメント",
@@ -533,7 +546,8 @@
     "typeRequired": "タスクタイプは必須です",
     "statusRequired": "ステータスは必須です",
     "priorityRequired": "優先度は必須です",
-    "titleMaxLength": "Title must be at most 200 characters"
+    "titleMaxLength": "Title must be at most 200 characters",
+    "descriptionMax": "説明は120文字以下でなければなりません"
   },
   "errors": {
     "unexpected": "予期しないエラーが発生しました。もう一度お試しください。",
@@ -544,6 +558,7 @@
     "forbidden": "この操作を行う権限がありません。",
     "conflict": "このリソースは別のユーザーによって変更されました。再読み込みしてもう一度お試しください。",
     "validation": "入力内容を確認してもう一度お試しください。",
+    "payloadTooLarge": "リクエストが大きすぎます。送信するデータ量を減らしてから、もう一度お試しください。",
     "badRequest": "リクエストが無効でした。入力内容を確認してください。",
     "tooManyRequests": "リクエストが多すぎます。しばらくしてからもう一度お試しください。",
     "unknown": "不明なエラーが発生しました。",
@@ -561,12 +576,19 @@
     "tenantArchived": "このワークスペースはアーカイブされています。変更するには復元してください。",
     "projectKeyImmutable": "プロジェクトキーは変更できません。このプロジェクトには既にタスクが存在します。",
     "taskTypeInUse": "このタスクタイプは既存のタスクに使用されています。削除前に置換タイプを選択してください。",
-    "statusInUse": "このステータスは既存のタスクに使用されています。削除前に置換ステータスを選択してください。"
+    "statusInUse": "このステータスは既存のタスクに使用されています。削除前に置換ステータスを選択してください。",
+    "slugTaken": "この URL は既に使用されています",
+    "invalidResetToken": "このパスワード再設定リンクは無効か、有効期限が切れています。新しいリンクを要求してください。",
+    "rateLimited": "試行回数が多すぎます。しばらくしてからもう一度お試しください。",
+    "queryTimeout": "リクエストに時間がかかりすぎたためキャンセルされました。もう一度お試しください。",
+    "taskNumberUnavailable": "現在タスク番号を採番できませんでした。しばらくしてからもう一度お試しください。",
+    "tooManyRequestsAfter": "リクエストが多すぎます。{{seconds}} 秒後にもう一度お試しください。"
   },
   "toasts": {
     "created": "作成しました",
     "updated": "更新しました",
-    "deleted": "削除しました"
+    "deleted": "削除しました",
+    "saved": "保存しました"
   },
   "common": {
     "cancel": "キャンセル",
@@ -574,7 +596,8 @@
     "delete": "削除",
     "undo": "元に戻す",
     "undoSuccess": "操作を元に戻しました",
-    "charCount": "{{count}}/{{max}}"
+    "charCount": "{{count}}/{{max}}",
+    "undoFailed": "操作を元に戻せませんでした"
   },
   "labelManager": {
     "createDesc": "このプロジェクトに新しいラベルを作成します。",
@@ -722,7 +745,9 @@
       "apply": "適用",
       "clear": "クリア",
       "selectAll": "すべて選択",
-      "selectRow": "行を選択"
+      "selectRow": "行を選択",
+      "partial": "{{count}} 件のタスクを更新しました。{{failed}} 件は失敗しました。",
+      "success": "{{count}} 件のタスクを更新しました"
     }
   },
   "comments": {
@@ -783,7 +808,9 @@
     "apply": "Apply",
     "rename": "名前を変更",
     "renameTitle": "フィルター名の変更",
-    "renaming": "変更中"
+    "renaming": "変更中",
+    "nameRequired": "フィルター名は必須です",
+    "renameError": "フィルターの名前を変更できませんでした。"
   },
   "auditLog": {
     "time": "日時",
@@ -808,6 +835,7 @@
     "codeBlock": "コードブロック",
     "raw": "ソース",
     "wysiwyg": "WYSIWYG",
+    "editor": "リッチテキストエディタ",
     "showRaw": "Markdownを表示",
     "showWysiwyg": "リッチテキストエディタを表示",
     "rawPlaceholder": "ここにMarkdownを書く",
@@ -856,7 +884,10 @@
     "saveColumns": "変更を保存",
     "columnIndex": "カラム {{index}}",
     "emptyColumnHint": "ステータスを1つ以上割り当ててください",
-    "unassignedStatuses": "ボードに表示されない: {{names}}"
+    "unassignedStatuses": "ボードに表示されない: {{names}}",
+    "moveUpColumn": "カラム {{index}} を上へ移動",
+    "moveDownColumn": "カラム {{index}} を下へ移動",
+    "removeColumnIndex": "カラム {{index}} を削除"
   },
   "taskCreate": {
     "title": "Create task",
@@ -903,7 +934,8 @@
     "projectSwitcher": "プロジェクト切替",
     "goTasks": "タスクへ移動",
     "goBoard": "ボードへ移動",
-    "toggleSidebar": "サイドバーの切り替え"
+    "toggleSidebar": "サイドバーの切り替え",
+    "moveCard": "フォーカス中のカードを別のカラムへ移動"
   },
   "tableDensity": {
     "comfortable": "標準",
@@ -921,5 +953,17 @@
     "modeLight": "ライト",
     "modeDark": "ダーク",
     "deferredToast": "テーマを保存しました。Auto が {{mode}} に切り替わったときに適用されます。または、今すぐモードを {{mode}} に切り替えてください。"
+  },
+  "a11y": {
+    "skipToContent": "本文へスキップ",
+    "filterColumn": "{{column}}で絞り込み"
+  },
+  "pageTitles": {
+    "workspace": "ワークスペース",
+    "project": "プロジェクト",
+    "board": "ボード",
+    "task": "タスク",
+    "sprint": "スプリント",
+    "projectGeneral": "一般設定"
   }
 }

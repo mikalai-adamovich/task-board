@@ -7,12 +7,12 @@ import { isValidDateFormat, TIME_FORMAT_PREFERENCES, TASK_TABLE_COLUMN_KEYS } fr
  * remains — the per-user default-board choice no longer exists.
  */
 export const UpdateUserProjectBoardPreferenceSchema = z.object({
-  /** R3-P4: visible task-table columns; validated against the allowed column names. */
+  /** Visible task-table columns; validated against the allowed column names. */
   taskTableColumns: z.array(z.enum(TASK_TABLE_COLUMN_KEYS)).nullable(),
 });
 
 /**
- * Schema for updating global (user-level) preferences — partial update (R3-P8).
+ * Schema for updating global (user-level) preferences — partial update.
  * Every field is optional so a PUT only touches what it sends; dateFormat/timeFormat
  * are validated against the allowed display formats.
  */
@@ -38,7 +38,7 @@ export const UpdateUserGlobalSettingsSchema = z
         message: 'pageSize must be 0 (auto) or between 5 and 100',
       })
       .optional(),
-    /** P12 (DEC-056): free-form format string validated against the shared token whitelist. */
+    /** Free-form format string validated against the shared token whitelist. */
     dateFormat: z
       .string()
       .refine(isValidDateFormat, {

@@ -34,7 +34,7 @@ const TENANT_ID = '550e8400-e29b-41d4-a716-446655440000';
 const PROJECT_ID = '550e8400-e29b-41d4-a716-446655440010';
 const USER_ID = '550e8400-e29b-41d4-a716-446655440002';
 const mockTaskType = {
-  id: 'task-type-1',
+  id: 'dddddddd-0000-4000-8000-000000000001',
   projectId: PROJECT_ID,
   key: 'BUG',
   name: 'Bug',
@@ -52,14 +52,16 @@ vi.mock('../services/task-type.service.js', () => ({
     updateTaskType: vi
       .fn()
       .mockImplementation((id: string) =>
-        id === 'missing-type'
+        id === 'dddddddd-0000-4000-8000-0000000000ff'
           ? Promise.reject(new NotFoundError('Task type not found'))
           : Promise.resolve(mockTaskType),
       ),
     deleteTaskType: vi
       .fn()
       .mockImplementation((id: string) =>
-        id === 'missing-type' ? Promise.reject(new NotFoundError('Task type not found')) : Promise.resolve(undefined),
+        id === 'dddddddd-0000-4000-8000-0000000000ff'
+          ? Promise.reject(new NotFoundError('Task type not found'))
+          : Promise.resolve(undefined),
       ),
   })),
 }));
@@ -69,19 +71,37 @@ vi.mock('../services/task-type.service.js', () => ({
 const TEST_ENV = { JWT_SECRET: 'test-secret', MONGODB_URI: '', ALLOWED_ORIGINS: '*' };
 const VALID_UUID = USER_ID;
 
-function createTestApp(tenantRole = 'OWNER', projectRole: string | null = null) {
+interface MockTaskTypeService {
+  getTaskTypesByProject: ReturnType<typeof vi.fn>;
+  createTaskType: ReturnType<typeof vi.fn>;
+  reorder: ReturnType<typeof vi.fn>;
+  updateTaskType: ReturnType<typeof vi.fn>;
+  deleteTaskType: ReturnType<typeof vi.fn>;
+}
+
+/**
+ * @param sink receives the service mock instance created for the request, so
+ *             the forwarded caller context can be asserted on.
+ */
+function createTestApp(
+  tenantRole = 'OWNER',
+  projectRole: string | null = null,
+  sink: { svc?: MockTaskTypeService } = {},
+) {
   const app = new Hono<AppEnv>();
 
   app.onError(errorHandler);
 
   app.use('/api/*', async (c, next) => {
-    const MockTaskTypes = TaskTypeService as unknown as new () => InstanceType<typeof TaskTypeService>;
+    const MockTaskTypes = TaskTypeService as unknown as new () => MockTaskTypeService;
+    const svc = new MockTaskTypes();
 
+    sink.svc = svc;
     c.set('userId', VALID_UUID);
     c.set('tenantId', TENANT_ID);
     c.set('tenantRole', tenantRole as 'OWNER');
     c.set('projectRole', projectRole as never);
-    c.set('svc', { taskTypes: new MockTaskTypes() } as never);
+    c.set('svc', { taskTypes: svc } as never);
     await next();
   });
 
@@ -143,15 +163,18 @@ async function patchJson(app: Hono<AppEnv>, path: string, body: unknown) {
 }
 
 async function deleteJson(app: Hono<AppEnv>, path: string, body?: unknown) {
-  return app.request(
-    path,
-    {
-      method: 'DELETE',
-      body: body === undefined ? undefined : JSON.stringify(body),
-      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
-    },
-    TEST_ENV,
-  );
+  // `RequestInit` keys are `exactOptionalPropertyTypes` — an absent header
+  // must be an absent KEY, not `headers: undefined` (which is a different type).
+  const init: RequestInit =
+    body === undefined
+      ? { method: 'DELETE' }
+      : {
+          method: 'DELETE',
+          body: JSON.stringify(body),
+          headers: { 'Content-Type': 'application/json' },
+        };
+
+  return app.request(path, init, TEST_ENV);
 }
 
 // ─── GET /api/projects/:projectId/task-types ─────────────────────────────────
@@ -283,17 +306,17 @@ describe('PATCH /api/task-types/:taskTypeId', () => {
   const app = createTestApp();
 
   it('returns 200 with the updated task type', async () => {
-    const res = await patchJson(app, '/api/task-types/task-type-1', { name: 'Defect' });
+    const res = await patchJson(app, '/api/task-types/dddddddd-0000-4000-8000-000000000001', { name: 'Defect' });
 
     expect(res.status).toBe(200);
 
     const body = (await res.json()) as { data: { id: string } };
 
-    expect(body.data.id).toBe('task-type-1');
+    expect(body.data.id).toBe('dddddddd-0000-4000-8000-000000000001');
   });
 
   it('returns 404 when the task type does not exist', async () => {
-    const res = await patchJson(app, '/api/task-types/missing-type', { name: 'Defect' });
+    const res = await patchJson(app, '/api/task-types/dddddddd-0000-4000-8000-0000000000ff', { name: 'Defect' });
 
     expect(res.status).toBe(404);
 
@@ -303,7 +326,7 @@ describe('PATCH /api/task-types/:taskTypeId', () => {
   });
 
   it('returns 400 for a negative position', async () => {
-    const res = await patchJson(app, '/api/task-types/task-type-1', { position: -5 });
+    const res = await patchJson(app, '/api/task-types/dddddddd-0000-4000-8000-000000000001', { position: -5 });
 
     expect(res.status).toBe(400);
 
@@ -319,7 +342,7 @@ describe('DELETE /api/task-types/:taskTypeId', () => {
   const app = createTestApp();
 
   it('returns 200 with success envelope (no replacement)', async () => {
-    const res = await deleteJson(app, '/api/task-types/task-type-1', {});
+    const res = await deleteJson(app, '/api/task-types/dddddddd-0000-4000-8000-000000000001', {});
 
     expect(res.status).toBe(200);
 
@@ -329,7 +352,7 @@ describe('DELETE /api/task-types/:taskTypeId', () => {
   });
 
   it('returns 200 with a replacement type id', async () => {
-    const res = await deleteJson(app, '/api/task-types/task-type-1', {
+    const res = await deleteJson(app, '/api/task-types/dddddddd-0000-4000-8000-000000000001', {
       replacementTypeId: '550e8400-e29b-41d4-a716-446655440099',
     });
 
@@ -341,7 +364,7 @@ describe('DELETE /api/task-types/:taskTypeId', () => {
   });
 
   it('returns 404 when the task type does not exist', async () => {
-    const res = await deleteJson(app, '/api/task-types/missing-type', {});
+    const res = await deleteJson(app, '/api/task-types/dddddddd-0000-4000-8000-0000000000ff', {});
 
     expect(res.status).toBe(404);
 
@@ -351,7 +374,9 @@ describe('DELETE /api/task-types/:taskTypeId', () => {
   });
 
   it('returns 400 for an invalid replacement id', async () => {
-    const res = await deleteJson(app, '/api/task-types/task-type-1', { replacementTypeId: 'not-a-uuid' });
+    const res = await deleteJson(app, '/api/task-types/dddddddd-0000-4000-8000-000000000001', {
+      replacementTypeId: 'not-a-uuid',
+    });
 
     expect(res.status).toBe(400);
 
@@ -403,5 +428,62 @@ describe('auth', () => {
     );
 
     expect(res.status).toBe(200);
+  });
+});
+
+// ─── Caller context forwarding ────────────────────────────────────────────────
+
+describe('caller context forwarding (M-001/M-006/M-034)', () => {
+  const expected = { tenantId: TENANT_ID, userId: VALID_UUID, userRole: 'OWNER' };
+
+  it('forwards tenantId + userId + role on every task-type route', async () => {
+    const create = {} as { svc?: MockTaskTypeService };
+
+    await postJson(createTestApp('OWNER', null, create), `/api/projects/${PROJECT_ID}/task-types`, {
+      key: 'BUG',
+      name: 'Bug',
+      position: 0,
+    });
+    expect(create.svc?.createTaskType).toHaveBeenCalledWith(
+      PROJECT_ID,
+      { key: 'BUG', name: 'Bug', icon: '📋', position: 0 },
+      expected,
+    );
+
+    const list = {} as { svc?: MockTaskTypeService };
+
+    await getJson(createTestApp('OWNER', null, list), `/api/projects/${PROJECT_ID}/task-types`);
+    expect(list.svc?.getTaskTypesByProject).toHaveBeenCalledWith(PROJECT_ID, expected);
+
+    const reorder = {} as { svc?: MockTaskTypeService };
+
+    await patchJson(createTestApp('OWNER', null, reorder), `/api/projects/${PROJECT_ID}/task-types/reorder`, {
+      items: [{ id: '550e8400-e29b-41d4-a716-446655440091', position: 0 }],
+    });
+    expect(reorder.svc?.reorder).toHaveBeenCalledWith(
+      PROJECT_ID,
+      [{ id: '550e8400-e29b-41d4-a716-446655440091', position: 0 }],
+      expected,
+    );
+
+    const update = {} as { svc?: MockTaskTypeService };
+
+    await patchJson(createTestApp('OWNER', null, update), '/api/task-types/dddddddd-0000-4000-8000-000000000001', {
+      name: 'Defect',
+    });
+    expect(update.svc?.updateTaskType).toHaveBeenCalledWith(
+      'dddddddd-0000-4000-8000-000000000001',
+      { name: 'Defect' },
+      expected,
+    );
+
+    const remove = {} as { svc?: MockTaskTypeService };
+
+    await deleteJson(createTestApp('OWNER', null, remove), '/api/task-types/dddddddd-0000-4000-8000-000000000001', {});
+    expect(remove.svc?.deleteTaskType).toHaveBeenCalledWith(
+      'dddddddd-0000-4000-8000-000000000001',
+      undefined,
+      expected,
+    );
   });
 });

@@ -15,7 +15,7 @@ import { clickUntil, settle } from '@app/shared/testing/zoneless';
 import { HelpMenu } from './help-menu';
 
 /**
- * P13 (item 31b): KeyboardShortcuts now also coordinates the `m`/`w`/`p`
+ * KeyboardShortcuts now also coordinates the `m`/`w`/`p`
  * dropdown hotkeys and pulls in ProjectStore/PreferencesStore/BoardClient.
  * This spec only exercises the help-dialog delegation, so a minimal stub
  * keeps it free of those dependencies.
