@@ -148,6 +148,29 @@ jobs:
         run: npm run format:check
         continue-on-error: true
 
+      # commitlint resolves a COMMIT RANGE, and the checkout at the top of this job
+      # is shallow (`fetch-depth: 1`), so the object database holds exactly one
+      # commit. The range's lower bound — `github.event.before` on push,
+      # `github.event.pull_request.base.sha` on a pull request — is a commit that is
+      # NOT that one, so `git` fails with "Invalid revision range" while still
+      # parsing arguments and before it has looked at a single message. The
+      # resulting log reads like a commit-message violation and is not one.
+      #
+      # A second checkout fetches the full history for the two commitlint steps
+      # only. The shallow default is kept for the rest of the job rather than
+      # widened to `fetch-depth: 0` on the first checkout, because a full clone
+      # would be paid for by every step that has no use for the history.
+      #
+      # `clean: false` is load-bearing. The default `git clean -ffdx` would delete
+      # the tree `npm ci` installed, after which `npx commitlint` resolves the tool
+      # from the registry at whatever it serves as `latest` — the unpinned-fetch
+      # hole this workflow's own tooling scan exists to close.
+      - name: Checkout full history (commit message linting)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          clean: false
+
       # Commit-message policy currently exists only as a bypassable husky hook
       # (--no-skip flag), so it is enforced here as well. The range covers only the
       # commits introduced by this event, and the push leg is skipped for a branch's
