@@ -566,16 +566,65 @@ export const CORE_INDEXES: IndexDefinition[] = [
  * a namespace that was never created yields an empty cursor (no `NamespaceNotFound`
  * — unlike `listIndexes`), so a fresh database reports "no duplicates" and the
  * index is created, which is exactly what a fresh environment wants.
+ *
+ * The B-tree spec CANNOT be reused as the `$group._id` verbatim. An object of
+ * `1`/`-1` is an inclusion-style projection, and `$group` rejects a projection
+ * as its `_id` with `$group does not support inclusion-style expressions`
+ * (code 17390) — a server-side failure, so it cannot be caught by reading the
+ * docs. Every probe-guarded index died that way: the probe threw before
+ * `createIndex` was ever called, and the run reported a failed index build
+ * whose definition was in fact valid. Grouping is done by a document of
+ * resolved field values instead (see {@link duplicateGroupId}).
  */
 export async function hasDuplicatesFor(
   collection: { aggregate(pipeline: Document[]): { toArray(): Promise<unknown[]> } },
   spec: Record<string, 1 | -1>,
 ): Promise<{ duplicate: boolean; sample: unknown[] }> {
   const groups = await collection
-    .aggregate([{ $group: { _id: spec, count: { $sum: 1 } } }, { $match: { count: { $gt: 1 } } }, { $limit: 5 }])
+    .aggregate([
+      { $group: { _id: duplicateGroupId(spec), count: { $sum: 1 } } },
+      { $match: { count: { $gt: 1 } } },
+      { $limit: 5 },
+    ])
     .toArray();
 
   return { duplicate: groups.length > 0, sample: groups };
+}
+
+/**
+ * The `$group._id` that groups documents by exactly the key `spec` indexes on.
+ *
+ * Sort direction is deliberately dropped: a duplicate is a property of the key's
+ * VALUES, so `{a: 1, b: -1}` and `{a: -1, b: 1}` describe the same duplicate
+ * set, and the direction only decides scan order. Keys are positional (`k0`,
+ * `k1`, …) rather than the field names because `$group` rejects a `_id` document
+ * KEY containing a dot (code 16412), which this repository's nested keys
+ * (`actor.userId`, `passwordReset.tokenHash`) would all trip.
+ *
+ * A nested key is resolved by folding `$getField` from `$$ROOT` along the path.
+ * Both shorter spellings were measured against the server and rejected:
+ *   - `"$" + field` — rejected outright on a dotted path (code 16412);
+ *   - one flat `$getField` on a dotted path — accepted, but returns `null` for
+ *     EVERY document instead of traversing, so a clean collection reads as
+ *     "all duplicates" and a valid unique index would be skipped for the wrong
+ *     reason. A silent wrong answer is worse than the loud failure it replaces.
+ *
+ * A field that is absent or `null` resolves to `null`, matching how a unique
+ * index treats a missing key, so the probe's verdict agrees with whether the
+ * real `createIndex({unique: true})` would actually fail.
+ */
+function duplicateGroupId(spec: Record<string, 1 | -1>): Document {
+  return Object.fromEntries(Object.keys(spec).map((field, position) => [`k${position}`, resolveFieldPath(field)]));
+}
+
+/** `a.b.c` → `$getField('c', $getField('b', $getField('a', $$ROOT)))`. */
+function resolveFieldPath(field: string): Document {
+  // Seeded with the BARE `$$ROOT` field reference (a raw string in an
+  // expression position), never `{ $literal: '$$ROOT' }` — that would be the
+  // 3-character STRING "$$ROOT" and every segment would resolve to null.
+  return field
+    .split('.')
+    .reduce<unknown>((input, segment) => ({ $getField: { field: segment, input } }), '$$ROOT') as Document;
 }
 
 /**

@@ -856,13 +856,179 @@ describe('hasDuplicatesFor', () => {
 
     await hasDuplicatesFor(collection, spec);
 
-    expect(collection.aggregate).toHaveBeenCalledWith([
-      { $group: { _id: spec, count: { $sum: 1 } } },
-      { $match: { count: { $gt: 1 } } },
-      { $limit: 5 },
-    ]);
+    const [pipeline] = collection.aggregate.mock.calls[0] as [Record<string, unknown>[]];
+
+    // The `_id` is asserted STRUCTURALLY below, not pinned to a literal: the
+    // previous test pinned `{_id: spec}` — the exact shape the server rejects —
+    // so it went green on code that made every probe-guarded index fail.
+    expect(Object.keys(pipeline[0] as object)).toEqual(['$group']);
+    expect(Object.keys(pipeline[1] as object)).toEqual(['$match']);
+    expect(pipeline[2]).toEqual({ $limit: 5 });
+    expect(aggregateGroupIdIsServable(pipeline[0] as { $group: { _id: unknown } })).toBe(true);
   });
 });
+
+/**
+ * Would MongoDB accept this `$group` `_id`?
+ *
+ * A `$group` `_id` is an EXPRESSION. Two shapes are rejected by the server, and
+ * neither can be detected by a mocked `aggregate` — both fail only when a real
+ * mongod parses the pipeline, which is why the whole guardrail slipped through a
+ * green CI and failed the first production migration run:
+ *
+ *   - an inclusion-style object (`{projectId: 1}`) → code 17390,
+ *     `$group does not support inclusion-style expressions`;
+ *   - a document KEY containing a dot (`{'actor.userId': …}`) → code 16412,
+ *     `FieldPath field names may not contain '.'`.
+ *
+ * There is also a silent third case this rejects on purpose: a flat `$getField`
+ * on a dotted path is ACCEPTED but resolves every document to `null`, so a
+ * clean collection reads as "all duplicates" and a valid unique index is
+ * skipped for the wrong reason. A guardrail that only rejected the two loud
+ * errors would let that through, so a `_id` key must resolve a real traversal
+ * from `$$ROOT` rather than a single flat lookup.
+ *
+ * Walks the value rather than pattern-matching the known-good output, so any
+ * future rewrite is judged by the same rule the server applies.
+ */
+describe('the duplicate probe builds a servable aggregation (guardrail)', () => {
+  /**
+   * Every spec the probe is ever handed, checked against the rule the SERVER
+   * applies. The regression this exists for failed 100% of probe-guarded
+   * indexes on a real deploy while the whole suite stayed green, because every
+   * test mocked `aggregate` and one test asserted the broken shape as correct.
+   * A mocked `aggregate` cannot catch it: nothing is parsed until a real mongod
+   * sees the pipeline. The nested-key cases are included deliberately — this
+   * repository indexes `actor.userId` and `passwordReset.tokenHash`, and a
+   * non-nested key would be a spec the server rejects for a DIFFERENT reason
+   * (code 16412) while testing for 17390.
+   */
+  const SPECS: { label: string; spec: Record<string, 1 | -1> }[] = [
+    { label: 'single flat key', spec: { id: 1 } },
+    { label: 'descending key', spec: { createdAt: -1 } },
+    { label: 'compound key (the task_relationships edge)', spec: { projectId: 1, sourceTaskId: 1, targetTaskId: 1 } },
+    { label: 'mixed directions (the filters name)', spec: { userId: 1, projectId: -1, name: 1 } },
+    { label: 'nested key (actor.userId)', spec: { 'actor.userId': 1 } },
+    { label: 'deeply nested key', spec: { 'a.b.c': 1 } },
+    { label: 'nested inside a compound', spec: { projectId: 1, 'actor.userId': -1 } },
+    // The three specs actually probe-guarded in CORE_INDEXES, read from the
+    // array so a redefinition cannot quietly escape the check.
+    ...CORE_INDEXES.filter((entry) => entry.requiresDuplicateFreeData).map((entry) => ({
+      label: `CORE_INDEXES ${entry.collection} ${JSON.stringify(entry.spec)}`,
+      spec: entry.spec,
+    })),
+  ];
+
+  function capturedPipelineFor(spec: Record<string, 1 | -1>): { $group: { _id: unknown } } {
+    const collection = { aggregate: vi.fn().mockReturnValue({ toArray: vi.fn().mockResolvedValue([]) }) };
+
+    void hasDuplicatesFor(collection, spec);
+
+    const [pipeline] = collection.aggregate.mock.calls[0] as [Record<string, unknown>[]];
+
+    return pipeline[0] as { $group: { _id: unknown } };
+  }
+
+  it.each(SPECS)('builds a $group._id MongoDB will accept — $label', ({ spec }) => {
+    expect(aggregateGroupIdIsServable(capturedPipelineFor(spec))).toBe(true);
+  });
+
+  it('never passes a bare sort direction as a group key (the code 17390 regression)', () => {
+    // The historical failure verbatim: the B-tree spec reused as `_id`. A
+    // structural check on the pipeline, so it holds for any spec, not just the
+    // three in CORE_INDEXES.
+    for (const { spec } of SPECS) {
+      const { _id } = capturedPipelineFor(spec).$group;
+
+      expect(_id).not.toEqual(spec);
+      expect(JSON.stringify(_id)).not.toContain(':1,');
+      for (const value of Object.values(_id as Record<string, unknown>)) {
+        expect([1, -1]).not.toContain(value);
+      }
+    }
+  });
+
+  it('rejects the historical broken shape and the other server-rejected forms', () => {
+    // Positive control: the guardrail must actually be able to fail. If these
+    // ever pass, the guardrail above protects nothing.
+    const servable = capturedPipelineFor({ projectId: 1, sourceTaskId: 1, targetTaskId: 1 });
+
+    // (a) the shipped bug: an inclusion-style object as `_id` → code 17390.
+    expect(aggregateGroupIdIsServable({ $group: { _id: { projectId: 1, sourceTaskId: 1, targetTaskId: 1 } } })).toBe(
+      false,
+    );
+    // (b) a dotted `_id` KEY → code 16412.
+    expect(
+      aggregateGroupIdIsServable({
+        $group: { _id: { 'actor.userId': { $getField: { field: 'actor.userId', input: '$$ROOT' } } } },
+      }),
+    ).toBe(false);
+    // (c) a flat `$getField` on a dotted path: ACCEPTED by the server but
+    //     silently resolves every document to null, so it must still be refused.
+    expect(
+      aggregateGroupIdIsServable({
+        $group: { _id: { k0: { $getField: { field: 'actor.userId', input: '$$ROOT' } } } },
+      }),
+    ).toBe(false);
+    // (d) a field name that is not a `$$` reference resolves nothing.
+    expect(aggregateGroupIdIsServable({ $group: { _id: { k0: 'projectId' } } })).toBe(false);
+    // and the shipped pipeline is the one that survives all of it.
+    expect(aggregateGroupIdIsServable(servable)).toBe(true);
+  });
+});
+
+function aggregateGroupIdIsServable(stage: { $group: { _id: unknown } }): boolean {
+  if (typeof stage.$group._id !== 'object' || stage.$group._id === null || Array.isArray(stage.$group._id)) {
+    return false;
+  }
+
+  return Object.entries(stage.$group._id as Record<string, unknown>).every(([key, value]) => {
+    if (key.includes('.') || key.includes('$')) {
+      return false; // code 16412 — a key is read as a field PATH
+    }
+
+    return isResolvableFieldExpression(value);
+  });
+}
+
+/** A `$group._id` value must resolve the key, and must not be the literal sort direction. */
+function isResolvableFieldExpression(value: unknown): boolean {
+  if (value === 1 || value === -1) {
+    return false; // code 17390 — the inclusion-style value that caused the outage
+  }
+
+  if (typeof value === 'string') {
+    // A bare `$$ROOT`-style field reference is fine; a field name is not.
+    return value.startsWith('$$');
+  }
+
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+
+  const operators = Object.keys(value as Record<string, unknown>);
+
+  if (operators.length !== 1) {
+    return false;
+  }
+
+  const [operator] = operators;
+  const operand = (value as Record<string, unknown>)[operator as string];
+
+  if (operator === '$getField') {
+    const { field, input } = (operand ?? {}) as { field?: unknown; input?: unknown };
+
+    if (typeof field !== 'string' || field.includes('.')) {
+      return false; // a dotted `field` does NOT traverse — it silently yields null
+    }
+
+    // A single flat `$getField` is the silent-wrong-answer shape: it must be
+    // rooted at `$$ROOT`, either directly or through further nesting.
+    return isResolvableFieldExpression(input);
+  }
+
+  return isResolvableFieldExpression(operand);
+}
 
 describe('ensureCoreIndexes (F11)', () => {
   /** A db whose collections all answer the duplicate probe with "clean". */
@@ -933,19 +1099,28 @@ describe('ensureCoreIndexes (F11)', () => {
     const guardedId = JSON.stringify({ projectId: 1, sourceTaskId: 1, targetTaskId: 1 });
     const built: string[] = [];
     const db = {
-      collection: vi.fn(() => ({
+      collection: vi.fn((name: string) => ({
         createIndex: vi.fn((keys: unknown) => {
           built.push(JSON.stringify(keys));
 
           return Promise.resolve('built');
         }),
         // Only the relationship-edge key reports duplicates; every other
-        // collection probes clean.
-        aggregate: vi.fn((pipeline: [{ $group: { _id: unknown } }]) => ({
-          toArray: vi
-            .fn()
-            .mockResolvedValue(JSON.stringify(pipeline[0].$group._id) === guardedId ? [{ _id: {}, count: 2 }] : []),
-        })),
+        // collection probes clean. Selected by COLLECTION + the number of
+        // resolved group keys, because the previous selector compared the raw
+        // `$group._id` against the spec's JSON — which only ever matched
+        // because the probe reused the spec verbatim, the very defect being
+        // fixed. The edge key is the only 3-key probe on task_relationships.
+        aggregate: vi.fn((pipeline: [{ $group: { _id: unknown } }]) => {
+          const groupId = pipeline[0]?.$group._id;
+          const keyCount =
+            typeof groupId === 'object' && groupId !== null && !Array.isArray(groupId)
+              ? Object.keys(groupId).length
+              : 0;
+          const isGuardedEdge = name === 'task_relationships' && keyCount === 3;
+
+          return { toArray: vi.fn().mockResolvedValue(isGuardedEdge ? [{ _id: {}, count: 2 }] : []) };
+        }),
       })),
     };
 
