@@ -53,11 +53,11 @@ jobs:
       # enforces). It was 7 high before the transitive advisories below were
       # addressed, which is what a blocking gate is for.
       #
-      # `smol-toml` and `brace-expansion` are reached only through `nx`
+      # `smol-toml`, `brace-expansion` and `axios` are reached only through `nx`
       # (`@spartan-ng/cli`, a devDependency), and every published `nx` release
       # pins them to exact versions, so no bump reaches a fix and
       # `npm audit fix` cannot apply one — root `overrides` is the only lever
-      # npm offers. Both overrides stay inside the major their consumer
+      # npm offers. All three overrides stay inside the major their consumer
       # declares.
       - name: Audit dependencies (high severity, blocking)
         run: npm audit --audit-level=high
