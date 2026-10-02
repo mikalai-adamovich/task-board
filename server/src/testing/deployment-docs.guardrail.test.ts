@@ -64,12 +64,43 @@ describe('C-11: the e2e job is not advisory BY ANYTHING IN THIS REPOSITORY', () 
     // `continue-on-error` markers — the dependency audit and the formatting
     // check — and neither is in the e2e job. If someone adds one, the
     // documentation below becomes wrong and this fails first.
+    //
+    // The slice ends at the NEXT JOB, found by its own top-level key rather than by
+    // a marker that only the first job can have. Ending at `\njobs:` instead made the
+    // slice run to end-of-file whenever `e2e` was last, so a job added after it —
+    // or a comment in one — decided this assertion's verdict for the e2e job.
     const jobStart = CI.indexOf('\n  e2e:');
-    const jobEnd = CI.indexOf('\njobs:', jobStart + 1);
-    const e2eJob = CI.slice(jobStart, jobEnd === -1 ? CI.length : jobEnd);
 
     expect(jobStart, 'ci.yml must still declare the e2e job').toBeGreaterThan(-1);
+
+    const afterKey = CI.slice(jobStart + '\n  e2e:'.length);
+    // A job key sits at exactly two spaces; step and step-property keys are deeper,
+    // so this cannot match one of those.
+    const nextJob = afterKey.search(/\n {2}[A-Za-z][\w-]*:/);
+    const e2eJob = nextJob === -1 ? afterKey : afterKey.slice(0, nextJob);
+
     expect(e2eJob, 'the e2e job must not carry continue-on-error').not.toContain('continue-on-error');
+    // The slice really is the e2e job and not a prefix of the file: without this, a
+    // `continue-on-error` in an earlier job would satisfy nothing above by accident
+    // of slicing to the wrong place.
+    expect(e2eJob, 'the slice must be the e2e job itself').toContain('Run Playwright e2e suite');
+  });
+
+  it('the rate-limit-integration job carries no bypass marker either', () => {
+    // The same property, for the database-backed counter job: its entire value is
+    // that the pipeline's atomicity is asserted against a real server, and a bypass
+    // marker there would turn the one failure it exists to catch into a green run.
+    const jobStart = CI.indexOf('\n  rate-limit-integration:');
+
+    expect(jobStart, 'ci.yml must still declare the rate-limit-integration job').toBeGreaterThan(-1);
+
+    const afterKey = CI.slice(jobStart + '\n  rate-limit-integration:'.length);
+    const nextJob = afterKey.search(/\n {2}[A-Za-z][\w-]*:/);
+    const job = nextJob === -1 ? afterKey : afterKey.slice(0, nextJob);
+
+    expect(job, 'the job must not carry continue-on-error').not.toContain('continue-on-error');
+    expect(job, 'the job must not carry a shell escape hatch').not.toMatch(/\|\| *true/);
+    expect(job, 'the job must actually run the suite').toContain('npm run test:integration');
   });
 
   it('AGENTS.md says where the setting actually lives, not in these files', () => {

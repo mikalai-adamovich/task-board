@@ -18,6 +18,8 @@ import { StatusService } from './status.service.js';
 import { TaskTypeService } from './task-type.service.js';
 import { TenantMemberService } from './tenant-member.service.js';
 import { AuthService } from './auth.service.js';
+import { RateLimitAuthorityService } from './rate-limit-authority.service.js';
+import { createInMemoryCounterStore } from '../testing/rate-limit-counter-store.js';
 import { DUPLICATE_KEY_CODE } from '../db/duplicate-key.js';
 import type { CallerContext } from './tenant-assert.js';
 
@@ -58,7 +60,15 @@ describe('E11000 → 409 — FilterService (filters {userId,projectId,name}, F11
       create: vi.fn().mockRejectedValue(e11000('userId_1_projectId_1_name_1')),
     };
     const projectRepo = { findById: vi.fn().mockResolvedValue({ tenantId: 'tenant-1', status: 'ACTIVE' }) };
-    const service = new FilterService(filterRepo as never, projectRepo as never);
+    // The criteria here are empty, so the reference check costs no query; the
+    // seams are still wired because the constructor requires them.
+    const service = new FilterService(filterRepo as never, projectRepo as never, {
+      statusRepo: { findByIds: vi.fn().mockResolvedValue([]) },
+      taskTypeRepo: { findByIds: vi.fn().mockResolvedValue([]) },
+      sprintRepo: { findByIds: vi.fn().mockResolvedValue([]) },
+      labelRepo: { findByProject: vi.fn().mockResolvedValue([]) },
+      projectMemberRepo: { findUserIdentityByProject: vi.fn().mockResolvedValue(null) },
+    });
 
     await expectConflict(
       service.createFilter(
@@ -196,6 +206,10 @@ describe('E11000 → 409 — AuthService (users {email})', () => {
       userRepo as never,
       {} as never,
       { findPendingByEmail: vi.fn().mockResolvedValue([]) } as never,
+      // The rate-limit authority is a required collaborator; the counter store
+      // below is in-memory, so the registration bucket is enforced normally and
+      // this case is still about the lost `users {email}` race alone.
+      new RateLimitAuthorityService(createInMemoryCounterStore() as never),
       'test-secret',
       null,
     );

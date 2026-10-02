@@ -288,6 +288,53 @@ describe('AuditEventRepository — filters and cascade', () => {
     expect(page.pagination).toEqual({ page: 2, limit: 2, total: 5, totalPages: 3 });
   });
 
+  it('persists the correlation ids and returns them on the read path', async () => {
+    const { repo, fake } = repository();
+
+    await repo.create({
+      tenantId: 'tenant-1',
+      projectId: 'project-1',
+      entityType: 'TASK',
+      entityId: 'task-1',
+      action: 'UPDATED',
+      actor: { userId: 'user-1', displayName: 'A' },
+      changes: [],
+      requestId: 'server-id',
+      upstreamRequestId: 'client-id',
+    });
+
+    // Both ids reach the stored document, kept apart: the correlation id is what
+    // joins the row to the logs, the upstream one is traceability only.
+    expect(fake.stored()[0]?.requestId).toBe('server-id');
+    expect(fake.stored()[0]?.upstreamRequestId).toBe('client-id');
+
+    const page = await repo.findByProject('project-1');
+
+    expect(page.data[0]?.requestId).toBe('server-id');
+    expect(page.data[0]?.upstreamRequestId).toBe('client-id');
+  });
+
+  it('reads back null, not undefined, for a row written outside a request', async () => {
+    const { repo } = repository();
+
+    // The scheduled purge writes with no request context; the row must not claim
+    // a correlation id that never existed.
+    await repo.create({
+      tenantId: 'tenant-1',
+      projectId: null,
+      entityType: 'TENANT',
+      entityId: 'tenant-1',
+      action: 'DELETED',
+      actor: { userId: null, displayName: 'System' },
+      changes: [],
+    });
+
+    const page = await repo.findByTenant('tenant-1');
+
+    expect(page.data[0]?.requestId).toBeNull();
+    expect(page.data[0]?.upstreamRequestId).toBeNull();
+  });
+
   it('cascade delete removes only the addressed project', async () => {
     const { repo, fake } = repository();
 

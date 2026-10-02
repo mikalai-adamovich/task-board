@@ -1,8 +1,17 @@
 import { Service, inject } from '@angular/core';
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpParams } from '@angular/common/http';
 import { Observable, map } from 'rxjs';
 import { API_BASE_URL } from '@app/api-url.token';
-import type { Comment, CreateComment, UpdateComment } from '@task-board/shared';
+import { COMMENT_PAGE_SIZE } from '@task-board/shared';
+import type { Comment, CommentPage, CreateComment, UpdateComment } from '@task-board/shared';
+
+/** One page request for a task's comment thread. */
+export interface CommentPageQuery {
+  /** Comments per page (server maximum is `COMMENT_PAGE_SIZE`). */
+  limit?: number;
+  /** Opaque `nextCursor` of the page below this one; omit for the newest page. */
+  cursor?: string;
+}
 
 /** Pure HTTP client for comment endpoints — no state management. */
 @Service()
@@ -10,9 +19,25 @@ export class CommentClient {
   private readonly http = inject(HttpClient);
   private readonly baseUrl = inject(API_BASE_URL);
 
-  /** List all comments for a task */
-  list(taskId: string): Observable<Comment[]> {
-    return this.http.get<{ data: Comment[] }>(`${this.baseUrl}/tasks/${taskId}/comments`).pipe(map((res) => res.data));
+  /**
+   * One page of a task's comments.
+   *
+   * The thread is walked from the NEWEST comment backwards, so the first request
+   * (no cursor) is the one that matters for what the reader sees first; each
+   * page is ordered oldest-first inside itself, and a follow-up page goes ABOVE
+   * what is already on screen. `nextCursor` is opaque and is passed back
+   * verbatim — this client never decodes it.
+   */
+  list(taskId: string, query: CommentPageQuery = {}): Observable<CommentPage> {
+    let params = new HttpParams().set('limit', query.limit ?? COMMENT_PAGE_SIZE);
+
+    if (query.cursor) params = params.set('cursor', query.cursor);
+
+    return this.http
+      .get<{ data: Comment[]; pagination: Omit<CommentPage, 'comments'> }>(`${this.baseUrl}/tasks/${taskId}/comments`, {
+        params,
+      })
+      .pipe(map((res) => ({ comments: res.data, ...res.pagination })));
   }
 
   /** Create a new comment on a task */

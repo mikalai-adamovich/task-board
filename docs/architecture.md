@@ -75,6 +75,14 @@ errors/app-error.ts (AppError hierarchy; codes typed by shared ErrorCode)
   `@task-board/shared`) because it compiles to an `$or` of five regexes that no B-tree can serve; `sort` is a closed
   allow-list; `hasSprint` is a tri-state boolean (absent = no sprint filtering, `false` = backlog, `true` = in a
   sprint) and is mutually exclusive with `sprintId`; `excludeDescription` and `view=board` trim the list payload.
+- **The comment thread is cursor-paginated, newest window first:** `GET /api/tasks/:taskId/comments` takes `limit`
+  (default and maximum `COMMENT_PAGE_SIZE` = 30; above it is a 400, not a silent cap) and an opaque `cursor`, and
+  answers `{ data, pagination: { limit, hasMore, nextCursor } }`. The window is queried `{ createdAt: -1, _id: -1 }` so
+  the first page is the newest activity, then reversed so each page still reads oldest-first on screen — a client
+  renders a page in order and places the next (older) one above it. `_id` is in the ordering key because `createdAt`
+  is not unique, which is what makes a page boundary inside a same-millisecond run lossless. The cursor is a
+  serialized `(createdAt, _id)` key, not a query object, so a malformed one is a 400 `VALIDATION_ERROR` rather than a
+  500. There is no `total`: counting an open-ended thread is itself an unbounded read.
 - **Error mapping lives in one place each:** `maxTimeMS` expiry → `503 QUERY_TIMEOUT` (`db/query-timeout.ts` budgets:
   5 s list/search/audit, 2 s board pages); a unique-index violation `E11000` → `409`, translated by
   [`db/duplicate-key.ts`](../server/src/db/duplicate-key.ts) into the answer the **issuing service** supplies (a
@@ -119,6 +127,103 @@ errors/app-error.ts (AppError hierarchy; codes typed by shared ErrorCode)
 Full paths are defined in route modules (e.g. `/tasks/:taskId`), so modules mount at `/` of the tenant-scoped sub-app to
 avoid double nesting. Cross-tenant routes (`/api/tasks/my`, `/api/invitations`, `/api/preferences`) mount outside the
 tenant sub-app.
+
+### 2.7 The rate-limit counter collection: scope cardinality and worst-case storage
+
+`rate_limit_counters` is the storage side of the four authentication buckets
+([`services/rate-limit-authority.service.ts`](../server/src/services/rate-limit-authority.service.ts) over
+[`repositories/rate-limit-counter.repository.ts`](../server/src/repositories/rate-limit-counter.repository.ts)). Three
+facts determine its size, and none of them is a configured cap.
+
+**1. One document per bucket/scope pair, and the timestamp array is bounded by the bucket ceiling.** A probe is one
+`findOneAndUpdate` with `upsert: true`, so the document is created by the first attempt and rewritten by every later one.
+There are no per-attempt rows and no history. `ts` is sliced to `-(ceiling + 1)` in the same pipeline, so a document
+carries at most 31 BSON Dates (the login-source ceiling, 30) whatever a caller sends. `bucket` and `expiresAt` are fixed
+width, and the `_id` is a fixed `<bucket>:<32 hex>` string.
+
+**2. TTL bounds the collection by TIME, not by count.** Every probe recomputes
+`expiresAt = now + windowMs + RATE_LIMIT_COUNTER_TTL_GRACE_MS` (60 s), and the index in
+[`db/migrations.ts`](../server/src/db/migrations.ts) turns that into a deletion by the server's background monitor
+(cadence ~60 s). So a document survives **one window plus the grace after its last write**: 16 minutes for
+`login-account` / `login-source` / `forgot-email-ip` (15-minute windows) and 61 minutes for `register-source` (1-hour
+window). The live set is therefore the scopes probed inside the current window, and everything older is swept without a
+Worker request.
+
+**3. Scope cardinality, per bucket — this is the only term that is not naturally bounded.**
+
+| Bucket          | Key                | Attacker-mintable?                                                                                                                                                            |
+| --------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `login-account` | normalized email   | **Yes.** The probe runs BEFORE the credential lookup, so any syntactically valid address creates a document — including for accounts that do not exist. Ten requests mint ten documents from one address. |
+| `login-source`  | `CF-Connecting-IP` | **Yes**, one document per distinct source address. The header is edge-overwritten, so it cannot be spoofed from one host — the bound here is the number of addresses tried, not the request rate (one address may spend 30 attempts per 15 min, and the first of them creates the document). |
+| `register-source` | `CF-Connecting-IP` (a **bare** address) | **Yes**, one document per distinct source address, and the bucket is keyed on the address alone — the audit finding stands. This is why the bucket prefix is part of the document `_id` and not decoration. |
+| `forgot-email-ip` | `email` + `:` + `CF-Connecting-IP` | **Yes**, and this is the cheapest mint in the system: one address submitting distinct addresses to the password-reset route mints one document per pair at five requests per pair, with no per-address ceiling of its own to exhaust. |
+
+So only the account bucket's key is a value the deployment owns, and even that one is not bounded by the user base — a
+syntactically valid address for a non-existent account is enough. There is **no global document cap, and deliberately
+none**: a shared ceiling is a single contended quantity an attacker fills with cheap minted scopes, and every legitimate
+scope behind it is then refused by a limit that has nothing to do with its own budget — the same starvation shape the
+in-process key cap avoids by refusing a newcomer rather than evicting a live counter. `server/src/testing/` holds a
+guardrail that fails the build if a collection-size gate appears in the counter path.
+
+#### Measured document size
+
+Taken 2026-10-02 against the local `docker compose` MongoDB (8.x, single-node replica set): 2 000 documents inserted per
+shape, then `db.collStats()` and `$bsonSize` read back. Scratch database `scratch_rate_limit_counter_size`, dropped
+afterwards (verified absent from `listDatabases`).
+
+| Shape (ceiling → entries)          | `avgObjectSize` | `$bsonSize` | TTL index entry |
+| --------------------------------- | --------------- | ----------- | --------------- |
+| `login-source` full (30 → 31)      | **475 B**       | 475 B       | 18.4 B          |
+| `login-source` single entry        | 124 B           | 124 B       | 18.4 B          |
+| `register-source` full (20 → 21)   | 361 B           | 361 B       | 18.4 B          |
+| `login-account` full (10 → 11)     | 237 B           | 237 B       | 18.4 B          |
+| `forgot-email-ip` full (5 → 6)     | 185 B           | 185 B       | 18.4 B          |
+
+**Worst case per live document: 475 B (data) + 18.4 B (index) ≈ 493 B.** The single-entry shapes — what an honest user
+generates — are 124-130 B, so the worst case is the shape only an attacker produces: a scope held over its ceiling, which
+is where `ts` reaches `ceiling + 1`.
+
+#### The calculation
+
+Budget: the MongoDB Atlas **Free (M0) tier's 0.5 GB** (536 870 912 B) of storage, shared across the cluster.
+
+| Case                                                | Live documents | Bytes                            | Share of 0.5 GB |
+| --------------------------------------------------- | -------------- | -------------------------------- | --------------- |
+| **Baseline** — 1 000 accounts, one login each in a 16-min window, 20 distinct egress addresses | 1 000 account + 20 source | 1 000 × 126 B + 20 × 124 B + 1 020 × 18.4 B ≈ **147 kB** | **0.03 %** |
+| **Growth** — 10 000 accounts, every one active inside the same window, 500 distinct egress addresses | 10 000 account + 500 source | 10 000 × 126 B + 500 × 475 B + 10 500 × 18.4 B ≈ **1.7 MB** | **0.3 %** |
+| **Worst case at full honest scale** — same, but every account's window full at 31 dates | 10 500 | 10 000 × 475 B + 500 × 475 B + 10 500 × 18.4 B ≈ **5.2 MB** | **1.0 %** |
+| **Attacker-minted** — unbounded in this cycle | R × T | R × T × 493 B | grows with R |
+
+The headroom that buys is: **≈ 1.09 million simultaneously live documents at the worst-case size, ≈ 3.7 million at the
+single-entry size** — before the Free tier's storage is exhausted. The honest traffic sits two to three orders of
+magnitude below that.
+
+#### The attacker case is unbounded by design, and what actually bounds it
+
+`R × T` is not a free parameter: **every document requires at least one store operation to create**, so the mint rate is
+capped by the request rate that reaches the Worker, and the live set is that rate times the TTL horizon.
+
+- One address mints `login-account` documents at 1 per distinct email until the `login-source` ceiling (30 / 15 min)
+  stops it — **30 documents per address per 15 minutes**, which is the cheapest high-rate mint on the login path.
+- One address mints `forgot-email-ip` documents at 1 per 5 requests with no per-address ceiling of its own:
+  **12 documents per minute per address**, and the 16-minute TTL horizon means ~192 live documents per sustained
+  attacker address.
+- `login-source` / `register-source` mint 1 document per address tried, so their rate is bounded by address supply, not
+  by request rate.
+- The TTL monitor's ~60 s cadence adds at most one sweep interval on top of the 16 / 61-minute horizon.
+
+Reaching the 1.09-million worst-case document figure therefore needs ~1 135 **new** documents per second sustained for
+the full 16-minute horizon — about 1 135 store operations per second on the unauthenticated auth path, which is above
+what a Free-tier cluster or the edge in front of it will deliver. That platform ceiling, not an application cap, is what
+currently bounds this, and it is the honest answer to "what stops the collection from being filled": nothing in this
+repository does, on purpose, and the number above is why that is currently a calculated risk rather than a defect. If a
+deployment ever needs a real bound, the lever that does not add a DoS surface is an **operation rate** limit at the edge
+(one global request rate, which cannot be selectively starved), not a per-collection document ceiling.
+
+**What `DEFAULT_MAX_KEYS` is not:** it is the cap on the *process-local advisory map* in
+[`utils/rate-limiter.ts`](../server/src/utils/rate-limiter.ts) — an in-memory bound on one isolate's record of
+already-admitted attempts, enforced on admission by refusing a new key. It has no relationship to the size of this
+collection: the store counts a scope whether or not the local map tracked it.
 
 ## 3. Data model (summary)
 
@@ -211,9 +316,22 @@ boards/tasks/sprints/members/settings/audit.
   data. `npx playwright test` therefore needs nothing pre-started, and because the API is fresh per run the in-memory
   register limiter (20 sign-ups per client id per hour) cannot make the suite non-re-runnable. Generated output
   (HTML report, traces) is redirected to the gitignored scratch home at the repo root — it is a bundle, not source. The
-  `e2e` job in `.github/workflows/ci.yml` is a **blocking gate**: it provides a `mongo` service container (`mongo:7`,
-  published `27017:27017`, mongosh-ping health check the job waits for) and sets `E2E_MONGODB_URI` to a dedicated
-  database on that port.
+  `e2e` job in `.github/workflows/ci.yml` provides a `mongo` service container (`mongo:7`, published `27017:27017`,
+  mongosh-ping health check the job waits for) and sets `E2E_MONGODB_URI` to a dedicated database on that port. It
+  carries no `continue-on-error`, so a failure fails the job; whether that red blocks a merge is a **branch-protection
+  rule on the hosting service**, not a workflow setting.
+- **Counter integration:** `server/src/repositories/rate-limit-counter.repository.integration.test.ts` is the only test
+  that can falsify the counter's atomicity, post-image semantics, the sliding-window boundary and the TTL/index
+  behaviour — a stub can only restate the pipeline's shape. It runs in the `rate-limit-integration` job, its own job
+  rather than a step elsewhere, because it needs a live MongoDB and no other job may acquire that dependency: the job
+  provides its own `mongo:7` service container (same pin and same readiness idiom as `e2e`) and sets
+  `RATE_LIMIT_COUNTER_TEST_URI` to a database name of its own, so it cannot touch the e2e suite's data. It applies no
+  migration — the suite builds the TTL index it asserts against in `beforeAll`. The step carries no `continue-on-error`
+  and no `|| true`, because a suite that silently skipped would report green for the one failure mode it exists to
+  catch. It is deliberately **not** part of `npm run check`: a local gate that needs a database fails on a machine
+  without one, and the local gate must stay runnable with no services at all. The suite is `describe.skipIf` on
+  `RATE_LIMIT_COUNTER_TEST_URI`, so without the variable a run is a skip that reads as a pass — always check the output
+  says it RAN.
 
 ### 6.1 Guardrails (tests that fail the build by design)
 
@@ -248,7 +366,7 @@ against sources or the full route table rather than one rendered instance.
 | Bulk reorder endpoints (statuses/task-types)                 | Two sequential PATCHes could leave positions inconsistent on partial failure                                                                                                                                                                                                                                                                                                                                                                        |
 | bcryptjs (pure JS) on Workers                                | Native bcrypt cannot compile for Workers; watch CPU time, PBKDF2/WebCrypto is the fallback                                                                                                                                                                                                                                                                                                                                                          |
 | Durable Object owns the app + client (singleton experiment failed) | A module-cached `MongoClient` in a plain Worker reproduced workerd#2721: pool sockets are bound to the request context that created them — the next request hangs and the runtime kills it with error 1101 (register 201 → login 500). A DO has its own I/O context, so `DB_CLIENT_MODE=durable` (deployed by cd.yml) puts the Hono app and a persistent pool inside one; `DB_CLIENT_MODE=per-request` remains the rollback. `/api/health` and `/api/ping` always stay on the Worker so liveness never depends on the DO |
-| One DO instance (`idFromName('mongo')`) is a SECURITY parameter, not only a performance one | The per-user rate limiter's counters are in-process (`utils/rate-limiter.ts`), so the abuse ceiling is `AUTH_MAX_REQUESTS × instances`. One instance today; a cached per-user `idFromString`, or the `per-request` rollback (one budget per isolate), multiplies it silently. A mode-aware counter is the audit's Q4 and is not implemented — so the DO identity must not be changed as a performance refactor |
+| The authentication rate-limit ceiling is enforced by MongoDB, and the DO instance count is therefore no longer a security parameter for it | `services/rate-limit-authority.service.ts` keeps one atomic `findOneAndUpdate` per probe in `rate_limit_counters` (pipeline update, `upsert`, `returnDocument: 'after'`, key = `<bucket>:<sha256(scope)[0:32]>`). Mongo's atomicity is per document, so `limit × instances` is gone: the ceiling is the configured number in every `DB_CLIENT_MODE`, across PoPs, and it survives a deploy, an isolate eviction and a DO restart. MongoDB was chosen over a counter Durable Object because all four buckets already require MongoDB for the request itself, so the counter adds no availability coupling of its own — but the counter op and the user lookup are INDEPENDENT operations, and a fault in one is not a fault in the other. A TOTAL MongoDB outage takes the lookup with it, so such a login was never going to succeed either way; a COUNTER-ONLY fault leaves the lookup intact, which is what made it dangerous — measured with `maxTimeMS: 1` on the counter op alone: `counterOk=0/20` while `authLookupOk=20/20`, twenty logins that would otherwise have worked. The authority therefore FAILS CLOSED on a counter fault: no admission, no local timestamp recorded on the store's behalf, and a contract-compatible `429 RATE_LIMITED` with `Retry-After` + `RateLimit-*` carrying the configured constant. So the counter-only fault costs the REQUEST, and the client can see it. The in-process limiter is the ADVISORY tier only — it may refuse a saturated key without spending a store operation, and may never admit one, which is what keeps a local refusal sound (local timestamps ⊆ authoritative timestamps) — and no probe applies the instance-divided arithmetic any more: `resolveRateLimitScope` remains only so `/api/readyz` can report the deployment's instance count and declared budget, and the enforced ceiling does not depend on either number. The `maxKeys` cap in `utils/rate-limiter.ts` bounds the PROCESS-LOCAL advisory map and nothing else — the collection is uncapped by design and sized by live scope cardinality × measured document size, see §2.7 |
 | Explicit Frankfurt placement (`region = "aws:eu-central-1"`) | A/B 2026-08-31 (per-request client in both branches, only placement varied): smart → `cf-placement: local-WAW` on every request (INSUFFICIENT_INVOCATIONS with single-user traffic), Mongo connect 274-404ms, tenants warm 396-879ms; `aws:eu-central-1` → `remote-FRA` on every request, Mongo connect 86-149ms, tenants warm 201-284ms. Explicit AWS eu-central-1 placement is preferred for the current MongoDB Atlas deployment in eu-central-1 |
 | Migrations run from CD, never in the request path            | `server/scripts/migrate.ts` (same `runMigrations()`) executes before the Worker deploy; additive + idempotent, safe against the still-running old Worker; removes 0.5-1.5s from cold isolates                                                                                                                                                                                                                                                       |
 | Required `CallerContext` + `assertProjectInTenant` (tenant seam) | The old `userId?`/`userRole?` signatures skipped authorization whenever a call site forgot to forward the context — authz failed **open**. Required context = compile error; `assertProjectInTenant` = 404, never 403, so a foreign id is indistinguishable from a nonexistent one |

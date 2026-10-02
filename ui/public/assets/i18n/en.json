@@ -634,6 +634,9 @@
   "comments": {
     "title": "Comments",
     "loadError": "Failed to load comments.",
+    "loadOlder": "Load older comments",
+    "loadingOlder": "Loading",
+    "loadOlderError": "Failed to load older comments.",
     "noComments": "No comments yet. Start the discussion.",
     "submit": "Comment",
     "submitting": "Posting",

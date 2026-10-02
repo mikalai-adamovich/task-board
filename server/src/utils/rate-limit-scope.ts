@@ -40,23 +40,29 @@
  * purpose is to refuse abuse, and it is why the declared budget is surfaced on
  * `/api/readyz` rather than hidden in a log line.
  *
- * ## The trade-off, stated rather than hidden
+ * ## What this module governs now
  *
- * A shared store (Durable Object storage, KV, Redis) would make the ceiling
- * exact in BOTH modes without an operator-declared number. It is not built
- * here, for one reason: **it must survive the failure the rollback exists for.**
- * The rollback to `per-request` is taken when the Durable Object is the thing
- * that is broken. A counter stored in that same Durable Object would be
- * unavailable exactly when the rollback is invoked — the control would fail
- * OPEN (no counter, no limit) at the moment it is most needed. A KV/Redis-backed
- * counter avoids that but is a new external dependency whose availability the
- * application does not control, and a limiter that fails closed on a KV outage
- * turns a monitoring blip into a login outage.
+ * The exact counter EXISTS: MongoDB is the authority for the four
+ * authentication buckets (`services/rate-limit-authority.service.ts`), it counts
+ * per document, and it therefore does not multiply by instances — so none of the
+ * arithmetic below is applied to the ENFORCED ceiling, which is the configured
+ * constant (10 / 30 / 20 / 5) in every `DB_CLIENT_MODE`. MongoDB is reachable in
+ * every mode, which is exactly the property a Durable-Object- or KV-backed
+ * counter could not have had: the rollback to `per-request` is taken when the
+ * Durable Object is the thing that is broken, so a counter stored in that same
+ * Durable Object would be unavailable precisely when it is most needed.
  *
- * So the honest position is: the ceiling is now EXPLICIT and mode-aware rather
- * than accidentally multiplied, it degrades to the per-instance value (the
- * status quo) rather than to nothing when the count is unknown, and making it
- * exact is a decision that needs its own package.
+ * What this module is for is REPORTING the deployment's instance budget, and it
+ * is the reason the arithmetic is still here: no probe consumes `effectiveCeiling`
+ * any more. The authority's in-process limiter is the ADVISORY tier alone — it
+ * may refuse a saturated key and may never admit one — and a counter-store fault
+ * is refused rather than handed to a per-instance map
+ * (`services/rate-limit-authority.service.ts`). A ceiling only an operator cannot
+ * account for is not a ceiling, so the degraded path no longer exists to divide
+ * for. What remains is the number an operator reads on `/api/readyz`, which
+ * still says how many instances this deployment runs and what the declared
+ * budget implies — the fact that the enforced ceiling does NOT depend on either
+ * number is the more important half of that line, and it is stated there too.
  *
  * ## Why it is pure
  *
@@ -93,10 +99,16 @@ export interface RateLimitScope {
   /** False when `instances` is {@link DEFAULT_ASSUMED_INSTANCES}, not declared. */
   declared: boolean;
   /**
-   * The effective ceiling for a limiter configured with `maxRequests`, i.e.
-   * `maxRequests` in `shared` mode and `max(1, floor(maxRequests / instances))`
-   * otherwise. Rounded DOWN and floored at 1, so the product of this and
-   * `instances` never exceeds `maxRequests`.
+   * The effective ceiling a PER-INSTANCE limiter configured with `maxRequests`
+   * would enforce, i.e. `maxRequests` in `shared` mode and
+   * `max(1, floor(maxRequests / instances))` otherwise. Rounded DOWN and floored
+   * at 1, so the product of this and `instances` never exceeds `maxRequests`.
+   *
+   * REPORTED, not enforced: no probe applies it. The authentication ceiling is
+   * the configured constant in every mode, because MongoDB counts per document
+   * and the in-process tier may refuse but never admit — and this number is kept
+   * because a per-instance counter is still what a deployment that reads it is
+   * describing, not because anything counts against it.
    */
   effectiveCeiling: number;
 }
@@ -186,8 +198,10 @@ function scaleCeiling(maxRequests: number, instances: number): number {
 }
 
 /**
- * One line an operator (or `/api/readyz`) can read to know what the login
- * limiter is actually enforcing in this deployment.
+ * One line an operator (or `/api/readyz`) can read to know how many instances
+ * this deployment runs the login limiter across. The ENFORCED ceiling is the
+ * configured constant in every mode and is not described here, because it does
+ * not vary with this number — an operator reading this line must also know that.
  */
 export function describeRateLimitScope(scope: RateLimitScope, maxRequests: number): string {
   if (scope.kind === 'shared') {

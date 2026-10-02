@@ -252,6 +252,15 @@ function filterService(status: ProjectStatus): FilterService {
       create: vi.fn(),
     } as never,
     projectRepo(status) as never,
+    // Reference seams: these tests assert the project-write rule, not filter
+    // criteria, so the lookups resolve nothing and cost no query.
+    {
+      statusRepo: { findByIds: vi.fn().mockResolvedValue([]) },
+      taskTypeRepo: { findByIds: vi.fn().mockResolvedValue([]) },
+      sprintRepo: { findByIds: vi.fn().mockResolvedValue([]) },
+      labelRepo: { findByProject: vi.fn().mockResolvedValue([]) },
+      projectMemberRepo: { findUserIdentityByProject: vi.fn().mockResolvedValue(null) },
+    },
   );
 }
 

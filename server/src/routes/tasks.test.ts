@@ -17,6 +17,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Hono } from 'hono';
 import { createTaskRoutes } from './tasks.js';
+import { createCommentRoutes } from './comments.js';
 import { TaskService } from '../services/task.service.js';
 import { errorHandler } from '../middleware/error-handler.js';
 import { NotFoundError } from '../errors/app-error.js';
@@ -64,6 +65,8 @@ const mockTask = {
   updatedAt: '2025-01-01T00:00:00.000Z',
 };
 const page = { data: [mockTask], pagination: { page: 1, limit: 20, total: 1, totalPages: 1 } };
+/** The `KEY-NUMBER` form, matched the way the real resolver matches it. */
+const TASK_KEY_PATTERN = /^[A-Z][A-Z0-9]*-[0-9]{1,10}$/;
 
 interface MockTaskService {
   getTasksByProject: ReturnType<typeof vi.fn>;
@@ -73,6 +76,7 @@ interface MockTaskService {
   createTask: ReturnType<typeof vi.fn>;
   getTask: ReturnType<typeof vi.fn>;
   getTaskByKey: ReturnType<typeof vi.fn>;
+  resolveTaskId: ReturnType<typeof vi.fn>;
   updateTask: ReturnType<typeof vi.fn>;
   bulkUpdateTasks: ReturnType<typeof vi.fn>;
   deleteTask: ReturnType<typeof vi.fn>;
@@ -94,6 +98,15 @@ vi.mock('../services/task.service.js', () => ({
           : Promise.resolve(mockTask),
       ),
     getTaskByKey: vi.fn().mockResolvedValue(mockTask),
+    // The ONE resolution every `:taskId` route now goes through. Modelled the
+    // way the real service behaves — a bare id passes through, `KEY-NUMBER` is
+    // looked up within the caller's tenant — so a route that skipped the
+    // resolver (or resolved it wrongly) would be visible here.
+    resolveTaskId: vi
+      .fn()
+      .mockImplementation((ref: string) =>
+        TASK_KEY_PATTERN.test(ref) ? Promise.resolve(TASK_ID) : Promise.resolve(ref),
+      ),
     updateTask: vi.fn().mockResolvedValue({ ...mockTask, title: 'Updated', version: 2 }),
     bulkUpdateTasks: vi.fn().mockResolvedValue({ updated: 1 }),
     deleteTask: vi.fn().mockResolvedValue(undefined),
@@ -105,11 +118,36 @@ vi.mock('../services/task.service.js', () => ({
 
 const TEST_ENV = { JWT_SECRET: 'test-secret', MONGODB_URI: '', ALLOWED_ORIGINS: '*' };
 
+interface MockCommentService {
+  getCommentsByTask: ReturnType<typeof vi.fn>;
+  createComment: ReturnType<typeof vi.fn>;
+  updateComment: ReturnType<typeof vi.fn>;
+  deleteComment: ReturnType<typeof vi.fn>;
+}
+
 /**
- * @param sink receives the service mock instance created for the request, so
- *             the forwarded context can be asserted on.
+ * The comment half of the graph. Mounted because the comment routes resolve
+ * `:taskId` through the SAME task-service resolver — the cross-route agreement
+ * the contract test asserts is only observable with both factories present.
  */
-function createTestApp(tenantRole = 'OWNER', projectRole: string | null = null, sink: { svc?: MockTaskService } = {}) {
+function createMockCommentService(): MockCommentService {
+  return {
+    getCommentsByTask: vi.fn().mockResolvedValue([]),
+    createComment: vi.fn().mockResolvedValue({ id: 'comment-1', taskId: TASK_ID }),
+    updateComment: vi.fn(),
+    deleteComment: vi.fn(),
+  };
+}
+
+/**
+ * @param sink receives the service mock instances created for the request, so
+ *             the forwarded context and the resolved task id can be asserted on.
+ */
+function createTestApp(
+  tenantRole = 'OWNER',
+  projectRole: string | null = null,
+  sink: { svc?: MockTaskService; comments?: MockCommentService } = {},
+) {
   const app = new Hono<AppEnv>();
 
   app.onError(errorHandler);
@@ -117,17 +155,23 @@ function createTestApp(tenantRole = 'OWNER', projectRole: string | null = null, 
   app.use('/api/*', async (c, next) => {
     const MockTasks = TaskService as unknown as new () => MockTaskService;
     const svc = new MockTasks();
+    const comments = createMockCommentService();
 
-    sink.svc = svc;
+    // Pinned to the FIRST request's instances: a second request through the same
+    // app must not replace them, or a test comparing two requests' service calls
+    // would only ever see the second one's.
+    sink.svc ??= svc;
+    sink.comments ??= comments;
     c.set('userId', USER_ID);
     c.set('tenantId', TENANT_ID);
     c.set('tenantRole', tenantRole as 'OWNER');
     c.set('projectRole', projectRole as never);
-    c.set('svc', { tasks: svc } as never);
+    c.set('svc', { tasks: svc, comments } as never);
     await next();
   });
 
   app.route('/api', createTaskRoutes());
+  app.route('/api', createCommentRoutes());
 
   return app;
 }
@@ -203,12 +247,88 @@ describe('caller context forwarding (M-001/M-006/M-034)', () => {
     expect(sink.svc?.getTask).toHaveBeenCalledWith(TASK_ID, expected);
   });
 
-  it('GET /tasks/KEY-NUMBER forwards the context to getTaskByKey', async () => {
+  it('GET /tasks/KEY-NUMBER resolves the reference before reading', async () => {
     const sink: { svc?: MockTaskService } = {};
 
     await request(createTestApp('OWNER', null, sink), '/api/tasks/PRO-1', 'GET');
 
-    expect(sink.svc?.getTaskByKey).toHaveBeenCalledWith(expected, 'PRO', 1);
+    // The route resolves the KEY-NUMBER through the shared resolver rather than
+    // branching on the shape itself, so the two accepted forms cannot drift.
+    expect(sink.svc?.resolveTaskId).toHaveBeenCalledWith('PRO-1', expected);
+    expect(sink.svc?.getTask).toHaveBeenCalledWith(TASK_ID, expected);
+  });
+
+  /**
+   * THE CONTRACT, asserted across all five operations at once.
+   *
+   * `PATH_PARAM_SCHEMAS.taskId` accepts a UUID OR `KEY-NUMBER`, so a client that
+   * can read `PRO-42` may reasonably expect to act on it. Four of these five
+   * operations used to hand the raw path value to `findById` and 404 on the key
+   * form, so the schema promised something the API refused.
+   *
+   * Each operation is driven twice — once with `PRO-42`, once with the UUID —
+   * and both must resolve to the SAME id. That is the property that had broken:
+   * a route added later without the shared resolver would send the literal
+   * `PRO-42` to its service, and this fails rather than reintroducing the
+   * asymmetry silently.
+   */
+  describe('both accepted `:taskId` forms address the same task', () => {
+    /** Every operation that resolves a `:taskId` — the task routes and the comments routes. */
+    const OPERATIONS = [
+      { name: 'GET /tasks/:taskId', suffix: '', method: 'GET', body: undefined },
+      { name: 'PATCH /tasks/:taskId', suffix: '', method: 'PATCH', body: { title: 'U', version: 1 } },
+      { name: 'DELETE /tasks/:taskId', suffix: '', method: 'DELETE', body: undefined },
+      { name: 'GET /tasks/:taskId/comments', suffix: '/comments', method: 'GET', body: undefined },
+      { name: 'POST /tasks/:taskId/comments', suffix: '/comments', method: 'POST', body: { body: 'Hello' } },
+    ] as const;
+
+    /**
+     * The task id each operation's SERVICE was handed, read off the service call
+     * rather than off the resolver's return value: "the route asked the resolver"
+     * is not the property under test, "the service received the same task id
+     * either way" is. A route that skipped the resolver would pass the literal
+     * `PRO-42` here, which is exactly the defect.
+     */
+    function idGivenToService(graph: { svc?: MockTaskService; comments?: MockCommentService }): unknown {
+      const candidates = [
+        ...(graph.svc?.getTask.mock.calls[0] ?? []),
+        ...(graph.svc?.updateTask.mock.calls[0] ?? []),
+        ...(graph.svc?.deleteTask.mock.calls[0] ?? []),
+        ...(graph.comments?.getCommentsByTask.mock.calls[0] ?? []),
+        ...(graph.comments?.createComment.mock.calls[0] ?? []),
+      ];
+
+      return candidates.find((argument) => typeof argument === 'string' && argument !== '');
+    }
+
+    it.each(OPERATIONS)('$name resolves PRO-42 and the UUID identically', async (operation) => {
+      const byKey: { svc?: MockTaskService; comments?: MockCommentService } = {};
+      const byId: { svc?: MockTaskService; comments?: MockCommentService } = {};
+      const keyResponse = await request(
+        createTestApp('OWNER', 'EDITOR', byKey),
+        `/api/tasks/PRO-42${operation.suffix}`,
+        operation.method,
+        operation.body,
+      );
+      const idResponse = await request(
+        createTestApp('OWNER', 'EDITOR', byId),
+        `/api/tasks/${TASK_ID}${operation.suffix}`,
+        operation.method,
+        operation.body,
+      );
+
+      // Neither form may be refused: the key form is an accepted alias, not a 404.
+      expect(keyResponse.status, 'the KEY-NUMBER form must not be refused').toBe(idResponse.status);
+      expect(keyResponse.status).toBeLessThan(400);
+
+      // Both forms are resolved through the ONE resolver…
+      expect(byKey.svc?.resolveTaskId).toHaveBeenCalledWith('PRO-42', expect.anything());
+      expect(byId.svc?.resolveTaskId).toHaveBeenCalledWith(TASK_ID, expect.anything());
+
+      // …and reach the service as the SAME task id.
+      expect(idGivenToService(byKey)).toBe(TASK_ID);
+      expect(idGivenToService(byId)).toBe(TASK_ID);
+    });
   });
 
   it('PATCH /tasks/:taskId forwards the context', async () => {

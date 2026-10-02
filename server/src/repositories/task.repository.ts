@@ -6,6 +6,7 @@ import type { Task, IdentitySnapshot, BoardPageCursor, TaskPriorityLevel, SortDi
 import { escapeRegExp } from '../utils/regex.js';
 import { toPlainText } from '../utils/markdown-plain-text.js';
 import { QUERY_MAX_TIME_MS_BOARD, QUERY_MAX_TIME_MS_LIST } from '../db/query-timeout.js';
+import { MAX_BULK_ID_LOOKUP } from '../db/read-bounds.js';
 
 // Required MongoDB indexes:
 // - { id: 1 } (unique)
@@ -700,8 +701,13 @@ export class TaskRepository extends BaseRepository<TaskDocument, Task> {
     const rows = await this.collection
       .aggregate<{ _id: string; count: number }>(
         [{ $match: { projectId } }, { $group: { _id: '$statusId', count: { $sum: 1 } } }],
-        // The group produces one key per status in the project — 25,250
-        // keys on the audit's skew project — so this is a full-range read.
+        // No `$limit`, deliberately: the group emits one row per DISTINCT status
+        // the project's tasks reference, so its cardinality is that project's
+        // status vocabulary rather than its task count. A `$limit` here would not
+        // shorten the work (the server still groups every matching task) and would
+        // turn a correct per-status count into a silently wrong one — a different
+        // failure mode from the truncated list this bound exists to prevent. The
+        // read is bounded in TIME by `maxTimeMS` instead.
         { maxTimeMS: QUERY_MAX_TIME_MS_LIST },
       )
       .toArray();
@@ -712,6 +718,15 @@ export class TaskRepository extends BaseRepository<TaskDocument, Task> {
   /**
    * Bulk update all tasks with a given status to a new status
    * (status delete/replacement — carries the replacement's denormalized name).
+   *
+   * INSIDE the optimistic-concurrency contract: `$inc: { version: 1 }` makes this
+   * fan-out invalidate every client that read the task before the reassignment,
+   * exactly as a per-task `updateWithVersion` does. A caller holding `version:
+   * 12` for a task whose status was reassigned underneath it now gets the same
+   * 409 it would get from a concurrent edit, instead of writing successfully
+   * onto state it never saw. `$inc` is applied by the server per matched
+   * document, so this stays ONE round-trip and stays atomic — there is no
+   * read-then-write window in which a version could be missed or double-bumped.
    */
   async updateManyByStatus(
     projectId: string,
@@ -721,7 +736,10 @@ export class TaskRepository extends BaseRepository<TaskDocument, Task> {
   ): Promise<void> {
     await this.collection.updateMany(
       { projectId, statusId: oldStatusId },
-      { $set: { statusId: newStatusId, statusName: newStatusName ?? null, updatedAt: new Date() } },
+      {
+        $set: { statusId: newStatusId, statusName: newStatusName ?? null, updatedAt: new Date() },
+        $inc: { version: 1 },
+      },
     );
   }
 
@@ -762,21 +780,45 @@ export class TaskRepository extends BaseRepository<TaskDocument, Task> {
 
     await this.collection.bulkWrite(ops, { ordered: false });
 
+    // The `$or` set is `entries`, so the answer is bounded by the batch the
+    // request already validated (at most `MAX_BULK_TASK_IDS` per request). The
+    // `MAX_BULK_ID_LOOKUP` ceiling is a backstop above that batch, so it cannot
+    // truncate a legitimate result — it exists so a future caller that skips the
+    // request-level bound gets a truncated read instead of an unbounded one.
     const updatedDocs = await this.collection
       .find({ $or: entries.map((entry) => ({ id: entry.id, version: entry.version + 1 })) })
+      .limit(MAX_BULK_ID_LOOKUP)
       .toArray();
 
     return updatedDocs.map(toDomain);
   }
 
-  /** Propagate a status rename to all tasks holding the status. */
+  /**
+   * Propagate a status rename to all tasks holding the status.
+   *
+   * INSIDE the optimistic-concurrency contract, for the reason given on
+   * {@link updateManyByStatus}: the fan-out bumps `version`, so a client that
+   * read the task before the rename cannot write onto it as if nothing had
+   * happened. The denormalized name is a sort key derived from the status, not
+   * user input, so this writes exactly one `$inc` and no other counter.
+   */
   async setStatusNameForTasks(projectId: string, statusId: string, statusName: string): Promise<void> {
-    await this.collection.updateMany({ projectId, statusId }, { $set: { statusName, updatedAt: new Date() } });
+    await this.collection.updateMany(
+      { projectId, statusId },
+      { $set: { statusName, updatedAt: new Date() }, $inc: { version: 1 } },
+    );
   }
 
-  /** Propagate a sprint rename to all tasks holding the sprint. */
+  /**
+   * Propagate a sprint rename to all tasks holding the sprint.
+   *
+   * INSIDE the optimistic-concurrency contract — see {@link updateManyByStatus}.
+   */
   async setSprintNameForTasks(projectId: string, sprintId: string, sprintName: string): Promise<void> {
-    await this.collection.updateMany({ projectId, sprintId }, { $set: { sprintName, updatedAt: new Date() } });
+    await this.collection.updateMany(
+      { projectId, sprintId },
+      { $set: { sprintName, updatedAt: new Date() }, $inc: { version: 1 } },
+    );
   }
 
   /**
@@ -788,31 +830,49 @@ export class TaskRepository extends BaseRepository<TaskDocument, Task> {
 
   /**
    * Bulk update all tasks with a given type to a new type.
+   *
+   * INSIDE the optimistic-concurrency contract, for the reason given on
+   * {@link updateManyByStatus}: reassigning a task's type is a mutation of the
+   * task, so the version moves and a client holding the pre-reassignment
+   * version gets a 409 rather than writing onto a type it never saw change.
    */
   async updateManyByType(projectId: string, oldTypeId: string, newTypeId: string): Promise<void> {
     await this.collection.updateMany(
       { projectId, typeId: oldTypeId },
-      { $set: { typeId: newTypeId, updatedAt: new Date() } },
+      { $set: { typeId: newTypeId, updatedAt: new Date() }, $inc: { version: 1 } },
     );
   }
 
   /**
    * Remove a label ID from all tasks in a project.
+   *
+   * INSIDE the optimistic-concurrency contract, for the reason given on
+   * {@link updateManyByStatus}: dropping a label changes the task the user sees,
+   * so the version moves. Without the `$inc` a client could keep editing a task
+   * whose label set had just been rewritten underneath it, and its stale write
+   * would succeed on top of the new label set.
    */
   async removeLabelFromAll(projectId: string, labelId: string): Promise<void> {
     await this.collection.updateMany(
       { projectId, labelIds: labelId },
-      { $pull: { labelIds: labelId }, $set: { updatedAt: new Date() } },
+      { $pull: { labelIds: labelId }, $set: { updatedAt: new Date() }, $inc: { version: 1 } },
     );
   }
 
   /**
    * Unassign sprint from all tasks with a given sprint.
+   *
+   * INSIDE the optimistic-concurrency contract, for the reason given on
+   * {@link updateManyByStatus}: clearing the sprint removes the task from every
+   * sprint-scoped view (board column, sprint report, backlog filter), so the
+   * version has to move with it — a client holding the pre-clear version would
+   * otherwise write successfully onto a task that is no longer in the sprint it
+   * last read.
    */
   async clearSprintFromTasks(projectId: string, sprintId: string): Promise<void> {
     await this.collection.updateMany(
       { projectId, sprintId },
-      { $set: { sprintId: null, sprintName: null, updatedAt: new Date() } },
+      { $set: { sprintId: null, sprintName: null, updatedAt: new Date() }, $inc: { version: 1 } },
     );
   }
 
@@ -825,8 +885,16 @@ export class TaskRepository extends BaseRepository<TaskDocument, Task> {
    * the tasks themselves are removed.
    */
   async findIdsByProject(projectId: string): Promise<string[]> {
-    // Unbounded id-only scan of the whole project (25,250 keys on the
-    // audit's skew project) feeding the cascade-delete $in.
+    // Deliberately UNBOUNDED (listed with its reason in
+    // `db/read-bounds.guardrail.test.ts`), and the reason is correctness rather
+    // than capacity: this id set drives the project cascade, which deletes
+    // comments through task ids BEFORE deleting the tasks. A `limit` here would
+    // not make the response smaller — it would make the cascade delete the first
+    // N tasks' comments and leave every remaining comment orphaned with no task
+    // to point at. The read is already reduced to ids and projections and
+    // bounded in time by `maxTimeMS`, which is the part that can be paid for.
+    // Paging a delete — rather than truncating it — is what would let a row
+    // bound exist here.
     const docs = await this.collection
       .find({ projectId }, { projection: { id: 1, _id: 0 }, maxTimeMS: QUERY_MAX_TIME_MS_LIST })
       .toArray();

@@ -77,7 +77,9 @@ describe('ProjectMemberRepository', () => {
           makeDoc({ id: 'pm-2', userId: 'user-2', role: 'EDITOR' }),
         ]);
 
-      collection.find.mockReturnValue({ toArray });
+      // The cursor carries `limit` because the read is bounded — the mock models
+      // the whole chain the repository issues.
+      collection.find.mockReturnValue({ limit: vi.fn().mockReturnValue({ toArray }) });
 
       const result = await repo.findByProject('project-1');
 
@@ -94,7 +96,7 @@ describe('ProjectMemberRepository', () => {
         .fn()
         .mockResolvedValue([makeDoc({ projectId: 'p1' }), makeDoc({ projectId: 'p2', role: 'VIEWER' })]);
 
-      collection.find.mockReturnValue({ toArray });
+      collection.find.mockReturnValue({ limit: vi.fn().mockReturnValue({ toArray }) });
 
       const result = await repo.findByUser('user-1');
 

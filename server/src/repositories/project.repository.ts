@@ -3,6 +3,7 @@ import type { ClientSession } from 'mongodb';
 import { BaseRepository } from './base.repository.js';
 import { ProjectStatus } from '@task-board/shared';
 import type { Project, CreateProject } from '@task-board/shared';
+import { MAX_PROJECTS_PER_TENANT } from '../db/read-bounds.js';
 
 // Required MongoDB indexes:
 // - { id: 1 } (unique)
@@ -59,8 +60,16 @@ export class ProjectRepository extends BaseRepository<ProjectDocument, Project> 
   // Its F11 non-unique single-key index went with it — the index-coverage
   // guardrail in `db/migrations.test.ts` enforces exactly that pairing.
 
+  /**
+   * The projects of one workspace.
+   *
+   * Capped at {@link MAX_PROJECTS_PER_TENANT}: this is the workspace's project
+   * list, and 1 000 boards is already past the point where a person can navigate
+   * them, so the bound bounds a read that could otherwise grow with the tenant's
+   * whole history (including archived and deletion-pending rows).
+   */
   async findByTenant(tenantId: string): Promise<Project[]> {
-    const docs = await this.collection.find({ tenantId }).toArray();
+    const docs = await this.collection.find({ tenantId }).limit(MAX_PROJECTS_PER_TENANT).toArray();
 
     return docs.map(toDomain);
   }

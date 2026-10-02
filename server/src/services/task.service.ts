@@ -29,6 +29,7 @@ import {
   type PaginatedResult,
   type TaskUpdatePayload,
 } from '../repositories/task.repository.js';
+import { parseTaskRef } from '../validators/task-ref.js';
 import { CounterService } from './counter.service.js';
 import { ProjectRepository } from '../repositories/project.repository.js';
 import { ProjectMemberRepository } from '../repositories/project-member.repository.js';
@@ -85,6 +86,149 @@ export interface TaskServiceLabelRepo {
 }
 
 /**
+ * The repositories {@link validateCrossProjectRefs} reads through.
+ *
+ * Declared as the minimum surface the check needs rather than as the concrete
+ * repositories, so the check is one independently testable function instead of
+ * a method only reachable through a fully wired `TaskService`.
+ */
+export interface TaskRefDeps {
+  taskTypeRepo: { findByIds(ids: string[]): Promise<{ id: string; projectId: string }[]> };
+  statusRepo: {
+    findByIds(ids: string[]): Promise<{ id: string; projectId: string; name?: string | null }[]>;
+  };
+  sprintRepo: {
+    findByIds(ids: string[]): Promise<{ id: string; projectId: string; name?: string | null }[]>;
+  };
+  labelRepo: TaskServiceLabelRepo;
+  /**
+   * The assignee seam. It resolves an identity THROUGH the project membership,
+   * never from the global users collection, so a display name can only be read
+   * for someone the caller's own project can already name.
+   */
+  projectMemberRepo: {
+    findUserIdentityByProject(
+      userId: string,
+      projectId: string,
+    ): Promise<{ userId: string; displayName: string } | null>;
+  };
+}
+
+/**
+ * The task references a write may carry. `assigneeId`/`sprintId` are nullable
+ * in the request schemas because `null` is how a client CLEARS them — a clear
+ * is not a reference and is never validated as one.
+ */
+export interface TaskCrossRefs {
+  typeId?: string | undefined;
+  statusId?: string | undefined;
+  assigneeId?: string | null | undefined;
+  sprintId?: string | null | undefined;
+  labelIds?: string[] | undefined;
+}
+
+/** What the caller writes alongside the ids, resolved by the check itself. */
+export interface ValidatedTaskRefs {
+  statusName: string | null;
+  sprintName: string | null;
+  assigneeSnapshot: IdentitySnapshot | null;
+}
+
+/**
+ * Validate that every reference a task write carries belongs to `projectId`,
+ * and resolve the values that travel with those ids.
+ *
+ * This is the single gate every task write passes through — create, single
+ * update and bulk update alike. A reference that does not resolve inside the
+ * project is a 404, never a 403 and never a 400, so an id belonging to another
+ * project or another tenant is indistinguishable from one that does not exist:
+ * the error text names the id the caller already supplied and nothing else.
+ *
+ * The denormalized `statusName`/`sprintName` and the assignee's
+ * {@link IdentitySnapshot} come from the SAME lookups that prove ownership.
+ * Resolving them any other way — a global `findById` on the status, sprint or
+ * user — returns a real name for an id that failed no check at all, which is
+ * how a cross-project write came to disclose a foreign entity's name in its
+ * response and audit trail.
+ *
+ * Each reference kind is read with ONE batched `findByIds`, and the lookups run
+ * concurrently; the assignee rides the membership row, which is both the
+ * ownership proof and the identity source, so it costs no extra query.
+ */
+export async function validateCrossProjectRefs(
+  deps: TaskRefDeps,
+  projectId: string,
+  refs: TaskCrossRefs,
+): Promise<ValidatedTaskRefs> {
+  const labelIds = refs.labelIds ?? [];
+  const [taskTypes, statuses, sprints, labels] = await Promise.all([
+    refs.typeId ? deps.taskTypeRepo.findByIds([refs.typeId]) : Promise.resolve([]),
+    refs.statusId ? deps.statusRepo.findByIds([refs.statusId]) : Promise.resolve([]),
+    refs.sprintId ? deps.sprintRepo.findByIds([refs.sprintId]) : Promise.resolve([]),
+    // Labels are validated by reading the PROJECT's labels rather than the
+    // submitted ids: a label that is not in this set is by definition not this
+    // project's, and the check needs no second round-trip to learn that.
+    labelIds.length > 0 ? deps.labelRepo.findByProject(projectId) : Promise.resolve([]),
+  ]);
+
+  if (refs.typeId) {
+    const taskType = taskTypes.find((t) => t.id === refs.typeId);
+
+    if (!taskType || taskType.projectId !== projectId) {
+      throw new NotFoundError(`Task type ${refs.typeId} not found in project ${projectId}`);
+    }
+  }
+
+  if (refs.statusId) {
+    const status = statuses.find((s) => s.id === refs.statusId);
+
+    if (!status || status.projectId !== projectId) {
+      throw new NotFoundError(`Status ${refs.statusId} not found in project ${projectId}`);
+    }
+  }
+
+  if (refs.sprintId) {
+    const sprint = sprints.find((s) => s.id === refs.sprintId);
+
+    if (!sprint || sprint.projectId !== projectId) {
+      throw new NotFoundError(`Sprint ${refs.sprintId} not found in project ${projectId}`);
+    }
+  }
+
+  // The assignee is proved AND named by one membership lookup. A user outside
+  // this project has no membership row, so this 404 also covers a user who
+  // exists in another tenant — the caller cannot tell the two apart, and no
+  // name of theirs was ever read.
+  let assigneeSnapshot: IdentitySnapshot | null = null;
+
+  if (refs.assigneeId) {
+    const member = await deps.projectMemberRepo.findUserIdentityByProject(refs.assigneeId, projectId);
+
+    if (!member) {
+      throw new NotFoundError(`User ${refs.assigneeId} is not a member of project ${projectId}`);
+    }
+
+    assigneeSnapshot = { displayName: member.displayName };
+  }
+
+  // Every label id must resolve to a label OF THIS PROJECT.
+  if (labelIds.length > 0) {
+    const own = new Set(labels.map((label) => label.id));
+    const foreign = labelIds.find((id) => !own.has(id));
+
+    if (foreign !== undefined) {
+      throw new NotFoundError(`Label ${foreign} not found in project ${projectId}`);
+    }
+  }
+
+  return {
+    statusName: refs.statusId ? (statuses.find((s) => s.id === refs.statusId)?.name ?? null) : null,
+    sprintName: refs.sprintId ? (sprints.find((s) => s.id === refs.sprintId)?.name ?? null) : null,
+    assigneeSnapshot,
+  };
+}
+
+/**
  * The minimum membership surface `getMyTasks` needs to decide what the
  * caller may read. Declared here (rather than importing `TenantMemberRepository`)
  * so the service states the property it needs, not the collection behind it —
@@ -122,6 +266,50 @@ function requireTaskReadCaller(caller: TaskReadCaller): string {
   }
 
   return caller.userId;
+}
+
+/**
+ * How many board column queries one board page request may have in flight.
+ *
+ * A board can hold up to `MAX_IDS_PER_DOCUMENT` (500) columns, and an initial
+ * load — no `cursor.<columnId>` params — fetches EVERY one of them. Issued as an
+ * unbounded `Promise.all`, one HTTP request therefore asks the driver for up to
+ * ~500 concurrent connections while the pool holds `maxPoolSize: 5`. The pool
+ * QUEUES rather than fails, so nothing breaks — but every queued checkout sits
+ * behind the slowest of the first five, and a board request becomes a head-of-
+ * line blocker for every OTHER request sharing the Worker's pool.
+ *
+ * 5 matches `maxPoolSize` exactly: the board keeps the pool fully busy (the
+ * queries are keyset-bounded and cheap, so throughput is what matters) while
+ * never asking for a connection the pool cannot hand out. A smaller width would
+ * idle the pool; a larger one would only deepen the queue.
+ */
+export const BOARD_COLUMN_CONCURRENCY = 5;
+
+/**
+ * `items.map(fn)` with at most `width` calls in flight, results in input order.
+ *
+ * Deliberately NOT `$facet`: the board's per-column cursors are independent
+ * keyset queries, and folding them into one aggregation would collapse that
+ * paging model. The bound is applied here, above the unchanged queries.
+ */
+async function mapWithConcurrency<T, R>(items: readonly T[], width: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const index = next++;
+      // `next` only advances while a slot is free, so every index is claimed
+      // exactly once and no index is left unfilled.
+      const item = items[index] as T;
+
+      results[index] = await fn(item);
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.min(width, items.length) }, worker));
+
+  return results;
 }
 
 export interface BoardPagesOptions {
@@ -247,8 +435,11 @@ export class TaskService {
 
   /**
    * Board column pages: one HTTP request serves every requested column, each
-   * column running its own keyset query in parallel (`Promise.all` — no
-   * `$facet`, no `skip`, no `countDocuments` on this path).
+   * column running its own keyset query — in parallel, but through a bounded
+   * worker pool (see {@link BOARD_COLUMN_CONCURRENCY}) rather than an unbounded
+   * `Promise.all`. No `$facet`, no `skip`, no `countDocuments` on this path: the
+   * per-column keyset paging the board depends on is unchanged, only the number
+   * of queries in flight at once is capped.
    *
    * Columns resolve server-side from the project's `BoardConfig` — callers
    * pass opaque cursors by column id and can never inject arbitrary
@@ -291,35 +482,33 @@ export class TaskService {
       }
     }
 
-    const entries = await Promise.all(
-      wanted.map(async (column) => {
-        const exclusiveStatusIds = column.statusIds.filter((statusId) => ownerByStatusId.get(statusId) === column);
-        const result = await this.taskRepo.findBoardPage(projectId, {
-          statusIds: exclusiveStatusIds,
-          cursor: cursors[column.id] ?? null,
-          sprintId,
-          assigneeId,
-          priorityLevel,
-        });
-        const page: BoardColumnPage = {
-          tasks: result.tasks.map((task) => ({
-            id: task.id,
-            number: task.number,
-            title: task.title,
-            typeId: task.typeId,
-            statusId: task.statusId,
-            priorityLevel: task.priorityLevel,
-            assigneeId: task.assigneeId,
-            assigneeSnapshot: task.assigneeSnapshot,
-            version: task.version,
-          })),
-          hasMore: result.hasMore,
-          nextCursor: result.hasMore && result.nextCursor ? encodeBoardCursor(result.nextCursor) : null,
-        };
+    const entries = await mapWithConcurrency(wanted, BOARD_COLUMN_CONCURRENCY, async (column) => {
+      const exclusiveStatusIds = column.statusIds.filter((statusId) => ownerByStatusId.get(statusId) === column);
+      const result = await this.taskRepo.findBoardPage(projectId, {
+        statusIds: exclusiveStatusIds,
+        cursor: cursors[column.id] ?? null,
+        sprintId,
+        assigneeId,
+        priorityLevel,
+      });
+      const page: BoardColumnPage = {
+        tasks: result.tasks.map((task) => ({
+          id: task.id,
+          number: task.number,
+          title: task.title,
+          typeId: task.typeId,
+          statusId: task.statusId,
+          priorityLevel: task.priorityLevel,
+          assigneeId: task.assigneeId,
+          assigneeSnapshot: task.assigneeSnapshot,
+          version: task.version,
+        })),
+        hasMore: result.hasMore,
+        nextCursor: result.hasMore && result.nextCursor ? encodeBoardCursor(result.nextCursor) : null,
+      };
 
-        return [column.id, page] as const;
-      }),
-    );
+      return [column.id, page] as const;
+    });
 
     return Object.fromEntries(entries);
   }
@@ -401,10 +590,42 @@ export class TaskService {
   }
 
   /**
-   * Tenant-scoped KEY-NUMBER lookup. The project key is only unique
-   * within a tenant, so the project MUST be resolved through
-   * `findByTenantAndKey` — a global key lookup let callers read tasks of
-   * another tenant that happened to use the same project key.
+   * The ONE resolution of a `:taskId` path value, whichever of the two accepted
+   * forms it takes.
+   *
+   * `PATH_PARAM_SCHEMAS.taskId` accepts a bare UUID OR `KEY-NUMBER`, so every
+   * route holding a `:taskId` MUST honour both — otherwise the schema promises a
+   * form the route silently 404s. That was the state of the API: only
+   * `GET /tasks/:taskId` branched on the key, while PATCH, DELETE and the two
+   * comment routes passed the same string to `findById`. Resolving here, once,
+   * is what keeps the accepted form and the honoured form from drifting again.
+   *
+   * Resolution is tenant-scoped, not merely "does this key exist": the project
+   * key is only unique WITHIN a tenant, so the project is resolved through
+   * `findByTenantAndKey` — a global key lookup would let a caller act on a task
+   * of another tenant that happened to use the same project key. A key that does
+   * not resolve inside the caller's tenant is a 404, identical to a key that
+   * does not exist, so this is not an existence oracle.
+   *
+   * A bare UUID is returned unchanged: it is resolved (and tenant-asserted) by
+   * the operation that acts on it, which must do so anyway.
+   */
+  async resolveTaskId(ref: string, context: CallerContext): Promise<string> {
+    const parsed = parseTaskRef(ref);
+
+    if (parsed.kind === 'uuid') {
+      return parsed.taskId;
+    }
+
+    const task = await this.getTaskByKey(context, parsed.projectKey, parsed.number);
+
+    return task.id;
+  }
+
+  /**
+   * Tenant-scoped KEY-NUMBER lookup behind {@link resolveTaskId}. The project
+   * key is only unique within a tenant, so the project MUST be resolved through
+   * `findByTenantAndKey`.
    */
   async getTaskByKey(context: CallerContext, projectKey: string, number: number): Promise<Task> {
     const { tenantId } = requireCallerContext(context);
@@ -443,9 +664,10 @@ export class TaskService {
       throw new AppError(400, 'PROJECT_ARCHIVED', 'Cannot create tasks in an archived project');
     }
 
-    // Validate cross-project references — returns the denormalized sort names
-    // resolved from the SAME batched lookups (no extra findById).
-    const { statusName, sprintName } = await this.validateCrossProjectRefs(projectId, {
+    // Every reference is validated together, BEFORE anything is written, and
+    // the denormalized names + the assignee snapshot come back from that same
+    // check — no second, unscoped lookup to name a foreign entity.
+    const { statusName, sprintName, assigneeSnapshot } = await validateCrossProjectRefs(this.refDeps, projectId, {
       typeId: input.typeId,
       statusId: input.statusId,
       assigneeId: input.assigneeId,
@@ -456,12 +678,6 @@ export class TaskService {
     // retry below, so a retried insert does not re-read them).
     const createdBySnapshot = await this.captureIdentitySnapshot(userId);
     const reporterSnapshot = createdBySnapshot; // reporter is the creator at creation time
-    let assigneeSnapshot: IdentitySnapshot | undefined;
-
-    if (input.assigneeId) {
-      assigneeSnapshot = await this.captureIdentitySnapshot(input.assigneeId);
-    }
-
     // Allocate the number and insert, retrying ONLY a lost numbering race.
     const task = await this.createWithAllocatedNumber({
       projectId,
@@ -475,7 +691,7 @@ export class TaskService {
       reporterId: userId,
       reporterSnapshot,
       assigneeId: input.assigneeId,
-      assigneeSnapshot,
+      ...(assigneeSnapshot ? { assigneeSnapshot } : {}),
       sprintId: input.sprintId,
       labelIds: input.labelIds,
       createdById: userId,
@@ -570,6 +786,20 @@ export class TaskService {
       );
     }
 
+    // ONE validation of every reference the caller supplied, before a single
+    // field is written. It used to cover `labelIds` only: `statusId`, `typeId`,
+    // `sprintId` and `assigneeId` were written unchecked and their denormalized
+    // names were read from unscoped `findById`s, so a PATCH could attach another
+    // tenant's status, sprint or user to a task and return that entity's name in
+    // the response and the audit trail. A foreign reference is now a 404 —
+    // indistinguishable from a nonexistent one, matching the project-scope asserts.
+    const { statusName, sprintName, assigneeSnapshot } = await validateCrossProjectRefs(this.refDeps, task.projectId, {
+      typeId: input.typeId,
+      statusId: input.statusId,
+      assigneeId: input.assigneeId,
+      sprintId: input.sprintId,
+      labelIds: input.labelIds,
+    });
     // Build update payload for changed fields only
     const update: Record<string, unknown> = {};
 
@@ -578,31 +808,23 @@ export class TaskService {
     if (input.statusId !== undefined) {
       update.statusId = input.statusId;
       // Keep the denormalized sort name in sync with the status change
-      update.statusName = (await this.statusRepo.findById(input.statusId))?.name ?? null;
+      update.statusName = statusName;
     }
     if (input.priorityLevel !== undefined) update.priorityLevel = input.priorityLevel;
     if (input.typeId !== undefined) update.typeId = input.typeId;
     if (input.sprintId !== undefined) {
       update.sprintId = input.sprintId;
       // Keep the denormalized sort name in sync with the sprint change
-      update.sprintName = input.sprintId ? ((await this.sprintRepo.findById(input.sprintId))?.name ?? null) : null;
+      update.sprintName = sprintName;
     }
-    if (input.labelIds !== undefined) {
-      // The update path persisted `labelIds` unvalidated, so the project
-      // check that `createTask` performs was bypassable by PATCHing a task
-      // instead of POSTing one. Both writes now go through the same assert.
-      await this.validateCrossProjectRefs(task.projectId, { labelIds: input.labelIds });
-      update.labelIds = input.labelIds;
-    }
+    if (input.labelIds !== undefined) update.labelIds = input.labelIds;
 
-    // Handle assignee change with snapshot
+    // `assigneeId: null` is UNASSIGN, not a reference — the schema uses null to
+    // clear the field, so it clears the snapshot with it instead of being sent
+    // through the ownership check as if it named someone.
     if (input.assigneeId !== undefined) {
       update.assigneeId = input.assigneeId;
-      if (input.assigneeId) {
-        update.assigneeSnapshot = await this.captureIdentitySnapshot(input.assigneeId);
-      } else {
-        update.assigneeSnapshot = null;
-      }
+      update.assigneeSnapshot = assigneeSnapshot;
     }
 
     const updated = await this.taskRepo.updateWithVersion(
@@ -708,22 +930,34 @@ export class TaskService {
     // same action as the single-task update.
     await this.assertTaskPermission('edit_task', projectId, context);
 
+    // The bulk path had the same hole as the single update and reached the same
+    // unscoped `findById`s, so it goes through the SAME check rather than a
+    // second copy of it. One validation rejects the WHOLE request: a bulk patch
+    // applies one payload to many tasks, so a reference that is not this
+    // project's is refused before any task is touched rather than being skipped
+    // per id, which would leave the caller believing a subset had been updated.
+    const { statusName, sprintName, assigneeSnapshot } = await validateCrossProjectRefs(this.refDeps, projectId, {
+      statusId: data.statusId,
+      sprintId: data.sprintId,
+      assigneeId: data.assigneeId,
+    });
     // Build the shared update payload once (single-field contract is enforced by Zod)
     const update: TaskUpdatePayload = {};
 
     if (data.statusId !== undefined) {
       update.statusId = data.statusId;
       // Keep the denormalized sort name in sync with the status change
-      update.statusName = (await this.statusRepo.findById(data.statusId))?.name ?? null;
+      update.statusName = statusName;
     }
     if (data.sprintId !== undefined) {
       update.sprintId = data.sprintId;
       // Keep the denormalized sort name in sync with the sprint change
-      update.sprintName = data.sprintId ? ((await this.sprintRepo.findById(data.sprintId))?.name ?? null) : null;
+      update.sprintName = sprintName;
     }
     if (data.assigneeId !== undefined) {
       update.assigneeId = data.assigneeId;
-      update.assigneeSnapshot = data.assigneeId ? await this.captureIdentitySnapshot(data.assigneeId) : null;
+      // `null` clears the assignment, so it clears the snapshot too.
+      update.assigneeSnapshot = assigneeSnapshot;
     }
 
     // Resolve all requested tasks in one query; missing/wrong-project ids → failed
@@ -813,7 +1047,29 @@ export class TaskService {
   // ─── Helpers ──────────────────────────────────────────────────────────────
 
   /**
-   * Capture an identity snapshot for a user.
+   * The repositories {@link validateCrossProjectRefs} reads through.
+   *
+   * Assembled per call from the injected graph so the check always reads the
+   * same repositories the service owns — the function has no state of its own
+   * and cannot drift onto a different seam than the one wired here.
+   */
+  private get refDeps(): TaskRefDeps {
+    return {
+      taskTypeRepo: this.taskTypeRepo,
+      statusRepo: this.statusRepo,
+      sprintRepo: this.sprintRepo,
+      labelRepo: this.labelRepo,
+      projectMemberRepo: this.projectMemberRepo,
+    };
+  }
+
+  /**
+   * Capture an identity snapshot for the CALLER.
+   *
+   * Only ever applied to the acting user, whose id came from the verified
+   * token. An assignee's identity is not read here: it is resolved through
+   * their project membership by {@link validateCrossProjectRefs}, so a
+   * caller can never use this to name a user outside their own project.
    */
   private async captureIdentitySnapshot(userId: string): Promise<IdentitySnapshot> {
     const user = await this.userRepo.findById(userId);
@@ -821,87 +1077,5 @@ export class TaskService {
     return {
       displayName: user?.displayName ?? user?.name ?? user?.email ?? 'Unknown User',
     };
-  }
-
-  /**
-   * Validate that all referenced entities belong to the same project.
-   *
-   * Each reference kind is resolved with ONE batched `findByIds` query
-   * and the three lookups run concurrently — the previous implementation
-   * awaited a sequential `findById` per ref (up to 4 round-trips per
-   * create/update). `projectId` ownership is validated in code afterwards.
-   */
-  private async validateCrossProjectRefs(
-    projectId: string,
-    refs: {
-      typeId?: string | undefined;
-      statusId?: string | undefined;
-      assigneeId?: string | undefined;
-      sprintId?: string | undefined;
-      labelIds?: string[] | undefined;
-    },
-  ): Promise<{ statusName: string | null; sprintName: string | null }> {
-    const labelIds = refs.labelIds ?? [];
-    const [taskTypes, statuses, sprints, labels] = await Promise.all([
-      refs.typeId ? this.taskTypeRepo.findByIds([refs.typeId]) : Promise.resolve([]),
-      refs.statusId ? this.statusRepo.findByIds([refs.statusId]) : Promise.resolve([]),
-      refs.sprintId ? this.sprintRepo.findByIds([refs.sprintId]) : Promise.resolve([]),
-      // Labels were the one reference `labelIds` accepted WITHOUT a
-      // project check, so a task could carry a label id from another project —
-      // and from another tenant, since nothing ever compared the two. Read the
-      // PROJECT's labels (not the ids) so the check needs no second round-trip.
-      labelIds.length > 0 ? this.labelRepo.findByProject(projectId) : Promise.resolve([]),
-    ]);
-
-    if (refs.typeId) {
-      const taskType = taskTypes.find((t) => t.id === refs.typeId);
-
-      if (!taskType || taskType.projectId !== projectId) {
-        throw new NotFoundError(`Task type ${refs.typeId} not found in project ${projectId}`);
-      }
-    }
-
-    if (refs.statusId) {
-      const status = statuses.find((s) => s.id === refs.statusId);
-
-      if (!status || status.projectId !== projectId) {
-        throw new NotFoundError(`Status ${refs.statusId} not found in project ${projectId}`);
-      }
-    }
-
-    if (refs.sprintId) {
-      const sprint = sprints.find((s) => s.id === refs.sprintId);
-
-      if (!sprint || sprint.projectId !== projectId) {
-        throw new NotFoundError(`Sprint ${refs.sprintId} not found in project ${projectId}`);
-      }
-    }
-
-    // The denormalized sort names come from the SAME batched lookups —
-    // no additional round-trips.
-    const statusName = refs.statusId ? (statuses.find((s) => s.id === refs.statusId)?.name ?? null) : null;
-    const sprintName = refs.sprintId ? (sprints.find((s) => s.id === refs.sprintId)?.name ?? null) : null;
-
-    if (refs.assigneeId) {
-      const member = await this.projectMemberRepo.findByUserAndProject(refs.assigneeId, projectId);
-
-      if (!member) {
-        throw new NotFoundError(`User ${refs.assigneeId} is not a member of project ${projectId}`);
-      }
-    }
-
-    // Every label id must resolve to a label OF THIS PROJECT. 404 (not
-    // 400/403) so a foreign label id is indistinguishable from a nonexistent one
-    // — the same indistinguishability rule the project-scope asserts follow.
-    if (labelIds.length > 0) {
-      const own = new Set(labels.map((label) => label.id));
-      const foreign = labelIds.find((id) => !own.has(id));
-
-      if (foreign !== undefined) {
-        throw new NotFoundError(`Label ${foreign} not found in project ${projectId}`);
-      }
-    }
-
-    return { statusName, sprintName };
   }
 }

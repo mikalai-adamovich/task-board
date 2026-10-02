@@ -256,3 +256,67 @@ jobs:
       - name: Run Playwright e2e suite
         run: npm run e2e
         working-directory: ui
+
+  rate-limit-integration:
+    name: rate-limit-integration
+    runs-on: ubuntu-latest
+    # Its own job, not a step in an existing one: the suite needs a live MongoDB, and
+    # folding that dependency into `build-and-test` (which needs no database) or into
+    # `e2e` (which already has one) would make an unrelated gate's result depend on a
+    # service it does not use, and would let a database outage masquerade as a lint or
+    # a browser failure. 10 minutes: the TTL-monitor case waits for a background sweep
+    # that runs about once a minute, so a healthy run is tens of seconds, not 4.
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    # The same `mongo:7` pin and the same mongosh-ping health check the `e2e` job uses,
+    # so one version change covers both database-backed gates and the counter pipeline is
+    # asserted against a server the rest of CI already treats as the baseline. The node
+    # needs no replicaSet — a single-document pipeline, an upsert and a TTL index all
+    # work standalone, and the suite issues no multi-document transaction.
+    services:
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ ping: 1 }).ok'" --health-interval 10s --health-timeout
+          5s --health-retries 10 --health-start-period 20s
+    env:
+      # A database name of its own so this job can never read or drop the e2e suite's
+      # data, even though both would run against a service on the same port. No
+      # credentials: the service is unauthenticated and reachable only from this
+      # ephemeral runner. The suite addresses its own scratch database inside this URI
+      # and drops it in `afterAll`, so nothing here outlives the job.
+      RATE_LIMIT_COUNTER_TEST_URI: mongodb://127.0.0.1:27017/taskboard_counter_ci
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Not required by the suite — it reaches `@task-board/shared` only through a
+      # type-only import, so it runs without a build — but built anyway so that turning
+      # one of those into a value import cannot fail this job for a reason unrelated to
+      # the counter pipeline, and so the step order matches the other two jobs.
+      - name: Build shared package
+        run: npm run build --workspace=shared
+
+      # No migration and no index step: the suite creates the TTL index it asserts
+      # against in `beforeAll`, in the same shape the migration builds it, so running
+      # `server/scripts/migrate.ts` first would add setup the suite does not read.
+      #
+      # Deliberately carrying no soft-failure marker and no shell escape that swallows
+      # a non-zero exit: the whole point of this job is that the ceiling's atomicity and
+      # post-image semantics are checked against a real server, and a suite that
+      # silently skipped would report green for the one failure mode it exists to catch.
+      # The step inherits the non-zero exit from vitest, so a red assertion fails the job.
+      - name: Run rate-limit counter integration suite
+        run: npm run test:integration

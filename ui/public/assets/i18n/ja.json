@@ -753,6 +753,9 @@
   "comments": {
     "title": "コメント",
     "loadError": "コメントの読み込みに失敗しました。",
+    "loadOlder": "以前のコメントを読み込む",
+    "loadingOlder": "読み込み中",
+    "loadOlderError": "以前のコメントを読み込めませんでした。",
     "noComments": "コメントはまだありません。話を始めてください。",
     "submit": "コメント",
     "submitting": "投稿中",

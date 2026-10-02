@@ -698,10 +698,43 @@ describe('the audit retention window (C-8)', () => {
   it('is a single-field index, because a TTL index must be', () => {
     // A compound TTL index is silently ignored by some server versions, which
     // would leave the log unbounded while every comment claimed otherwise.
-    const ttl = CORE_INDEXES.find((entry) => entry.options?.expireAfterSeconds !== undefined);
+    // Scoped to `audit_events` by COLLECTION, not by position: the rate-limit
+    // counters carry a TTL index too, so a predicate that took "the first entry
+    // with `expireAfterSeconds`" would silently start asserting about whichever
+    // of the two happened to be declared first.
+    const ttl = CORE_INDEXES.find(
+      (entry) => entry.collection === 'audit_events' && entry.options?.expireAfterSeconds !== undefined,
+    );
 
     expect(ttl).toBeDefined();
     expect(Object.keys(ttl?.spec ?? {})).toEqual(['createdAt']);
+  });
+
+  it('the rate-limit counter TTL index is single-field on expiresAt and sweeps on the date itself', () => {
+    // The counters are swept for the same reason the audit log is, and by the
+    // same rule: a compound key here would be ignored by the server and the
+    // collection would grow one document per distinct address forever. The
+    // audit index measures a fixed retention window from `createdAt`; these
+    // documents carry their own `expiresAt` (window end + grace), so the
+    // index must carry `expireAfterSeconds: 0` — expire exactly AT the field's
+    // value, not `value + N seconds`.
+    const ttl = CORE_INDEXES.find(
+      (entry) => entry.collection === 'rate_limit_counters' && entry.options?.expireAfterSeconds !== undefined,
+    );
+
+    expect(ttl).toBeDefined();
+    expect(Object.keys(ttl?.spec ?? {})).toEqual(['expiresAt']);
+    expect(ttl?.options?.expireAfterSeconds).toBe(0);
+  });
+
+  it('every TTL index in CORE_INDEXES is a single-field date index', () => {
+    // The property, not the two rows above: whatever TTL index is added next,
+    // the sweep has to be one the server will honour.
+    const compound = CORE_INDEXES.filter(
+      (entry) => entry.options?.expireAfterSeconds !== undefined && Object.keys(entry.spec).length !== 1,
+    );
+
+    expect(compound.map((entry) => `${entry.collection} ${JSON.stringify(entry.spec)}`)).toEqual([]);
   });
 
   it('the purge selection query is indexed on both entity collections', () => {
@@ -1321,12 +1354,18 @@ interface ContractRow {
 }
 
 const F11_QUERY_CONTRACT: ContractRow[] = [
+  // The thread read walks the window NEWEST-FIRST, so the sort is descending
+  // while the index below is ascending — a B-tree is traversed in reverse for
+  // the opposite direction, and `supportingIndex` accepts exactly that
+  // (uniformly negated sort directions) rather than demanding a second index
+  // that differs from the ascending one only in its flags.
   {
     repository: 'comment.repository.ts',
     collection: 'comments',
-    queryFields: ['{ taskId }', '.sort({ createdAt: 1 })'],
+    queryFields: ['{ taskId }', '.sort({ createdAt: -1, _id: -1 })'],
     equality: ['taskId'],
     sort: 'createdAt',
+    sortDirection: -1,
   },
   {
     repository: 'sprint.repository.ts',
@@ -1493,6 +1532,38 @@ describe('index coverage guardrail (F11)', () => {
     expect(unsupported).toEqual([]);
   });
 
+  it('2b: the reverse-traversal match is the ONLY reason the comment page needs no new index', () => {
+    // The comment thread is queried `{ createdAt: -1, _id: -1 }` over the
+    // equality field `taskId`, and the index in the tree is ascending. A B-tree
+    // answers the opposite direction by being traversed backwards, so the index
+    // serves the window as it stands; what must not happen is the matcher
+    // accepting ANY index with the right field NAMES, which would let a
+    // collection that has no usable index at all pass this row.
+    const descending: ContractRow = {
+      repository: 'comment.repository.ts',
+      collection: 'comments',
+      queryFields: ['{ taskId }'],
+      equality: ['taskId'],
+      sort: 'createdAt',
+      sortDirection: -1,
+    };
+
+    expect(supportingIndex(descending)).toBe(indexId('comments', { taskId: 1, createdAt: 1 }));
+    // Same fields, no sort term: a bare `{ taskId }` is a filter index only.
+    expect(
+      supportingIndex({
+        repository: 'comment.repository.ts',
+        collection: 'comments',
+        queryFields: [],
+        equality: ['taskId'],
+      }),
+    ).toBe(indexId('comments', { taskId: 1 }));
+    // A sort the index does not carry at all is still unsupported.
+    expect(
+      supportingIndex({ ...descending, collection: 'sprints', sort: 'position', sortDirection: -1 }),
+    ).toBeUndefined();
+  });
+
   it('3: every F11 index is explained — a declared query it serves, or a uniqueness constraint', () => {
     // The third direction, and the one that was missing: the two directions
     // above both walk CONTRACT → index. Nothing walked index → contract, so an
@@ -1533,7 +1604,18 @@ function supportingIndex(entry: ContractRow): string | undefined {
 
     if (!prefixMatches) return false;
     if (!sort) return keys.length >= equality.length;
-    return keys[equality.length]?.[0] === sort && keys[equality.length]?.[1] === (sortDirection ?? 1);
+    if (keys[equality.length]?.[0] !== sort) return false;
+
+    // The sort term may be served either by a matching-direction index or by a
+    // reverse traversal of an opposite-direction one: a B-tree is ordered, so
+    // the same index answers `{ field: -1 }` by being walked backwards. Only a
+    // UNIFORMLY negated direction qualifies — an index is not re-orderable
+    // field by field, so `{ taskId: 1, createdAt: 1, number: -1 }` does not
+    // serve `{ createdAt: -1, number: 1 }`.
+    const indexDirection = keys[equality.length]?.[1];
+    const wanted = sortDirection ?? 1;
+
+    return indexDirection === wanted || indexDirection === -wanted;
   });
   // Several indexes can start with the equality fields (`{projectId, typeId}` and
   // `{projectId, typeId, number}` both serve `countDocuments({projectId, typeId})`).

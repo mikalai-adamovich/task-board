@@ -80,7 +80,10 @@ describe('StatusRepository', () => {
           makeDoc({ id: 's1', name: 'TODO', position: 0 }),
           makeDoc({ id: 's2', name: 'DONE', normalizedName: 'done', position: 1 }),
         ]);
-      const sort = vi.fn().mockReturnValue({ toArray });
+      // The cursor carries `limit` because the read is bounded — the mock has to
+      // model the whole chain the repository issues, not just `sort`/`toArray`.
+      const limit = vi.fn().mockReturnValue({ toArray });
+      const sort = vi.fn().mockReturnValue({ limit });
 
       collection.find.mockReturnValue({ sort });
 

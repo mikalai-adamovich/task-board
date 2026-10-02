@@ -2,6 +2,23 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AuthService, buildRateLimitHeaders } from './auth.service.js';
 import { UserRepository } from '../repositories/user.repository.js';
 import { AppError } from '../errors/app-error.js';
+import { RateLimitAuthorityService } from './rate-limit-authority.service.js';
+import { createInMemoryCounterStore } from '../testing/rate-limit-counter-store.js';
+
+/**
+ * The real authority service over a COUNTING in-memory counter store.
+ *
+ * Every rate-limit assertion below (trip on the 11th attempt, `RateLimit-Limit`
+ * = 10 / 30 / 20, the back-off in `Retry-After`) is produced by the production
+ * tier stack — advisory map, authoritative store — driving a real window. A stub
+ * returning fixed answers would make all of them assertions about the stub.
+ *
+ * The store-outage behaviour lives in `rate-limit-fail-closed.test.ts`, which
+ * drives it with credentials that would otherwise SUCCEED.
+ */
+function rateLimitAuthority(): RateLimitAuthorityService {
+  return new RateLimitAuthorityService(createInMemoryCounterStore() as never);
+}
 
 // ─── Mock Factories ──────────────────────────────────────────────────────────
 
@@ -115,10 +132,9 @@ describe('AuthService', () => {
       userRepo as never,
       tenantRepo as never,
       memberRepo as never,
+      rateLimitAuthority(),
       TEST_SECRET,
       null,
-      undefined,
-      'durable',
     );
   });
 
@@ -133,10 +149,10 @@ describe('AuthService', () => {
         userRepo as never,
         tenantRepo as never,
         memberRepo as never,
+        rateLimitAuthority(),
         TEST_SECRET,
         mailer as never,
         'https://app.example.com',
-        'durable',
       );
     });
 
@@ -504,10 +520,9 @@ describe('AuthService', () => {
           realRepo,
           tenantRepo as never,
           memberRepo as never,
+          rateLimitAuthority(),
           TEST_SECRET,
           null,
-          undefined,
-          'durable',
         );
 
         await expect(wired.login({ email: 'user@example.com', password: 'securepass123' })).rejects.toMatchObject({
@@ -545,10 +560,9 @@ describe('AuthService', () => {
           realRepo,
           tenantRepo as never,
           activeMemberRepo as never,
+          rateLimitAuthority(),
           TEST_SECRET,
           null,
-          undefined,
-          'durable',
         );
         const result = await wired.login({ email: 'user@example.com', password: 'securepass123' });
 
@@ -807,10 +821,9 @@ describe('rate-limit response headers (W-42)', () => {
       userRepo as never,
       tenantRepo as never,
       memberRepo as never,
+      rateLimitAuthority(),
       TEST_SECRET,
       null,
-      undefined,
-      'durable',
     );
     // No such user → the limiter is the only thing under test; the call fails
     // fast on the credential check instead of paying for a bcrypt compare.
@@ -905,7 +918,12 @@ describe('rate-limit response headers (W-42)', () => {
 
 describe('buildRateLimitHeaders', () => {
   it('emits the RFC 9110 / RFC 6585 header set', () => {
-    const headers = buildRateLimitHeaders(10, { limited: true, remaining: 0, retryAfterSeconds: 42 });
+    const headers = buildRateLimitHeaders(10, {
+      limited: true,
+      outcome: 'limited',
+      remaining: 0,
+      retryAfterSeconds: 42,
+    });
 
     expect(headers).toEqual({
       'Retry-After': '42',
@@ -916,7 +934,12 @@ describe('buildRateLimitHeaders', () => {
   });
 
   it('stringifies the values (headers must be strings)', () => {
-    const headers = buildRateLimitHeaders(5, { limited: true, remaining: 0, retryAfterSeconds: 1 });
+    const headers = buildRateLimitHeaders(5, {
+      limited: true,
+      outcome: 'limited',
+      remaining: 0,
+      retryAfterSeconds: 1,
+    });
 
     for (const value of Object.values(headers)) {
       expect(typeof value).toBe('string');
@@ -954,10 +977,9 @@ describe('login rate limiting — per-account and per-source (F10 / M-007)', () 
       userRepo as never,
       tenantRepo as never,
       memberRepo as never,
+      rateLimitAuthority(),
       TEST_SECRET,
       null,
-      undefined,
-      'durable',
     );
     // No such user → the limiter is the only thing under test; the call fails on
     // the credential check instead of paying for a bcrypt compare.
@@ -1113,3 +1135,18 @@ describe('login rate limiting — per-account and per-source (F10 / M-007)', () 
     }
   });
 });
+
+/**
+ * `at_capacity` cannot reach this path any more, and the test that used to prove
+ * it is gone with it.
+ *
+ * That outcome meant "the in-process map refused to track a NEW key", and it was
+ * reachable only on the tier the authority used to fall back to. That tier is
+ * gone: a counter-store fault now refuses the probe, and the advisory check in
+ * front of the store reads (`peek`) without ever tracking a key. So the probe
+ * reports `limited` or `allowed` and nothing else — the branch `requestPasswordReset`
+ * used to guard is unreachable, and a test that could only reach it by failing
+ * the store was testing a state the system no longer has.
+ *
+ * `rate-limit-fail-closed.test.ts` covers what the store fault does instead.
+ */

@@ -4,13 +4,14 @@ import type { CommentServiceTaskRepo, CommentServiceProjectMemberRepo } from './
 import type { CommentRepository } from '../repositories/comment.repository.js';
 import type { AuditService } from './audit.service.js';
 import type { Comment } from '@task-board/shared';
+import { COMMENT_PAGE_SIZE, decodeCommentCursor } from '@task-board/shared';
 
 // ─── Mock Factories ──────────────────────────────────────────────────────────
 
 function createMockCommentRepo() {
   return {
     findById: vi.fn(),
-    findByTask: vi.fn(),
+    findPageByTask: vi.fn(),
     create: vi.fn(),
     update: vi.fn(),
     delete: vi.fn().mockResolvedValue(true),
@@ -82,18 +83,62 @@ describe('CommentService (DEC-020 ownership/moderation)', () => {
   });
 
   describe('getCommentsByTask (M-02)', () => {
-    it('returns comments for a task within the caller tenant', async () => {
-      commentRepo.findByTask = vi.fn().mockResolvedValue([makeComment()]);
+    const CURSOR_KEY = { createdAtMs: Date.parse('2025-01-01T00:00:00.000Z'), objectId: 'a'.repeat(24) };
 
-      const result = await service.getCommentsByTask('task-1', ctx);
+    it('returns one page for a task within the caller tenant', async () => {
+      commentRepo.findPageByTask = vi.fn().mockResolvedValue({
+        comments: [makeComment()],
+        hasMore: true,
+        nextCursor: CURSOR_KEY,
+      });
 
-      expect(result).toHaveLength(1);
+      const result = await service.getCommentsByTask('task-1', { limit: COMMENT_PAGE_SIZE }, ctx);
+
+      expect(result.comments).toHaveLength(1);
+      expect(result.hasMore).toBe(true);
+      expect(result.limit).toBe(COMMENT_PAGE_SIZE);
+    });
+
+    it('forwards the validated page window to the repository unchanged', async () => {
+      commentRepo.findPageByTask = vi.fn().mockResolvedValue({ comments: [], hasMore: false, nextCursor: null });
+
+      await service.getCommentsByTask('task-1', { limit: 5, cursor: CURSOR_KEY }, ctx);
+
+      expect(commentRepo.findPageByTask).toHaveBeenCalledWith('task-1', { limit: 5, cursor: CURSOR_KEY });
+    });
+
+    it('hands back an OPAQUE cursor that decodes to the page boundary key', async () => {
+      commentRepo.findPageByTask = vi.fn().mockResolvedValue({
+        comments: [makeComment()],
+        hasMore: true,
+        nextCursor: CURSOR_KEY,
+      });
+
+      const { nextCursor } = await service.getCommentsByTask('task-1', { limit: 30 }, ctx);
+
+      // Not the raw query object: the `_id` is a storage handle, so the wire
+      // form is a serialized key the caller passes back verbatim.
+      expect(nextCursor).not.toBe(CURSOR_KEY);
+      expect(decodeCommentCursor(nextCursor)).toEqual(CURSOR_KEY);
+    });
+
+    it('never advertises a cursor on a page that has no more comments', async () => {
+      // `hasMore` is derived from the probe row, so a page that says "no more"
+      // has nothing to resume from — handing back a cursor anyway would invite
+      // a client to keep paging a thread that is already exhausted.
+      commentRepo.findPageByTask = vi
+        .fn()
+        .mockResolvedValue({ comments: [makeComment()], hasMore: false, nextCursor: CURSOR_KEY });
+
+      const { nextCursor } = await service.getCommentsByTask('task-1', { limit: 30 }, ctx);
+
+      expect(nextCursor).toBeNull();
     });
 
     it('throws NOT_FOUND when the task does not exist', async () => {
       taskRepo.findById = vi.fn().mockResolvedValue(null);
 
-      await expect(service.getCommentsByTask('missing', ctx)).rejects.toMatchObject({
+      await expect(service.getCommentsByTask('missing', { limit: 30 }, ctx)).rejects.toMatchObject({
         statusCode: 404,
         code: 'NOT_FOUND',
       });
@@ -102,19 +147,19 @@ describe('CommentService (DEC-020 ownership/moderation)', () => {
     it('throws NOT_FOUND (not 403) when the task belongs to another tenant (M-02)', async () => {
       projectRepo.findById = vi.fn().mockResolvedValue({ id: 'project-1', tenantId: 'tenant-OTHER' });
 
-      await expect(service.getCommentsByTask('task-1', ctx)).rejects.toMatchObject({
+      await expect(service.getCommentsByTask('task-1', { limit: 30 }, ctx)).rejects.toMatchObject({
         statusCode: 404,
         code: 'NOT_FOUND',
       });
-      expect(commentRepo.findByTask).not.toHaveBeenCalled();
+      expect(commentRepo.findPageByTask).not.toHaveBeenCalled();
     });
 
     it('throws 401 when the caller context is missing (fail closed)', async () => {
-      await expect(service.getCommentsByTask('task-1', undefined as never)).rejects.toMatchObject({
+      await expect(service.getCommentsByTask('task-1', { limit: 30 }, undefined as never)).rejects.toMatchObject({
         statusCode: 401,
         code: 'UNAUTHORIZED',
       });
-      expect(commentRepo.findByTask).not.toHaveBeenCalled();
+      expect(commentRepo.findPageByTask).not.toHaveBeenCalled();
     });
   });
 

@@ -43,6 +43,18 @@ export interface AuditEventDocument {
   actor: AuditActor;
   changes: AuditChange[];
   createdAt: Date;
+  /**
+   * Correlation ids of the request that caused the event.
+   *
+   * `requestId` is server-generated (never a header value) and is what joins an
+   * audit row to the log line for the same operation; `upstreamRequestId` is the
+   * caller's own id, recorded for traceability only. Both are absent on a row
+   * written outside a request — the scheduled purge — which is why they are
+   * nullable rather than required, and why the index below is on `requestId`
+   * alone: the upstream value is not a key anything looks up by.
+   */
+  requestId?: string | null;
+  upstreamRequestId?: string | null;
 }
 
 function toDomain(doc: AuditEventDocument): AuditEvent {
@@ -56,7 +68,31 @@ function toDomain(doc: AuditEventDocument): AuditEvent {
     actor: doc.actor,
     changes: doc.changes,
     createdAt: doc.createdAt.toISOString(),
+    requestId: doc.requestId ?? null,
+    upstreamRequestId: doc.upstreamRequestId ?? null,
   };
+}
+
+/** The correlation fields every audit write carries. */
+export interface AuditCorrelation {
+  requestId?: string | null;
+  upstreamRequestId?: string | null;
+}
+
+/** One event handed to {@link AuditEventRepository.create}. */
+export interface AuditEventInput extends AuditCorrelation {
+  tenantId: string;
+  projectId: string | null;
+  entityType: string;
+  entityId: string;
+  action: string;
+  actor: AuditActor;
+  changes: AuditChange[];
+}
+
+/** One event handed to {@link AuditEventRepository.createMany}. */
+export interface AuditEventBatchInput extends AuditEventInput {
+  createdAt?: Date;
 }
 
 /**
@@ -95,15 +131,7 @@ export interface PaginatedResult<T> {
 export class AuditEventRepository {
   constructor(private readonly collection: Collection<AuditEventDocument>) {}
 
-  async create(input: {
-    tenantId: string;
-    projectId: string | null;
-    entityType: string;
-    entityId: string;
-    action: string;
-    actor: AuditActor;
-    changes: AuditChange[];
-  }): Promise<AuditEvent> {
+  async create(input: AuditEventInput): Promise<AuditEvent> {
     const doc: AuditEventDocument = {
       id: randomUUID(),
       ...input,
@@ -127,18 +155,7 @@ export class AuditEventRepository {
    * ({@link AuditService.logMany} hands each event its own, strictly increasing
    * value) therefore cannot make two events collide on the sort key.
    */
-  async createMany(
-    inputs: {
-      tenantId: string;
-      projectId: string | null;
-      entityType: string;
-      entityId: string;
-      action: string;
-      actor: AuditActor;
-      changes: AuditChange[];
-      createdAt?: Date;
-    }[],
-  ): Promise<void> {
+  async createMany(inputs: AuditEventBatchInput[]): Promise<void> {
     if (inputs.length === 0) return;
 
     const docs: AuditEventDocument[] = inputs.map((input) => ({

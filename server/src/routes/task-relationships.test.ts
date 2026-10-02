@@ -73,6 +73,11 @@ vi.mock('../services/task-relationship.service.js', () => ({
 
 const TEST_ENV = { JWT_SECRET: 'test-secret', MONGODB_URI: '', ALLOWED_ORIGINS: '*' };
 
+/** Models `TaskService.resolveTaskId` — a bare id passes through unchanged. */
+function createMockTaskResolver() {
+  return { resolveTaskId: vi.fn().mockImplementation((ref: string) => Promise.resolve(ref)) };
+}
+
 function createTestApp(
   tenantRole = 'OWNER',
   projectRole: string | null = null,
@@ -91,7 +96,9 @@ function createTestApp(
     c.set('tenantId', TENANT_ID);
     c.set('tenantRole', tenantRole as 'OWNER');
     c.set('projectRole', projectRole as never);
-    c.set('svc', { relationships: svc } as never);
+    // The `:taskId` is resolved through the shared task-service resolver before
+    // the relationship service sees it, so the graph carries both.
+    c.set('svc', { relationships: svc, tasks: createMockTaskResolver() } as never);
     await next();
   });
 

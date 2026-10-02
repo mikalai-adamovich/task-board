@@ -13,12 +13,18 @@ import { HlmAvatarImports } from '@spartan-ng/helm/avatar';
 import { HlmDialogImports } from '@spartan-ng/helm/dialog';
 import { finalize, of } from 'rxjs';
 import { rxResource } from '@angular/core/rxjs-interop';
-import type { Comment } from '@task-board/shared';
+import { COMMENT_PAGE_SIZE } from '@task-board/shared';
+import type { Comment, CommentPage } from '@task-board/shared';
 import { injectToasts } from '@app/shared/utils/toast-utils';
 import { initials } from '@app/shared/utils/error-utils';
 import { HlmAlertImports } from '@spartan-ng/helm/alert';
 import { ConfirmDialog } from '@app/shared/confirm-dialog/confirm-dialog';
 import { MilkdownEditor } from '@app/shared/milkdown-editor/milkdown-editor';
+
+/** The first page of a thread nobody has written on yet. */
+function emptyPage(): CommentPage {
+  return { comments: [], hasMore: false, nextCursor: null, limit: COMMENT_PAGE_SIZE };
+}
 
 @Component({
   selector: 'ui-comment-thread',
@@ -52,15 +58,27 @@ export class CommentThread {
   protected readonly currentUserInitials = computed(() => initials(this.authStore.currentUser()?.displayName ?? null));
   // No request until the task id is meaningful (a blank id would hit
   // `/tasks//comments` and poison the resource with the SPA-fallback HTML).
+  // The resource owns the WHOLE loaded thread: the newest page plus every older
+  // page the reader has asked for, together with the resume cursor for the one
+  // below. A task switch re-runs the request and resets it to the empty page, so
+  // "load older" can never page into the thread that was open a moment ago.
   private readonly commentsResource = rxResource({
     params: () => ({ taskId: this.taskId() }),
-    stream: ({ params }) => (params.taskId ? this.commentClient.list(params.taskId) : of([] as Comment[])),
-    defaultValue: [],
+    stream: ({ params }) => (params.taskId ? this.commentClient.list(params.taskId) : of(emptyPage())),
+    defaultValue: emptyPage(),
   });
-  protected readonly comments = computed(() => (this.commentsResource.hasValue() ? this.commentsResource.value() : []));
+  private readonly page = computed<CommentPage>(() =>
+    this.commentsResource.hasValue() ? this.commentsResource.value() : emptyPage(),
+  );
+  /** The loaded comments, oldest first — the order the thread reads in on screen. */
+  protected readonly comments = computed(() => this.page().comments);
+  /** Whether the server says older comments exist beyond what is loaded. */
+  protected readonly hasMore = computed(() => this.page().hasMore);
+  private readonly loadingOlder = signal(false);
+  private readonly olderError = signal('');
   private readonly loadError = computed(() => (this.commentsResource.error() ? 'comments.loadError' : ''));
   private readonly actionError = signal('');
-  protected readonly error = computed(() => this.actionError() || this.loadError());
+  protected readonly error = computed(() => this.actionError() || this.olderError() || this.loadError());
   // New comment form
   private readonly newBody = signal('');
   private readonly submitting = signal(false);
@@ -74,6 +92,46 @@ export class CommentThread {
   private readonly showDeleteConfirm = signal(false);
   private readonly commentToDelete = signal<Comment | null>(null);
 
+  /**
+   * Load the next (older) page and place it ABOVE the comments already shown.
+   *
+   * Each page arrives oldest-first, so prepending is what keeps the thread in
+   * one continuous chronological order: the newest comment stays at the bottom
+   * where it was, and older ones extend upwards. The page size is the shared
+   * `COMMENT_PAGE_SIZE`, so one click is one server page — the client never
+   * asks for "all comments".
+   */
+  protected loadOlder(): void {
+    const cursor = this.page().nextCursor;
+
+    // A page with no cursor is the end of the thread: there is nothing older to
+    // ask for, and a second in-flight request would only duplicate one.
+    if (!cursor || this.loadingOlder()) return;
+
+    this.loadingOlder.set(true);
+    this.olderError.set('');
+    this.commentClient
+      .list(this.taskId(), { limit: COMMENT_PAGE_SIZE, cursor })
+      .pipe(finalize(() => this.loadingOlder.set(false)))
+      .subscribe({
+        next: (older) => {
+          if (this.commentsResource.hasValue()) {
+            this.commentsResource.value.update((current) => ({
+              ...current,
+              comments: [...older.comments, ...current.comments],
+              hasMore: older.hasMore,
+              nextCursor: older.nextCursor,
+            }));
+          } else {
+            this.commentsResource.reload();
+          }
+        },
+        error: () => {
+          this.olderError.set('comments.loadOlderError');
+        },
+      });
+  }
+
   protected submitComment(): void {
     const body = this.newBody().trim();
 
@@ -86,7 +144,7 @@ export class CommentThread {
       .subscribe({
         next: (comment) => {
           if (this.commentsResource.hasValue()) {
-            this.commentsResource.value.update((list) => [...list, comment]);
+            this.commentsResource.value.update((page) => ({ ...page, comments: [...page.comments, comment] }));
           } else {
             this.commentsResource.reload();
           }
@@ -133,7 +191,10 @@ export class CommentThread {
       .subscribe({
         next: (updated) => {
           if (this.commentsResource.hasValue()) {
-            this.commentsResource.value.update((list) => list.map((c) => (c.id === commentId ? updated : c)));
+            this.commentsResource.value.update((page) => ({
+              ...page,
+              comments: page.comments.map((c) => (c.id === commentId ? updated : c)),
+            }));
           } else {
             this.commentsResource.reload();
           }
@@ -166,7 +227,10 @@ export class CommentThread {
     this.commentClient.delete(comment.id).subscribe({
       next: () => {
         if (this.commentsResource.hasValue()) {
-          this.commentsResource.value.update((list) => list.filter((c) => c.id !== comment.id));
+          this.commentsResource.value.update((page) => ({
+            ...page,
+            comments: page.comments.filter((c) => c.id !== comment.id),
+          }));
         } else {
           this.commentsResource.reload();
         }

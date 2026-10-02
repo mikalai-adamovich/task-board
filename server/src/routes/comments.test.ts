@@ -14,6 +14,7 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import { Hono } from 'hono';
+import { COMMENT_PAGE_SIZE, encodeCommentCursor } from '@task-board/shared';
 import { createCommentRoutes } from './comments.js';
 import { CommentService } from '../services/comment.service.js';
 import { errorHandler } from '../middleware/error-handler.js';
@@ -47,6 +48,13 @@ const mockComment = {
   createdAt: '2025-01-01T00:00:00.000Z',
   updatedAt: '2025-01-01T00:00:00.000Z',
 };
+/** One page of the thread, as `CommentService` now returns it. */
+const mockCommentPage = {
+  comments: [mockComment],
+  hasMore: true,
+  nextCursor: encodeCommentCursor({ createdAtMs: Date.parse(mockComment.createdAt), objectId: 'b'.repeat(24) }),
+  limit: COMMENT_PAGE_SIZE,
+};
 
 interface MockCommentService {
   getCommentsByTask: ReturnType<typeof vi.fn>;
@@ -57,7 +65,7 @@ interface MockCommentService {
 
 vi.mock('../services/comment.service.js', () => ({
   CommentService: vi.fn().mockImplementation(() => ({
-    getCommentsByTask: vi.fn().mockResolvedValue([mockComment]),
+    getCommentsByTask: vi.fn().mockResolvedValue(mockCommentPage),
     createComment: vi.fn().mockResolvedValue(mockComment),
     updateComment: vi
       .fn()
@@ -92,13 +100,30 @@ function createTestApp(
     c.set('tenantId', TENANT_ID);
     c.set('tenantRole', tenantRole as 'OWNER');
     c.set('projectRole', projectRole as never);
-    c.set('svc', { comments: svc } as never);
+    // The task routes resolve `:taskId` through the shared task-service
+    // resolver before the comment service sees it, so the graph carries both.
+    c.set('svc', { comments: svc, tasks: createMockTaskResolver() } as never);
     await next();
   });
 
   app.route('/api', createCommentRoutes());
 
   return app;
+}
+
+/**
+ * Models `TaskService.resolveTaskId`: a bare id passes through, `KEY-NUMBER`
+ * resolves to the task. A comment route that skipped the resolver would hand the
+ * comment service the literal `PRO-1`, which the assertions below would catch.
+ */
+function createMockTaskResolver() {
+  return {
+    resolveTaskId: vi
+      .fn()
+      .mockImplementation((ref: string) =>
+        /^[A-Z][A-Z0-9]*-[0-9]{1,10}$/.test(ref) ? Promise.resolve(TASK_ID) : Promise.resolve(ref),
+      ),
+  };
 }
 
 async function request(app: Hono<AppEnv>, path: string, method: string, body?: unknown) {
@@ -117,12 +142,18 @@ async function request(app: Hono<AppEnv>, path: string, method: string, body?: u
 describe('caller context forwarding (M-001/M-006/M-034)', () => {
   const expected = { tenantId: TENANT_ID, userId: USER_ID, userRole: 'OWNER' };
 
-  it('GET /tasks/:taskId/comments forwards tenantId + userId + role', async () => {
+  it('GET /tasks/:taskId/comments forwards tenantId + userId + role with the page window', async () => {
     const sink: { svc?: MockCommentService } = {};
 
     await request(createTestApp('OWNER', null, sink), `/api/tasks/${TASK_ID}/comments`, 'GET');
 
-    expect(sink.svc?.getCommentsByTask).toHaveBeenCalledWith(TASK_ID, expected);
+    // The page window travels with the context: the service is handed what the
+    // query validated, and never reads a bound from the URL itself.
+    expect(sink.svc?.getCommentsByTask).toHaveBeenCalledWith(
+      TASK_ID,
+      { limit: COMMENT_PAGE_SIZE, cursor: undefined },
+      expected,
+    );
   });
 
   it('POST /tasks/:taskId/comments forwards the context as ONE argument (no optional trailing userRole)', async () => {
@@ -182,14 +213,93 @@ describe('caller context forwarding (M-001/M-006/M-034)', () => {
 describe('comment routes', () => {
   const app = createTestApp();
 
-  it('GET /tasks/:taskId/comments returns 200 with the { data } envelope', async () => {
+  it('GET /tasks/:taskId/comments returns 200 with the { data, pagination } envelope', async () => {
     const res = await request(app, `/api/tasks/${TASK_ID}/comments`, 'GET');
 
     expect(res.status).toBe(200);
 
-    const body = (await res.json()) as { data: { id: string }[] };
+    const body = (await res.json()) as {
+      data: { id: string }[];
+      pagination: { limit: number; hasMore: boolean; nextCursor: string | null };
+    };
 
     expect(body.data[0]?.id).toBe(COMMENT_ID);
+    expect(body.pagination).toEqual({
+      limit: COMMENT_PAGE_SIZE,
+      hasMore: true,
+      nextCursor: mockCommentPage.nextCursor,
+    });
+  });
+
+  it('GET /tasks/:taskId/comments decodes the cursor before the service sees it', async () => {
+    const sink: { svc?: MockCommentService } = {};
+    const cursor = encodeCommentCursor({ createdAtMs: 1_781_234_567_890, objectId: 'c'.repeat(24) });
+
+    await request(createTestApp('OWNER', null, sink), `/api/tasks/${TASK_ID}/comments?cursor=${cursor}`, 'GET');
+
+    expect(sink.svc?.getCommentsByTask).toHaveBeenCalledWith(
+      TASK_ID,
+      { limit: COMMENT_PAGE_SIZE, cursor: { createdAtMs: 1_781_234_567_890, objectId: 'c'.repeat(24) } },
+      { tenantId: TENANT_ID, userId: USER_ID, userRole: 'OWNER' },
+    );
+  });
+
+  it('GET /tasks/:taskId/comments returns 400 VALIDATION_ERROR for a malformed cursor', async () => {
+    // A tampered query parameter is a client error, not a server fault: the
+    // standard envelope, never a 500 from a decode that threw.
+    const res = await request(app, `/api/tasks/${TASK_ID}/comments?cursor=not-a-cursor%21%21`, 'GET');
+
+    expect(res.status).toBe(400);
+
+    const body = (await res.json()) as { error: { code: string; message: string } };
+
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+    expect(body.error.message).toContain('cursor');
+  });
+
+  it('GET /tasks/:taskId/comments returns 400 when the page size is above the maximum', async () => {
+    // Rejected rather than silently capped, for the same reason the task list
+    // rejects `limit > 200`: a capped response disagrees with the request, and
+    // the client cannot tell it from a genuinely short page.
+    const res = await request(app, `/api/tasks/${TASK_ID}/comments?limit=${COMMENT_PAGE_SIZE + 1}`, 'GET');
+
+    expect(res.status).toBe(400);
+
+    const body = (await res.json()) as { error: { code: string; details?: { path?: string }[] } };
+
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+    expect(JSON.stringify(body.error.details)).toContain(String(COMMENT_PAGE_SIZE));
+  });
+
+  it('GET /tasks/:taskId/comments accepts the maximum page size and a smaller one', async () => {
+    // One app per request: the graph is built per request, so the sink of the
+    // second request is a different service instance than the first one's.
+    const atMax: { svc?: MockCommentService } = {};
+    const belowMax: { svc?: MockCommentService } = {};
+
+    await request(
+      createTestApp('OWNER', null, atMax),
+      `/api/tasks/${TASK_ID}/comments?limit=${COMMENT_PAGE_SIZE}`,
+      'GET',
+    );
+    await request(createTestApp('OWNER', null, belowMax), `/api/tasks/${TASK_ID}/comments?limit=5`, 'GET');
+
+    expect(atMax.svc?.getCommentsByTask).toHaveBeenCalledWith(
+      TASK_ID,
+      { limit: COMMENT_PAGE_SIZE, cursor: undefined },
+      expect.anything(),
+    );
+    expect(belowMax.svc?.getCommentsByTask).toHaveBeenCalledWith(
+      TASK_ID,
+      { limit: 5, cursor: undefined },
+      expect.anything(),
+    );
+  });
+
+  it('GET /tasks/:taskId/comments returns 400 for a non-numeric or zero page size', async () => {
+    expect((await request(app, `/api/tasks/${TASK_ID}/comments?limit=abc`, 'GET')).status).toBe(400);
+    expect((await request(app, `/api/tasks/${TASK_ID}/comments?limit=0`, 'GET')).status).toBe(400);
+    expect((await request(app, `/api/tasks/${TASK_ID}/comments?limit=-1`, 'GET')).status).toBe(400);
   });
 
   it('POST /tasks/:taskId/comments returns 201', async () => {

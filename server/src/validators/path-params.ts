@@ -1,5 +1,6 @@
 import * as z from 'zod';
 import { uuid } from './uuid.js';
+import { TASK_KEY_NUMBER_PATTERN } from './task-ref.js';
 
 /**
  * Path parameter schemas.
@@ -33,14 +34,22 @@ import { uuid } from './uuid.js';
  *             schema accepts the union of "lowercase hex" and "UUID" plus a
  *             conservative charset/length envelope that still rejects
  *             `$ne`-style payloads and over-long strings.
- * - `taskId` — a TASK is addressable by id OR by `KEY-NUMBER` (e.g. `PRO-1`);
- *             see the KEY-NUMBER branch of `GET /tasks/:taskId`. The union
- *             schema keeps that documented behaviour working.
+ * - `taskId` — a TASK is addressable by id OR by `KEY-NUMBER` (e.g. `PRO-1`).
+ *             Every route that accepts a `:taskId` resolves BOTH forms through
+ *             `TaskService.resolveTaskId`, so the union below is honoured
+ *             wherever it is accepted (see `validators/task-ref.ts`).
  */
 
-/** `KEY-NUMBER` task reference, e.g. `PRO-1` (the `GET /tasks/:taskId` alias). */
+/**
+ * `KEY-NUMBER` task reference, e.g. `PRO-1`.
+ *
+ * The pattern is imported, not restated: `task-ref.ts` holds the ONE definition
+ * of this shape, and `TaskService.resolveTaskId` resolves with it. A second copy
+ * of the regex here is exactly how the schema came to accept a form four routes
+ * did not honour.
+ */
 const taskKeyNumber = () =>
-  z.string().regex(/^[A-Z][A-Z0-9]*-[0-9]{1,10}$/, 'Task key must look like KEY-NUMBER (e.g. PRO-1)');
+  z.string().regex(TASK_KEY_NUMBER_PATTERN, 'Task key must look like KEY-NUMBER (e.g. PRO-1)');
 /**
  * Opaque invitation/reset token: bounded length and a conservative charset.
  *

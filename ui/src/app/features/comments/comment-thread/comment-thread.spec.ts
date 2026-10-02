@@ -2,7 +2,8 @@
  * Tests for the CommentThread component.
  *
  * Covers:
- * - Loading comments on init
+ * - Loading the NEWEST page of comments on init (one request, no cursor)
+ * - Loading older pages with the server cursor, prepended above what is loaded
  * - Submitting a new comment
  * - Inline edit flow
  * - Delete with confirmation
@@ -20,7 +21,8 @@ import { CommentThread } from './comment-thread';
 import { CommentClient } from '@services/comment-client';
 import { AuthStore } from '@stores/auth-store';
 import { API_BASE_URL } from '@app/api-url.token';
-import type { Comment } from '@task-board/shared';
+import { COMMENT_PAGE_SIZE } from '@task-board/shared';
+import type { Comment, CommentPage } from '@task-board/shared';
 
 const NOW = '2025-01-01T00:00:00Z';
 const mockComments: Comment[] = [
@@ -44,6 +46,11 @@ const mockComments: Comment[] = [
   },
 ];
 
+/** One page as the server returns it, with the cursor fields a client echoes back. */
+function makePage(comments: Comment[], overrides: Partial<CommentPage> = {}): CommentPage {
+  return { comments, hasMore: false, nextCursor: null, limit: COMMENT_PAGE_SIZE, ...overrides };
+}
+
 describe('CommentThread', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let component: any;
@@ -54,11 +61,13 @@ describe('CommentThread', () => {
     delete: ReturnType<typeof vi.fn>;
   };
 
-  async function setup(opts: { comments?: Comment[]; canEdit?: boolean; taskId?: string } = {}) {
-    const { comments = mockComments, canEdit = false, taskId = 'tk1' } = opts;
+  async function setup(
+    opts: { comments?: Comment[]; page?: Partial<CommentPage>; canEdit?: boolean; taskId?: string } = {},
+  ) {
+    const { comments = mockComments, page, canEdit = false, taskId = 'tk1' } = opts;
 
     commentClientMock = {
-      list: vi.fn().mockReturnValue(of(comments)),
+      list: vi.fn().mockReturnValue(of(makePage(comments, page))),
       create: vi.fn().mockReturnValue(
         of({
           id: 'c3',
@@ -182,6 +191,73 @@ describe('CommentThread', () => {
     component.newBody.set('   ');
     component.submitComment();
     expect(commentClientMock.create).not.toHaveBeenCalled();
+  });
+
+  // ── Pagination ────────────────────────────────────────────────
+  // The mocked client resolves synchronously, so an action is observable right
+  // after the call — no timer and no `detectChanges()` in the way.
+  const olderPage: Comment[] = mockComments.map((c, i) => ({ ...c, id: `c-old-${i}`, body: `Older ${i}` }));
+
+  it('should fetch only the newest page on init — no cursor, one request', async () => {
+    await setup({ page: { hasMore: true, nextCursor: 'cursor-1' } });
+
+    expect(commentClientMock.list).toHaveBeenCalledTimes(1);
+    // No cursor on the first request: the newest page is the whole first read.
+    expect(commentClientMock.list).toHaveBeenCalledWith('tk1');
+    expect(component.comments().map((c: Comment) => c.id)).toEqual(['c1', 'c2']);
+  });
+
+  it('should report hasMore while the server says older comments exist', async () => {
+    await setup({ page: { hasMore: true, nextCursor: 'cursor-1' } });
+
+    expect(component.hasMore()).toBe(true);
+  });
+
+  it('should report no more comments when the first page is the whole thread', async () => {
+    await setup();
+
+    expect(component.hasMore()).toBe(false);
+  });
+
+  it('should request the next page with the server cursor and PREPEND it above the loaded comments', async () => {
+    await setup({ page: { hasMore: true, nextCursor: 'cursor-1' } });
+    commentClientMock.list.mockReturnValue(of(makePage(olderPage, { hasMore: false, nextCursor: null })));
+
+    component.loadOlder();
+
+    expect(commentClientMock.list).toHaveBeenLastCalledWith('tk1', { limit: COMMENT_PAGE_SIZE, cursor: 'cursor-1' });
+    // The thread still reads oldest-first: the older page extends upwards and
+    // the newest comment stays at the bottom where it always was.
+    expect(component.comments().map((c: Comment) => c.id)).toEqual(['c-old-0', 'c-old-1', 'c1', 'c2']);
+    expect(component.hasMore()).toBe(false);
+  });
+
+  it('should stop asking once the thread is exhausted', async () => {
+    await setup({ page: { hasMore: true, nextCursor: 'cursor-1' } });
+    commentClientMock.list.mockReturnValue(of(makePage(olderPage, { hasMore: false, nextCursor: null })));
+
+    component.loadOlder();
+    component.loadOlder();
+
+    expect(commentClientMock.list).toHaveBeenCalledTimes(2);
+  });
+
+  it('should not request anything when the first page already holds the whole thread', async () => {
+    await setup();
+
+    component.loadOlder();
+
+    expect(commentClientMock.list).toHaveBeenCalledTimes(1);
+  });
+
+  it('should surface a failed older-page load and keep the loaded comments', async () => {
+    await setup({ page: { hasMore: true, nextCursor: 'cursor-1' } });
+    commentClientMock.list.mockReturnValue(throwError(() => new Error('fail')));
+
+    component.loadOlder();
+
+    expect(component.error()).toBe('comments.loadOlderError');
+    expect(component.comments()).toHaveLength(2);
   });
 
   // ── Edit ────────────────────────────────────────────────────────

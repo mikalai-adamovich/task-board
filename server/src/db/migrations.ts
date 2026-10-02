@@ -399,10 +399,16 @@ export const CORE_INDEXES: IndexDefinition[] = [
   { collection: 'tasks', spec: { projectId: 1, typeId: 1 } },
   // comments
   { collection: 'comments', spec: { taskId: 1 } },
-  // `findByTask` filters {taskId} and sorts
-  // {createdAt: 1}. Sorting by a field that is not in ANY index forces a
+  // The thread read filters {taskId} and sorts
+  // {createdAt: -1, _id: -1} (the keyset window `findPageByTask` walks
+  // newest-first). Sorting by a field that is not in ANY index forces a
   // blocking SORT over the whole matching set — measured SORT>FETCH>IXSCAN.
-  // Compound {taskId, createdAt} removes the SORT stage entirely.
+  // Compound {taskId, createdAt} removes the SORT stage entirely, and the
+  // DESCENDING window needs no second index: an index is an ordered structure,
+  // so the planner traverses this one backwards. The `_id` term of the sort is
+  // the index's implicit record-id tiebreaker, which is why it is not a key
+  // here — the same reason the audit list's `{createdAt, _id}` sort is served by
+  // an index ending at `createdAt`.
   { collection: 'comments', spec: { taskId: 1, createdAt: 1 } },
   // `comments` was the only entity collection with no
   // `{id: 1}` index at all, so `findOneAndUpdate({id})` (comment edit) and
@@ -505,6 +511,27 @@ export const CORE_INDEXES: IndexDefinition[] = [
   // the compound sort indexes above, because a TTL index must be a single field
   // to be honoured.
   { collection: 'audit_events', spec: { createdAt: 1 }, options: { expireAfterSeconds: AUDIT_RETENTION_SECONDS } },
+  // rate_limit_counters — the retention of the rate-limit AUTHORITY
+  // (`services/rate-limit-authority.service.ts`). Every probe sets `expiresAt` to
+  // the end of its own window plus a grace period, and this index is what turns
+  // that date into an actual deletion: without it the collection grows one
+  // document per distinct address and per distinct email forever, and a spray of
+  // identities is exactly the traffic that produces the most of them.
+  //
+  // This index is therefore the ONLY thing bounding the collection, and what it
+  // bounds is TIME, not count: a document lives one window plus the grace after
+  // its last write, so the live set is the scopes probed inside the current
+  // window and the rest is swept by the database. There is deliberately no
+  // document-count cap and no eviction — a shared ceiling across all scopes is a
+  // quantity an attacker can fill with cheap minted scopes and then starve
+  // legitimate ones behind, and the sized worst case is computed in
+  // `docs/architecture.md` §2.7 instead.
+  //
+  // Single-field for the same reason as the audit index above: a TTL index must
+  // be a single field or the server silently ignores it and the collection is
+  // never swept. The sweep is a background task of the database, so it costs no
+  // Worker request either.
+  { collection: 'rate_limit_counters', spec: { expiresAt: 1 }, options: { expireAfterSeconds: 0 } },
   // filters
   { collection: 'filters', spec: { userId: 1, projectId: 1 } },
   // `findByUserProjectAndName` pre-checks then inserts, and

@@ -10,6 +10,7 @@
     "test": "vitest run",
     "test:verbose": "vitest run --reporter=verbose",
     "test:watch": "vitest",
+    "test:integration": "vitest run src/repositories/rate-limit-counter.repository.integration.test.ts",
     "clean": "rm -rf dist"
   },
   "dependencies": {

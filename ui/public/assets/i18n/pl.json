@@ -753,6 +753,9 @@
   "comments": {
     "title": "Komentarze",
     "loadError": "Nie udało się załadować komentarzy.",
+    "loadOlder": "Wczytaj starsze komentarze",
+    "loadingOlder": "Wczytywanie",
+    "loadOlderError": "Nie udało się wczytać starszych komentarzy.",
     "noComments": "Brak komentarzy. Rozpocznij dyskusję.",
     "submit": "Skomentuj",
     "submitting": "Publikowanie",

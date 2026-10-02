@@ -23,11 +23,13 @@ export function createTaskRelationshipRoutes(): Hono<AppEnv> {
   router.use('*', pathParamValidation());
 
   /**
-   * The task is addressed by a bare id, so the service resolves it and
-   * tenant-asserts its owning project before reading any relationship.
+   * The `:taskId` is resolved through the ONE shared resolver first: the
+   * parameter schema accepts a UUID and `KEY-NUMBER`, so a route that only
+   * understood the UUID form 404'd on a form the API declared legal. The
+   * service then tenant-asserts the resolved task's owning project.
    */
   router.get('/tasks/:taskId/relationships', async (c) => {
-    const taskId = param(c, 'taskId');
+    const taskId = await c.get('svc').tasks.resolveTaskId(param(c, 'taskId'), callerContext(c));
     const relationships = await c.get('svc').relationships.getRelationshipsByTask(taskId, callerContext(c));
 
     return c.json({ data: relationships });
@@ -39,7 +41,7 @@ export function createTaskRelationshipRoutes(): Hono<AppEnv> {
    * projectId.
    */
   router.post('/tasks/:taskId/relationships', validateBody(CreateTaskRelationshipSchema), async (c) => {
-    const taskId = param(c, 'taskId');
+    const taskId = await c.get('svc').tasks.resolveTaskId(param(c, 'taskId'), callerContext(c));
     const body = c.req.valid('json');
     const relationship = await c.get('svc').relationships.createRelationship(taskId, body, callerContext(c));
 

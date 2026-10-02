@@ -144,14 +144,6 @@ describe('RbacService', () => {
       expect(service.can('MEMBER', 'EDITOR', 'delete_task')).toBe(false);
     });
 
-    it('allows VIEWER to view_task', () => {
-      expect(service.can('MEMBER', 'VIEWER', 'view_task')).toBe(true);
-    });
-
-    it('allows EDITOR to view_task', () => {
-      expect(service.can('MEMBER', 'EDITOR', 'view_task')).toBe(true);
-    });
-
     it('allows PROJECT_ADMIN to manage_project_members', () => {
       expect(service.can('MEMBER', 'PROJECT_ADMIN', 'manage_project_members')).toBe(true);
     });
@@ -196,35 +188,12 @@ describe('RbacService', () => {
       expect(service.can('MEMBER', 'VIEWER', 'create_comment')).toBe(false);
     });
 
-    it('allows VIEWER to view_comment', () => {
-      expect(service.can('MEMBER', 'VIEWER', 'view_comment')).toBe(true);
-    });
-
     it('allows EDITOR to manage_task_relationships', () => {
       expect(service.can('MEMBER', 'EDITOR', 'manage_task_relationships')).toBe(true);
     });
 
     it('denies VIEWER from manage_task_relationships', () => {
       expect(service.can('MEMBER', 'VIEWER', 'manage_task_relationships')).toBe(false);
-    });
-
-    it('allows VIEWER to manage_filters', () => {
-      expect(service.can('MEMBER', 'VIEWER', 'manage_filters')).toBe(true);
-    });
-
-    it('allows all project roles to view_task_history (DEC-021)', () => {
-      expect(service.can('MEMBER', 'PROJECT_ADMIN', 'view_task_history')).toBe(true);
-      expect(service.can('MEMBER', 'EDITOR', 'view_task_history')).toBe(true);
-      expect(service.can('MEMBER', 'VIEWER', 'view_task_history')).toBe(true);
-    });
-
-    it('denies view_task_history without a project role (tenant MEMBER)', () => {
-      expect(service.can('MEMBER', null, 'view_task_history')).toBe(false);
-    });
-
-    it('allows tenant OWNER/ADMIN to view_task_history via bypass', () => {
-      expect(service.can('OWNER', null, 'view_task_history')).toBe(true);
-      expect(service.can('ADMIN', null, 'view_task_history')).toBe(true);
     });
 
     it('keeps view_audit_events restricted to PROJECT_ADMIN (+ tenant bypass)', () => {
@@ -250,7 +219,7 @@ describe('RbacService', () => {
   describe('no project membership', () => {
     it('denies MEMBER without project role from project-level actions', () => {
       expect(service.can('MEMBER', null, 'create_task')).toBe(false);
-      expect(service.can('MEMBER', null, 'view_task')).toBe(false);
+      expect(service.can('MEMBER', null, 'manage_boards')).toBe(false);
       expect(service.can('MEMBER', null, 'manage_project')).toBe(false);
     });
 
@@ -290,4 +259,10 @@ describe('RbacService', () => {
   // descriptive helper duplicating the "tenant Owner/Admin supersedes the project
   // role" rule. The authoritative copy of that rule is the RBAC matrix exercised
   // by the `can()` blocks above, which are unchanged.
+  //
+  // The specs for `view_task`, `view_comment`, `manage_filters` and
+  // `view_task_history` went with those actions: they were the only callers of
+  // the four, and a spec for a permission the matrix no longer declares asserts
+  // nothing. `can()` returns false for an action with no row, so a passing spec
+  // here is not evidence that an unenforced action was wired up.
 });

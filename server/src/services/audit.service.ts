@@ -1,9 +1,11 @@
 import type { AuditEvent, AuditActor, AuditChange, AuditEntityType, AuditAction } from '@task-board/shared';
 import {
   AuditEventRepository,
+  type AuditCorrelation,
   type AuditQueryOptions,
   type PaginatedResult,
 } from '../repositories/audit-event.repository.js';
+import { getRequestCorrelation } from '../middleware/request-id.js';
 
 export interface AuditServiceUserRepo {
   findById(id: string): Promise<{ id: string; displayName?: string; name?: string; email: string } | null>;
@@ -33,6 +35,22 @@ export class AuditService {
 
   /**
    * Log an audit event. Actor displayName is captured at write time.
+   *
+   * THE WRITE IS A POST-COMMIT SIDE EFFECT, NOT PART OF THE ENTITY WRITE, and
+   * that is a deliberate shape rather than an oversight. The service is called
+   * AFTER the entity write has already committed, on a connection with no
+   * transaction open: the audit row and the mutation it records are two separate
+   * writes, so a failure between them leaves an event missing while the entity
+   * change stands. The alternative — folding the audit insert into the entity's
+   * transaction — would make a lost audit row impossible, and it costs
+   * something this design deliberately does not pay: every audited write would
+   * hold a transaction (and its session, and its retry semantics) across the
+   * business logic, and the current MongoDB topology gives no cross-collection
+   * transaction guarantee to lean on. Choosing between "an audit row can be
+   * lost" and "every audited write becomes a transaction" is an owner decision,
+   * so the gap is documented here rather than silently closed in either
+   * direction. What IS guaranteed is that when the row IS written it names the
+   * request that caused it, so a gap is visible instead of unattributable.
    */
   async log(input: {
     tenantId: string;
@@ -53,6 +71,7 @@ export class AuditService {
       action: input.action,
       actor,
       changes: input.changes ?? [],
+      ...this.currentCorrelation(),
     });
   }
 
@@ -81,6 +100,7 @@ export class AuditService {
       action: input.action,
       actor: SYSTEM_ACTOR,
       changes: input.changes ?? [],
+      ...this.currentCorrelation(),
     });
   }
 
@@ -116,6 +136,7 @@ export class AuditService {
     // tasks stamps N DISTINCT, increasing timestamps without N wall-clock reads
     // (and without a stamp that runs ahead of real time by more than N ms).
     const base = Date.now();
+    const correlation = this.currentCorrelation();
 
     await this.auditRepo.createMany(
       events.map((event, index) => ({
@@ -127,6 +148,7 @@ export class AuditService {
         actor,
         changes: event.changes ?? [],
         createdAt: new Date(base + index),
+        ...correlation,
       })),
     );
   }
@@ -162,7 +184,26 @@ export class AuditService {
     return { ...result, data: await this.enrichment.enrichEvents(result.data) };
   }
 
+  /**
+   * The correlation of the request currently being served, or empty when there
+   * is none (the scheduled purge, a script, a unit test).
+   *
+   * Read from the request-scoped store rather than from a parameter: threading a
+   * correlation id through every audited call site would change every service
+   * signature to carry an observability field, and the store already exists for
+   * exactly this purpose (see `middleware/request-id.ts`). Outside a request the
+   * fields are omitted entirely, so an audit row reads honestly as "no request
+   * caused this" rather than carrying a fabricated id.
+   */
+  private currentCorrelation(): AuditCorrelation {
+    const correlation = getRequestCorrelation();
+
+    return correlation ? { requestId: correlation.requestId, upstreamRequestId: correlation.upstreamRequestId } : {};
+  }
+
   private async captureActor(userId: string): Promise<AuditActor> {
+    // Re-reads the user at write time so the recorded display name is the one
+    // the action had, not the one a caller happened to hold.
     const user = await this.userRepo.findById(userId);
 
     return {

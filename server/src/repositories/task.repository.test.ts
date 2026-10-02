@@ -3,6 +3,7 @@ import { TaskRepository } from './task.repository.js';
 import type { TaskDocument } from './task.repository.js';
 import type { Collection, InsertOneResult, DeleteResult } from 'mongodb';
 import { QUERY_MAX_TIME_MS_BOARD, QUERY_MAX_TIME_MS_LIST } from '../db/query-timeout.js';
+import { MAX_BULK_ID_LOOKUP } from '../db/read-bounds.js';
 
 function createMockCollection() {
   return {
@@ -336,8 +337,9 @@ describe('TaskRepository', () => {
   describe('bulkUpdateWithVersion (TOP-3 №1)', () => {
     it('issues exactly ONE bulkWrite (ordered:false) with per-task {id, version} filters and $inc — no findOneAndUpdate', async () => {
       const toArray = vi.fn().mockResolvedValue([makeDoc({ version: 2 })]);
+      const limit = vi.fn(() => ({ toArray }));
 
-      collection.find.mockReturnValue({ toArray });
+      collection.find.mockReturnValue({ limit });
       collection.bulkWrite.mockResolvedValue({ matchedCount: 1, modifiedCount: 1 });
 
       await repo.bulkUpdateWithVersion(
@@ -369,8 +371,9 @@ describe('TaskRepository', () => {
     it('returns only the tasks whose version was incremented (conflicts are absent)', async () => {
       // $or filter by {id, version+1}: only the incremented doc comes back
       const toArray = vi.fn().mockResolvedValue([makeDoc({ id: 'task-123', version: 2 })]);
+      const limit = vi.fn(() => ({ toArray }));
 
-      collection.find.mockReturnValue({ toArray });
+      collection.find.mockReturnValue({ limit });
       collection.bulkWrite.mockResolvedValue({ matchedCount: 1, modifiedCount: 1 });
 
       const result = await repo.bulkUpdateWithVersion(
@@ -387,6 +390,9 @@ describe('TaskRepository', () => {
           { id: 'task-conflict', version: 6 },
         ],
       });
+      // The batch is already bounded by the request schema (100 ids); this is the
+      // backstop above it, so it cannot truncate a legitimate result.
+      expect(limit).toHaveBeenCalledWith(MAX_BULK_ID_LOOKUP);
       expect(result).toHaveLength(1);
       expect(result[0]?.version).toBe(2);
     });
@@ -551,6 +557,80 @@ describe('TaskRepository', () => {
 
       expect(collection.updateMany).toHaveBeenCalled();
     });
+
+    it('bumps version on every reassigned task (it is inside the concurrency contract)', async () => {
+      collection.updateMany.mockResolvedValue({ matchedCount: 3, modifiedCount: 3 } as never);
+
+      await repo.updateManyByStatus('project-1', 'old-status', 'new-status', 'In Progress');
+
+      const [filter, update] = collection.updateMany.mock.calls[0] as [
+        Record<string, unknown>,
+        { $set: Record<string, unknown>; $inc: Record<string, number> },
+      ];
+
+      // The intended filter — scoped to the project AND the old status.
+      expect(filter).toEqual({ projectId: 'project-1', statusId: 'old-status' });
+      expect(update.$set.statusId).toBe('new-status');
+      expect(update.$set.statusName).toBe('In Progress');
+      // The reassignment is a real mutation of the task, so the optimistic token
+      // moves: a client holding the pre-reassignment version now gets a 409
+      // instead of writing successfully onto a status it never saw change.
+      expect(update.$inc).toEqual({ version: 1 });
+    });
+
+    it('bumps version EXACTLY once — no second increment beside the $set', async () => {
+      collection.updateMany.mockResolvedValue({ matchedCount: 1, modifiedCount: 1 } as never);
+
+      await repo.updateManyByStatus('project-1', 'old-status', 'new-status');
+
+      const [, update] = collection.updateMany.mock.calls[0] as [unknown, Record<string, unknown>];
+
+      // A `$set` of `version` next to the `$inc` would make the increment depend
+      // on write order and could clobber it; `version` must appear under `$inc`
+      // only. Counting the occurrences makes a future duplicate a test failure
+      // rather than a silent double-bump.
+      expect(JSON.stringify(update).match(/"version"/g)).toHaveLength(1);
+      expect(Object.keys(update).sort()).toEqual(['$inc', '$set']);
+    });
+  });
+
+  describe('the reference-data fan-out paths and the optimistic-concurrency token', () => {
+    // A status/sprint rename or a status delete is a bulk write the client never
+    // asked for, and it changes what a task IS. These paths used to `$set` alone,
+    // so `Task.version` (documented in shared/src/types/task.ts as the
+    // optimistic-concurrency version) did not move while the task did — the
+    // token claimed a contract the write path did not keep.
+    it('a status rename bumps version on every task holding the status', async () => {
+      collection.updateMany.mockResolvedValue({ matchedCount: 2, modifiedCount: 2 } as never);
+
+      await repo.setStatusNameForTasks('project-1', 'status-1', 'In Progress');
+
+      const [filter, update] = collection.updateMany.mock.calls[0] as [
+        Record<string, unknown>,
+        { $set: Record<string, unknown>; $inc: Record<string, number> },
+      ];
+
+      expect(filter).toEqual({ projectId: 'project-1', statusId: 'status-1' });
+      expect(update.$set.statusName).toBe('In Progress');
+      expect(update.$inc).toEqual({ version: 1 });
+      expect(JSON.stringify(update).match(/"version"/g)).toHaveLength(1);
+    });
+
+    it('a sprint rename bumps version on every task holding the sprint', async () => {
+      collection.updateMany.mockResolvedValue({ matchedCount: 2, modifiedCount: 2 } as never);
+
+      await repo.setSprintNameForTasks('project-1', 'sprint-1', 'Sprint 2');
+
+      const [filter, update] = collection.updateMany.mock.calls[0] as [
+        Record<string, unknown>,
+        { $set: Record<string, unknown>; $inc: Record<string, number> },
+      ];
+
+      expect(filter).toEqual({ projectId: 'project-1', sprintId: 'sprint-1' });
+      expect(update.$set.sprintName).toBe('Sprint 2');
+      expect(update.$inc).toEqual({ version: 1 });
+      expect(JSON.stringify(update).match(/"version"/g)).toHaveLength(1);
+    });
   });
 
   describe('countByType', () => {
@@ -571,6 +651,27 @@ describe('TaskRepository', () => {
 
       expect(collection.updateMany).toHaveBeenCalled();
     });
+
+    it('bumps version on every retyped task — it reassigns tasks exactly like updateManyByStatus', async () => {
+      collection.updateMany.mockResolvedValue({ matchedCount: 2, modifiedCount: 2 } as never);
+
+      await repo.updateManyByType('project-1', 'old-type', 'new-type');
+
+      const [filter, update] = collection.updateMany.mock.calls[0] as [
+        Record<string, unknown>,
+        { $set: Record<string, unknown>; $inc: Record<string, number> },
+      ];
+
+      expect(filter).toEqual({ projectId: 'project-1', typeId: 'old-type' });
+      expect(update.$set.typeId).toBe('new-type');
+      // A `$set` alone would leave the optimistic token claiming a state the
+      // write path did not keep: a client holding the pre-reassignment version
+      // would still be allowed to write onto the new type it never saw.
+      expect(update.$inc).toEqual({ version: 1 });
+      // `version` must appear under `$inc` only — a `$set` of it beside the
+      // increment would make the result depend on operator order.
+      expect(JSON.stringify(update).match(/"version"/g)).toHaveLength(1);
+    });
   });
 
   describe('removeLabelFromAll', () => {
@@ -581,6 +682,25 @@ describe('TaskRepository', () => {
 
       expect(collection.updateMany).toHaveBeenCalled();
     });
+
+    it('bumps version on every task the label was pulled from', async () => {
+      collection.updateMany.mockResolvedValue({ matchedCount: 1, modifiedCount: 1 } as never);
+
+      await repo.removeLabelFromAll('project-1', 'label-1');
+
+      const [filter, update] = collection.updateMany.mock.calls[0] as [
+        Record<string, unknown>,
+        { $pull: Record<string, unknown>; $set: Record<string, unknown>; $inc: Record<string, number> },
+      ];
+
+      expect(filter).toEqual({ projectId: 'project-1', labelIds: 'label-1' });
+      expect(update.$pull).toEqual({ labelIds: 'label-1' });
+      // `$pull` mutates the task just as a `$set` does, so the version moves
+      // with it — otherwise a stale client write would silently re-apply state
+      // the label removal had already discarded.
+      expect(update.$inc).toEqual({ version: 1 });
+      expect(JSON.stringify(update).match(/"version"/g)).toHaveLength(1);
+    });
   });
 
   describe('clearSprintFromTasks', () => {
@@ -590,6 +710,26 @@ describe('TaskRepository', () => {
       await repo.clearSprintFromTasks('project-1', 'sprint-1');
 
       expect(collection.updateMany).toHaveBeenCalled();
+    });
+
+    it('bumps version on every task the sprint was cleared from', async () => {
+      collection.updateMany.mockResolvedValue({ matchedCount: 2, modifiedCount: 2 } as never);
+
+      await repo.clearSprintFromTasks('project-1', 'sprint-1');
+
+      const [filter, update] = collection.updateMany.mock.calls[0] as [
+        Record<string, unknown>,
+        { $set: Record<string, unknown>; $inc: Record<string, number> },
+      ];
+
+      expect(filter).toEqual({ projectId: 'project-1', sprintId: 'sprint-1' });
+      expect(update.$set.sprintId).toBeNull();
+      expect(update.$set.sprintName).toBeNull();
+      // Clearing the sprint moves the task out of every sprint-scoped view, so
+      // a client that read it inside the sprint must be told its copy is stale
+      // rather than being allowed to write onto the unassigned task.
+      expect(update.$inc).toEqual({ version: 1 });
+      expect(JSON.stringify(update).match(/"version"/g)).toHaveLength(1);
     });
   });
 

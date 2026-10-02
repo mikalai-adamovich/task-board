@@ -1,6 +1,7 @@
 import { BaseRepository } from './base.repository.js';
 import { randomUUID } from 'node:crypto';
 import type { Label } from '@task-board/shared';
+import { MAX_PROJECT_LABELS } from '../db/read-bounds.js';
 
 // ─── MongoDB Document Shape ───────────────────────────────────────────────────
 
@@ -34,8 +35,16 @@ export class LabelRepository extends BaseRepository<LabelDocument, Label> {
     return toDomain(doc);
   }
 
+  /**
+   * The project's labels, alphabetically.
+   *
+   * Capped at {@link MAX_PROJECT_LABELS}: labels are the one reference list that
+   * genuinely accumulates with usage (conventions like `area/frontend` pile up
+   * over years), and the bound keeps a long-lived project from answering with an
+   * arbitrarily large vocabulary.
+   */
   async findByProject(projectId: string): Promise<Label[]> {
-    const docs = await this.collection.find({ projectId }).sort({ name: 1 }).toArray();
+    const docs = await this.collection.find({ projectId }).sort({ name: 1 }).limit(MAX_PROJECT_LABELS).toArray();
 
     return docs.map(toDomain);
   }

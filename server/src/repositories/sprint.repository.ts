@@ -1,6 +1,7 @@
 import { BaseRepository } from './base.repository.js';
 import { randomUUID } from 'node:crypto';
 import type { Sprint, SprintStatus, CreateSprint } from '@task-board/shared';
+import { MAX_PROJECT_SPRINTS } from '../db/read-bounds.js';
 
 // Required MongoDB indexes:
 // - { id: 1 } (unique)
@@ -43,8 +44,15 @@ export class SprintRepository extends BaseRepository<SprintDocument, Sprint> {
     return toDomain(doc);
   }
 
+  /**
+   * The project's sprints, newest first.
+   *
+   * Capped at {@link MAX_PROJECT_SPRINTS}: a project that has run sprints
+   * continuously for a decade holds a few hundred, and the newest-first sort
+   * means the bound keeps the sprints a team is currently working in.
+   */
   async findByProject(projectId: string): Promise<Sprint[]> {
-    const docs = await this.collection.find({ projectId }).sort({ createdAt: -1 }).toArray();
+    const docs = await this.collection.find({ projectId }).sort({ createdAt: -1 }).limit(MAX_PROJECT_SPRINTS).toArray();
 
     return docs.map(toDomain);
   }

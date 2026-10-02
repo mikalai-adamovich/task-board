@@ -1,6 +1,7 @@
 import { BaseRepository } from './base.repository.js';
 import { randomUUID } from 'node:crypto';
 import type { Status } from '@task-board/shared';
+import { MAX_PROJECT_STATUSES } from '../db/read-bounds.js';
 
 // Required MongoDB indexes:
 // - { id: 1 } (unique)
@@ -40,8 +41,15 @@ export class StatusRepository extends BaseRepository<StatusDocument, Status> {
     return toDomain(doc);
   }
 
+  /**
+   * The project's statuses (its board columns), in display order.
+   *
+   * Capped at {@link MAX_PROJECT_STATUSES}: a workflow's columns are chosen by a
+   * team, so the list is small by construction and the cap only fires on data
+   * that is not a status list.
+   */
   async findByProject(projectId: string): Promise<Status[]> {
-    const docs = await this.collection.find({ projectId }).sort({ position: 1 }).toArray();
+    const docs = await this.collection.find({ projectId }).sort({ position: 1 }).limit(MAX_PROJECT_STATUSES).toArray();
 
     return docs.map(toDomain);
   }

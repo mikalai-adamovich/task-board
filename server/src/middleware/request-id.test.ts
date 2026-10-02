@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
-import { requestIdMiddleware, resolveRequestId } from './request-id.js';
+import {
+  echoedRequestId,
+  getRequestCorrelation,
+  requestIdMiddleware,
+  resolveRequestCorrelation,
+  runWithRequestCorrelation,
+} from './request-id.js';
 import { errorHandler } from './error-handler.js';
 import { createNotFoundHandler } from './not-found.js';
 import { NotFoundError } from '../errors/app-error.js';
@@ -16,7 +22,7 @@ function createApp() {
   const app = new Hono<AppEnv>();
 
   app.use('*', requestIdMiddleware);
-  app.get('/echo', (c) => c.json({ requestId: c.get('requestId') }));
+  app.get('/echo', (c) => c.json({ requestId: c.get('requestId'), upstreamRequestId: c.get('upstreamRequestId') }));
 
   return app;
 }
@@ -34,29 +40,53 @@ function expectValidServerTimings(res: Response): string {
 }
 
 describe('requestIdMiddleware', () => {
-  it('passes through a valid incoming X-Request-Id', async () => {
+  it('echoes a valid incoming X-Request-Id back to the caller', async () => {
     const res = await createApp().request('/echo', { headers: { 'X-Request-Id': VALID_ID } });
-    const body = (await res.json()) as { requestId: string };
 
+    // The upstream convenience is preserved: a gateway that sent an id still
+    // sees that id on the response.
     expect(res.headers.get('X-Request-Id')).toBe(VALID_ID);
-    expect(body.requestId).toBe(VALID_ID);
   });
 
-  it('generates a fresh UUID for a malformed header', async () => {
-    const res = await createApp().request('/echo', { headers: { 'X-Request-Id': 'not-a-uuid' } });
-    const body = (await res.json()) as { requestId: string };
+  it('records a valid incoming X-Request-Id as the UPSTREAM id, not as the correlation id', async () => {
+    const res = await createApp().request('/echo', { headers: { 'X-Request-Id': VALID_ID } });
+    const body = (await res.json()) as { requestId: string; upstreamRequestId: string | null };
 
-    expect(body.requestId).not.toBe('not-a-uuid');
+    // The two ids are kept distinct: the audit trail is keyed on a value the
+    // caller does not control, and the caller's value is kept beside it only for
+    // traceability.
+    expect(body.upstreamRequestId).toBe(VALID_ID);
+    expect(body.requestId).not.toBe(VALID_ID);
     expect(body.requestId).toMatch(UUID_PATTERN);
+  });
+
+  it('generates a fresh UUID for a malformed header and drops the malformed value', async () => {
+    const res = await createApp().request('/echo', { headers: { 'X-Request-Id': 'not-a-uuid' } });
+    const body = (await res.json()) as { requestId: string; upstreamRequestId: string | null };
+
+    expect(body.requestId).toMatch(UUID_PATTERN);
+    expect(body.upstreamRequestId).toBeNull();
     expect(res.headers.get('X-Request-Id')).toBe(body.requestId);
   });
 
   it('generates a fresh UUID when the header is absent', async () => {
     const res = await createApp().request('/echo');
-    const body = (await res.json()) as { requestId: string };
+    const body = (await res.json()) as { requestId: string; upstreamRequestId: string | null };
 
     expect(body.requestId).toMatch(UUID_PATTERN);
+    expect(body.upstreamRequestId).toBeNull();
     expect(res.headers.get('X-Request-Id')).toBe(body.requestId);
+  });
+
+  it('never lets a client-supplied id become the correlation id, however it is spelled', async () => {
+    // Same id sent twice must produce two DIFFERENT correlation ids, or an
+    // audit trail keyed on that value would merge unrelated requests into one
+    // apparent chain.
+    const app = createApp();
+    const send = async () =>
+      (await (await app.request('/echo', { headers: { 'X-Request-Id': VALID_ID } })).json()) as { requestId: string };
+
+    expect((await send()).requestId).not.toBe((await send()).requestId);
   });
 
   it('generates different ids for different requests', async () => {
@@ -66,7 +96,53 @@ describe('requestIdMiddleware', () => {
 
     expect(first).not.toBe(second);
   });
+
+  it('exposes the correlation pair to the service layer for the whole chain', async () => {
+    const app = new Hono<AppEnv>();
+    let seen: { requestId: string; upstreamRequestId: string | null } | undefined;
+
+    app.use('*', requestIdMiddleware);
+    app.get('/probe', () => {
+      seen = getRequestCorrelation();
+
+      return c_json();
+    });
+
+    await app.request('/probe', { headers: { 'X-Request-Id': VALID_ID } });
+
+    expect(seen?.upstreamRequestId).toBe(VALID_ID);
+    expect(seen?.requestId).toMatch(UUID_PATTERN);
+    expect(seen?.requestId).not.toBe(VALID_ID);
+  });
+
+  it('reports no correlation outside a request context', () => {
+    expect(getRequestCorrelation()).toBeUndefined();
+  });
+
+  it('gives every concurrent request its own correlation', async () => {
+    const app = new Hono<AppEnv>();
+    const seen: string[] = [];
+
+    app.use('*', requestIdMiddleware);
+    app.get('/probe', async (c) => {
+      // Yield, so an implementation that stored the correlation on the app
+      // rather than per request would interleave these two.
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      seen.push(c.get('requestId'));
+
+      return c.json({ data: true });
+    });
+
+    await Promise.all([app.request('/probe'), app.request('/probe')]);
+
+    expect(new Set(seen).size).toBe(2);
+  });
 });
+
+/** Minimal typed helper so the probe route above stays a one-liner. */
+function c_json(): Response {
+  return new Response(JSON.stringify({ data: true }), { headers: { 'content-type': 'application/json' } });
+}
 
 describe('Server-Timings (F15)', () => {
   it('emits a syntactically valid header on a success response', async () => {
@@ -163,13 +239,39 @@ describe('Server-Timings (F15)', () => {
   });
 });
 
-describe('resolveRequestId', () => {
-  it('trusts a valid UUID in any case', () => {
-    expect(resolveRequestId(VALID_ID.toUpperCase())).toBe(VALID_ID.toUpperCase());
+describe('resolveRequestCorrelation', () => {
+  it('keeps a valid UUID in any case as the UPSTREAM id', () => {
+    expect(resolveRequestCorrelation(VALID_ID.toUpperCase()).upstreamRequestId).toBe(VALID_ID.toUpperCase());
   });
 
-  it('rejects malformed values and generates a UUID', () => {
-    expect(resolveRequestId('../etc/passwd')).toMatch(UUID_PATTERN);
-    expect(resolveRequestId(undefined)).toMatch(UUID_PATTERN);
+  it('always mints its own correlation id, whatever the header says', () => {
+    const correlation = resolveRequestCorrelation(VALID_ID);
+
+    expect(correlation.requestId).not.toBe(VALID_ID);
+    expect(correlation.requestId).toMatch(UUID_PATTERN);
+  });
+
+  it('drops a malformed header instead of sanitizing it', () => {
+    // Sanitizing would let a caller shape the recorded value; dropping leaves
+    // nothing to attribute.
+    expect(resolveRequestCorrelation('../etc/passwd').upstreamRequestId).toBeNull();
+    expect(resolveRequestCorrelation(undefined).upstreamRequestId).toBeNull();
+  });
+
+  it('echoes the caller id when there is one and the minted id otherwise', () => {
+    expect(echoedRequestId(resolveRequestCorrelation(VALID_ID))).toBe(VALID_ID);
+    expect(echoedRequestId(resolveRequestCorrelation(undefined))).toMatch(UUID_PATTERN);
+  });
+});
+
+describe('runWithRequestCorrelation', () => {
+  it('makes the correlation visible only inside the callback', async () => {
+    const correlation = resolveRequestCorrelation(VALID_ID);
+
+    await runWithRequestCorrelation(correlation, async () => {
+      expect(getRequestCorrelation()).toBe(correlation);
+    });
+
+    expect(getRequestCorrelation()).toBeUndefined();
   });
 });

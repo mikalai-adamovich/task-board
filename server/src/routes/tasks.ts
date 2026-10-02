@@ -162,23 +162,14 @@ export function createTaskRoutes(): Hono<AppEnv> {
   );
 
   /**
-   * GET /tasks/:taskId — Get a single task by UUID or KEY-NUMBER (e.g. PRO-1).
+   * GET /tasks/:taskId — Get a single task by UUID or KEY-NUMBER (e.g. PRO-42).
    */
   router.get('/tasks/:taskId', async (c) => {
-    const taskId = param(c, 'taskId');
-    // Support KEY-NUMBER format (e.g. PRO-1)
-    const keyMatch = taskId.match(/^([A-Z][A-Z0-9]*)-(\d+)$/);
-    const projectKey = keyMatch?.[1];
-    const taskNumber = keyMatch?.[2];
-
-    if (projectKey && taskNumber) {
-      // The key is resolved within the caller's tenant only
-      const task = await c.get('svc').tasks.getTaskByKey(callerContext(c), projectKey, parseInt(taskNumber, 10));
-
-      return c.json({ data: task });
-    }
-
-    // Bare task ids are tenant-asserted inside the service
+    // The path parameter accepts BOTH forms, so it is resolved through the one
+    // shared resolver before it reaches a repository lookup — the route no
+    // longer carries its own copy of the KEY-NUMBER rule.
+    const taskId = await c.get('svc').tasks.resolveTaskId(param(c, 'taskId'), callerContext(c));
+    // Bare ids are tenant-asserted inside the service
     const task = await c.get('svc').tasks.getTask(taskId, callerContext(c));
 
     return c.json({ data: task });
@@ -188,7 +179,8 @@ export function createTaskRoutes(): Hono<AppEnv> {
    * PATCH /tasks/:taskId — Update task (with optimistic concurrency).
    */
   router.patch('/tasks/:taskId', validateBody(UpdateTaskSchema), async (c) => {
-    const taskId = param(c, 'taskId');
+    // Both accepted `:taskId` forms resolve to the same task; see GET above.
+    const taskId = await c.get('svc').tasks.resolveTaskId(param(c, 'taskId'), callerContext(c));
     const body = c.req.valid('json');
     // Authorization (edit_task) is enforced inside the service after the task's
     // project is resolved — the route path carries no projectId. The service
@@ -217,7 +209,8 @@ export function createTaskRoutes(): Hono<AppEnv> {
    * DELETE /tasks/:taskId — Delete task (cascade).
    */
   router.delete('/tasks/:taskId', async (c) => {
-    const taskId = param(c, 'taskId');
+    // Both accepted `:taskId` forms resolve to the same task; see GET above.
+    const taskId = await c.get('svc').tasks.resolveTaskId(param(c, 'taskId'), callerContext(c));
 
     await c.get('svc').tasks.deleteTask(taskId, callerContext(c));
 

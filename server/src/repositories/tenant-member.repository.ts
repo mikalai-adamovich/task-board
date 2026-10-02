@@ -3,6 +3,12 @@ import type { Collection } from 'mongodb';
 import { InvitationStatus, TenantRole } from '@task-board/shared';
 import type { TenantMember, Invitation } from '@task-board/shared';
 import { toDomain as tenantToDomain } from './tenant.repository.js';
+import {
+  MAX_BULK_ID_LOOKUP,
+  MAX_INVITATIONS_PER_EMAIL,
+  MAX_TENANT_MEMBERS,
+  MAX_USER_MEMBERSHIPS,
+} from '../db/read-bounds.js';
 
 // guardrail:no-base-repository 2026-09-29 — two reasons. (1) Its `findById`
 // deliberately returns the raw DOCUMENT (the tenant-context middleware reuses it
@@ -88,13 +94,22 @@ export class TenantMemberRepository {
    * unique index), so the order is total and needs no tie-breaker.
    */
   async findByTenant(tenantId: string): Promise<TenantMember[]> {
-    const docs = await this.collection.find({ tenantId }).sort({ userId: 1 }).toArray();
+    const docs = await this.collection.find({ tenantId }).sort({ userId: 1 }).limit(MAX_TENANT_MEMBERS).toArray();
 
     return docs.map(toDomain);
   }
 
+  /**
+   * A user's memberships across every tenant.
+   *
+   * Capped at {@link MAX_USER_MEMBERSHIPS}. This read is on the hot
+   * authorization path — the tenant context resolves a caller's memberships on
+   * every scoped request — so it is the last place that should materialize an
+   * unbounded number of rows. A person in more than a thousand workspaces is
+   * not a membership list.
+   */
   async findByUser(userId: string): Promise<TenantMember[]> {
-    const docs = await this.collection.find({ userId }).toArray();
+    const docs = await this.collection.find({ userId }).limit(MAX_USER_MEMBERSHIPS).toArray();
 
     return docs.map(toDomain);
   }
@@ -136,6 +151,10 @@ export class TenantMemberRepository {
         },
         { $sort: { _sortName: 1, _sortEmail: 1, userId: 1 } },
         { $project: { _sortName: 0, _sortEmail: 0 } },
+        // Same bound as the plain `findByTenant`, applied AFTER the sort so the
+        // member list is still ordered from the first name rather than from an
+        // arbitrary subset.
+        { $limit: MAX_TENANT_MEMBERS },
       ])
       .toArray();
 
@@ -173,6 +192,7 @@ export class TenantMemberRepository {
           },
         },
         { $unwind: { path: '$tenant', preserveNullAndEmptyArrays: true } },
+        { $limit: MAX_USER_MEMBERSHIPS },
       ])
       .toArray();
 
@@ -194,11 +214,17 @@ export class TenantMemberRepository {
   /**
    * Bulk lookup by ids — single `$in` query. Used by batch enrichment paths
    * (e.g. audit-log label resolution) to avoid N+1 per-event lookups.
+   *
+   * Capped at {@link MAX_BULK_ID_LOOKUP}, for the reason `UserRepository.findByIds`
+   * states: the id set is the caller's, so the answer would otherwise grow with it.
    */
   async findByIds(ids: string[]): Promise<TenantMember[]> {
     if (ids.length === 0) return [];
 
-    const docs = await this.collection.find({ id: { $in: ids } }).toArray();
+    const docs = await this.collection
+      .find({ id: { $in: ids } })
+      .limit(MAX_BULK_ID_LOOKUP)
+      .toArray();
 
     return docs.map(toDomain);
   }
@@ -214,16 +240,34 @@ export class TenantMemberRepository {
     return this.collection.countDocuments({ userId, role: TenantRole.OWNER });
   }
 
+  /**
+   * Membership rows carrying an invitation addressed to `email`.
+   *
+   * Capped at {@link MAX_INVITATIONS_PER_EMAIL}: invitations are issued one
+   * tenant at a time, so a real address accumulates a handful and a larger
+   * result means the data is not really an invitation list.
+   */
   async findByInvitedEmail(email: string): Promise<TenantMemberDocument[]> {
-    return this.collection.find({ 'invitation.invitedEmail': email }).toArray();
+    return this.collection.find({ 'invitation.invitedEmail': email }).limit(MAX_INVITATIONS_PER_EMAIL).toArray();
   }
 
+  /**
+   * Membership rows whose invitation to `email` is still PENDING.
+   *
+   * Capped at {@link MAX_INVITATIONS_PER_EMAIL}, and the caller here is why it
+   * matters: `email` arrives from an unauthenticated visitor on the
+   * accept-invitation path, so the predicate is the only thing between a typed
+   * string and the size of the answer. The bound is what one address can
+   * legitimately hold, so a caller holding a real address cannot tell it apart
+   * from no bound at all.
+   */
   async findPendingByEmail(email: string): Promise<TenantMemberDocument[]> {
     return this.collection
       .find({
         'invitation.invitedEmail': email,
         'invitation.status': InvitationStatus.PENDING,
       })
+      .limit(MAX_INVITATIONS_PER_EMAIL)
       .toArray();
   }
 

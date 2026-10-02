@@ -199,14 +199,16 @@ export function createReadyzRoutes(): Hono<AppEnv> {
     // describe a deployment other than the one being probed.
     const configuration: ConfigurationVerdict = inspectConfiguration(c.env as unknown as Record<string, unknown>);
     /**
-     * The login limiter's scope, made OBSERVABLE.
+     * The deployment's instance budget, made OBSERVABLE.
      *
-     * Until now the only record of the deployment mode was a comment in
-     * `index.ts`, so an operator who rolled back to `per-request` had no way to
-     * see that the abuse ceiling had become per-instance. This is pure
-     * arithmetic over two environment values (no I/O, nothing secret), and it
-     * answers the question an incident responder actually has: how many login
-     * attempts is this deployment really allowing?
+     * The scope below says how many instances this deployment runs the in-process
+     * limiter across. It is NOT a ceiling anything enforces: the authority counts
+     * one document per bucket/scope, so the enforced ceiling is the constant
+     * below in every mode, and a store that cannot answer refuses the request
+     * rather than falling back to a per-instance number. `authoritativeTier` says
+     * which tier enforces it. Without both fields this block would read as "this
+     * deployment allows 2 logins per account per 15 minutes", which is a number no
+     * request is ever held to.
      */
     const loginScope = resolveRateLimitScope(
       c.env.DB_CLIENT_MODE,
@@ -217,7 +219,13 @@ export function createReadyzRoutes(): Hono<AppEnv> {
       loginAttempts: describeRateLimitScope(loginScope, LOGIN_RATE_LIMIT_MAX_REQUESTS),
       mode: c.env.DB_CLIENT_MODE ?? 'per-request',
       instanceBudgetDeclared: loginScope.declared,
-    };
+      // The ENFORCED ceiling, counted in MongoDB, is the constant in every mode:
+      // it is one document per bucket/scope, so it cannot multiply by instances,
+      // and a store that cannot decide refuses rather than enforcing a divided
+      // one. `loginAttempts` above describes the instance count, not a ceiling.
+      authoritativeTier: 'mongodb',
+      authoritativeLoginMax: LOGIN_RATE_LIMIT_MAX_REQUESTS,
+    } as const;
     const body = { status: 'ok', configuration, rateLimit } as const;
 
     if (!uri) {

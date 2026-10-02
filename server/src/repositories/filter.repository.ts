@@ -1,6 +1,7 @@
 import { BaseRepository } from './base.repository.js';
 import { randomUUID } from 'node:crypto';
 import type { Filter, FilterCriteria, FilterSort } from '@task-board/shared';
+import { MAX_SAVED_FILTERS_PER_USER } from '../db/read-bounds.js';
 
 export interface FilterDocument {
   _id?: import('mongodb').ObjectId;
@@ -32,8 +33,15 @@ export class FilterRepository extends BaseRepository<FilterDocument, Filter> {
     return toDomain(doc);
   }
 
+  /**
+   * One user's saved filters in one project.
+   *
+   * Capped at {@link MAX_SAVED_FILTERS_PER_USER}: these are personal view
+   * presets, curated a few at a time, so the bound only fires on a collection
+   * that is no longer really a filter list.
+   */
   async findByUserAndProject(userId: string, projectId: string): Promise<Filter[]> {
-    const docs = await this.collection.find({ userId, projectId }).toArray();
+    const docs = await this.collection.find({ userId, projectId }).limit(MAX_SAVED_FILTERS_PER_USER).toArray();
 
     return docs.map(toDomain);
   }

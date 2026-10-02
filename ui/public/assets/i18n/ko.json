@@ -753,6 +753,9 @@
   "comments": {
     "title": "콘멘트",
     "loadError": "콘멘트를 로드하지 못했습니다.",
+    "loadOlder": "이전 댓글 불러오기",
+    "loadingOlder": "불러오는 중",
+    "loadOlderError": "이전 댓글을 불러오지 못했습니다.",
     "noComments": "콘멘트가 아지라도 없습니다. 토론을 시작하세요.",
     "submit": "콘멘트",
     "submitting": "게시 중",

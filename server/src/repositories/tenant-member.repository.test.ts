@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { TenantMemberRepository } from './tenant-member.repository.js';
 import type { TenantMemberDocument } from './tenant-member.repository.js';
+import { MAX_INVITATIONS_PER_EMAIL } from '../db/read-bounds.js';
 import type { Collection, InsertOneResult, DeleteResult } from 'mongodb';
 
 // ─── Mock Collection Helper ──────────────────────────────────────────────────
@@ -24,20 +25,24 @@ function createMockCollection() {
 }
 
 /**
- * A minimal chainable cursor: `find(...).sort(...).toArray()`. `findByTenant`
- * sorts, so the mock has to carry the chain rather than only `toArray` — and
- * the recorded `sort` argument is what the ordering test asserts on.
+ * A minimal chainable cursor: `find(...).sort(...).limit(...).toArray()`.
+ * `findByTenant` sorts and every list read is bounded, so the mock has to carry
+ * the whole chain rather than only `toArray` — and the recorded `sort` argument
+ * is what the ordering test asserts on.
  */
 function cursor(docs: TenantMemberDocument[]): {
   sort: ReturnType<typeof vi.fn>;
+  limit: ReturnType<typeof vi.fn>;
   toArray: ReturnType<typeof vi.fn>;
 } {
   const cursor = {
     sort: vi.fn(),
+    limit: vi.fn(),
     toArray: vi.fn().mockResolvedValue(docs),
   };
 
   cursor.sort.mockReturnValue(cursor);
+  cursor.limit.mockReturnValue(cursor);
 
   return cursor;
 }
@@ -202,7 +207,7 @@ describe('TenantMemberRepository', () => {
           makeDoc({ tenantId: 't2', role: 'MEMBER', status: 'ACTIVE' }),
         ]);
 
-      collection.find.mockReturnValue({ toArray });
+      collection.find.mockReturnValue({ limit: vi.fn().mockReturnValue({ toArray }) });
 
       const result = await repo.findByUser('user-1');
 
@@ -231,10 +236,11 @@ describe('TenantMemberRepository', () => {
   });
 
   describe('findPendingByEmail', () => {
-    it('queries for pending invitations by invited email', async () => {
+    it('queries for pending invitations by invited email, under the row bound', async () => {
       const toArray = vi.fn().mockResolvedValue([makeDoc({ invitation: makeInvitation() })]);
+      const limit = vi.fn(() => ({ toArray }));
 
-      collection.find.mockReturnValue({ toArray });
+      collection.find.mockReturnValue({ limit });
 
       const result = await repo.findPendingByEmail('invited@example.com');
 
@@ -242,6 +248,9 @@ describe('TenantMemberRepository', () => {
         'invitation.invitedEmail': 'invited@example.com',
         'invitation.status': 'PENDING',
       });
+      // The address arrives from an unauthenticated visitor, so the size of the
+      // answer must not be theirs to choose.
+      expect(limit).toHaveBeenCalledWith(MAX_INVITATIONS_PER_EMAIL);
       expect(result).toHaveLength(1);
     });
   });

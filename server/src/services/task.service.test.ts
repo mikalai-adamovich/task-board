@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { TaskService } from './task.service.js';
+import { TaskService, BOARD_COLUMN_CONCURRENCY } from './task.service.js';
 import type {
   TaskServiceUserRepo,
   TaskServiceSprintRepo,
@@ -24,6 +24,19 @@ import type { CreateTask, Task } from '@task-board/shared';
 function createMock<T>(methods: Record<string, unknown>): T {
   return methods as unknown as T;
 }
+
+/**
+ * The entities that belong to project-1, as MUTABLE per-test fixtures.
+ *
+ * The reference repositories answer per id from these sets rather than with a
+ * fixed `mockResolvedValue`, so "this status is this project's" and "this status
+ * is another project's" are two different facts a test states instead of one
+ * shape that satisfies every id. Reset in `beforeEach`.
+ */
+const projectStatuses = new Map<string, string>();
+const projectSprints = new Map<string, string>();
+const projectTaskTypes = new Set<string>();
+const projectMembers = new Set<string>();
 
 function makeTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -67,6 +80,20 @@ describe('TaskService', () => {
   let service: TaskService;
 
   beforeEach(() => {
+    // The entities that DO belong to project-1. Every reference check resolves
+    // against these, so "valid" and "foreign" are two facts about the fixture
+    // rather than two different mock shapes — and a test cannot accidentally
+    // pass because a repository double ignored the id it was handed.
+    projectStatuses.clear();
+    projectStatuses.set('status-1', 'Todo');
+    projectStatuses.set('status-2', 'Todo');
+    projectSprints.clear();
+    projectSprints.set('sprint-1', 'Sprint 1');
+    projectTaskTypes.clear();
+    projectTaskTypes.add('type-1');
+    projectMembers.clear();
+    projectMembers.add('user-1');
+
     taskRepo = createMock<TaskRepository>({
       findById: vi.fn(),
       findByProject: vi.fn(),
@@ -90,16 +117,39 @@ describe('TaskService', () => {
 
     projectMemberRepo = createMock<ProjectMemberRepository>({
       findByUserAndProject: vi.fn().mockResolvedValue({ role: 'EDITOR' }),
+      // The identity seam resolves a user THROUGH their membership of the
+      // project, so it answers per project: an id with a membership in
+      // project-1 resolves, and anything else is `null` — which is exactly what
+      // makes a cross-project assignee a 404 rather than a name disclosure.
+      findUserIdentityByProject: vi.fn((userId: string, projectId: string) =>
+        Promise.resolve(
+          projectId === 'project-1' && projectMembers.has(userId)
+            ? { userId, displayName: `${userId} in project-1` }
+            : null,
+        ),
+      ),
     });
 
     statusRepo = createMock<StatusRepository>({
       findById: vi.fn().mockResolvedValue({ id: 'status-1', projectId: 'project-1', name: 'Todo' }),
-      findByIds: vi.fn().mockResolvedValue([{ id: 'status-1', projectId: 'project-1', name: 'Todo' }]),
+      // Id-AWARE: each id resolves to its own row, and only for the project it
+      // belongs to. A blanket `mockResolvedValue` would let a test assert a
+      // name for an id that owns none — which is the defect under test, and it
+      // would keep passing for the wrong reason.
+      findByIds: vi.fn((ids: string[]) =>
+        Promise.resolve(
+          ids
+            .filter((id) => projectStatuses.has(id))
+            .map((id) => ({ id, projectId: 'project-1', name: projectStatuses.get(id) as string })),
+        ),
+      ),
     });
 
     taskTypeRepo = createMock<TaskTypeRepository>({
       findById: vi.fn().mockResolvedValue({ id: 'type-1', projectId: 'project-1' }),
-      findByIds: vi.fn().mockResolvedValue([{ id: 'type-1', projectId: 'project-1' }]),
+      findByIds: vi.fn((ids: string[]) =>
+        Promise.resolve(ids.filter((id) => projectTaskTypes.has(id)).map((id) => ({ id, projectId: 'project-1' }))),
+      ),
     });
 
     userRepo = {
@@ -108,7 +158,13 @@ describe('TaskService', () => {
 
     sprintRepo = {
       findById: vi.fn().mockResolvedValue({ id: 'sprint-1', projectId: 'project-1', name: 'Sprint 1' }),
-      findByIds: vi.fn().mockResolvedValue([{ id: 'sprint-1', projectId: 'project-1', name: 'Sprint 1' }]),
+      findByIds: vi.fn((ids: string[]) =>
+        Promise.resolve(
+          ids
+            .filter((id) => projectSprints.has(id))
+            .map((id) => ({ id, projectId: 'project-1', name: projectSprints.get(id) as string })),
+        ),
+      ),
     };
 
     commentRepo = {
@@ -325,6 +381,48 @@ describe('TaskService', () => {
         statusCode: 401,
         code: 'UNAUTHORIZED',
       });
+    });
+  });
+
+  describe('resolveTaskId — the ONE resolution of the `:taskId` path parameter', () => {
+    beforeEach(() => {
+      projectRepo.findByTenantAndKey = vi.fn().mockResolvedValue({ id: 'project-1', tenantId: 'tenant-1' });
+      taskRepo.findByProjectAndNumber = vi.fn().mockResolvedValue(makeTask({ id: 'task-42', number: 42 }));
+    });
+
+    it('passes a bare UUID through untouched, without a lookup', async () => {
+      await expect(service.resolveTaskId('task-1', ctx)).resolves.toBe('task-1');
+      expect(projectRepo.findByTenantAndKey).not.toHaveBeenCalled();
+      expect(taskRepo.findByProjectAndNumber).not.toHaveBeenCalled();
+    });
+
+    it('resolves KEY-NUMBER to the task id WITHIN the caller tenant', async () => {
+      await expect(service.resolveTaskId('PRO-42', ctx)).resolves.toBe('task-42');
+      expect(projectRepo.findByTenantAndKey).toHaveBeenCalledWith('tenant-1', 'PRO');
+      expect(taskRepo.findByProjectAndNumber).toHaveBeenCalledWith('project-1', 42);
+    });
+
+    /**
+     * The key is only unique WITHIN a tenant, so a project key that belongs to
+     * another tenant must resolve to nothing — otherwise a caller could act on a
+     * foreign task by addressing it through its key while its id is refused.
+     */
+    it('404s a key whose project belongs to another tenant, and never reaches the task lookup', async () => {
+      projectRepo.findByTenantAndKey = vi.fn().mockResolvedValue(null);
+
+      await expect(service.resolveTaskId('OTHER-1', ctx)).rejects.toMatchObject({ statusCode: 404 });
+      expect(taskRepo.findByProjectAndNumber).not.toHaveBeenCalled();
+    });
+
+    it('404s a key that resolves to no task number', async () => {
+      taskRepo.findByProjectAndNumber = vi.fn().mockResolvedValue(null);
+
+      await expect(service.resolveTaskId('PRO-999', ctx)).rejects.toThrow('Task not found');
+    });
+
+    it('fails closed (401) without a caller context — the key lookup must be tenant-scoped', async () => {
+      await expect(service.resolveTaskId('PRO-42', undefined as never)).rejects.toMatchObject({ statusCode: 401 });
+      expect(projectRepo.findByTenantAndKey).not.toHaveBeenCalled();
     });
   });
 
@@ -614,6 +712,242 @@ describe('TaskService', () => {
           ]),
         }),
       );
+    });
+  });
+
+  /**
+   * Every reference a task write carries must resolve inside the caller's own
+   * project, on the single-update path AND on the bulk path.
+   *
+   * These used to be written unchecked: a PATCH could set `statusId`,
+   * `typeId`, `sprintId` or `assigneeId` to an entity of another project (or
+   * another tenant) and got a 200 back, because the denormalized name was read
+   * through a repository `findById` that never compared projects. The write
+   * landed AND the response and audit record carried the foreign entity's
+   * display name — a cross-tenant read delivered through a 200.
+   *
+   * The contract pinned here: a foreign reference is a 404, never a 403, so it
+   * is indistinguishable from an id that does not exist at all; nothing is
+   * written; and no foreign name reaches the result or the audit trail.
+   */
+  describe('cross-project references are rejected on every task write', () => {
+    beforeEach(() => {
+      taskRepo.findById = vi.fn().mockResolvedValue(makeTask({ version: 1 }));
+      taskRepo.updateWithVersion = vi.fn().mockResolvedValue(makeTask({ version: 2 }));
+      taskRepo.findByIds = vi.fn().mockResolvedValue([makeTask({ id: 't1', version: 1 })]);
+      taskRepo.bulkUpdateWithVersion = vi.fn().mockResolvedValue([]);
+    });
+
+    /** No foreign name may appear anywhere in the audit call, serialized. */
+    function auditText(): string {
+      return JSON.stringify([
+        ...(auditService.log as ReturnType<typeof vi.fn>).mock.calls,
+        ...(auditService.logMany as ReturnType<typeof vi.fn>).mock.calls,
+      ]);
+    }
+
+    describe('updateTask', () => {
+      it('rejects a statusId belonging to ANOTHER project with 404 and writes nothing', async () => {
+        // The status EXISTS — in project-2. The response must not reveal that,
+        // and must not name it.
+        await expect(
+          service.updateTask('task-1', { statusId: 'status-foreign', version: 1 }, ctx),
+        ).rejects.toMatchObject({ statusCode: 404, code: 'NOT_FOUND' });
+        expect(taskRepo.updateWithVersion).not.toHaveBeenCalled();
+        expect(auditService.log).not.toHaveBeenCalled();
+        expect(auditText()).not.toContain('Foreign');
+      });
+
+      it('rejects a sprintId belonging to ANOTHER project with 404 and writes nothing', async () => {
+        await expect(
+          service.updateTask('task-1', { sprintId: 'sprint-foreign', version: 1 }, ctx),
+        ).rejects.toMatchObject({ statusCode: 404, code: 'NOT_FOUND' });
+        expect(taskRepo.updateWithVersion).not.toHaveBeenCalled();
+        expect(auditService.log).not.toHaveBeenCalled();
+      });
+
+      it('rejects a typeId belonging to ANOTHER project with 404 and writes nothing', async () => {
+        await expect(service.updateTask('task-1', { typeId: 'type-foreign', version: 1 }, ctx)).rejects.toMatchObject({
+          statusCode: 404,
+          code: 'NOT_FOUND',
+        });
+        expect(taskRepo.updateWithVersion).not.toHaveBeenCalled();
+        expect(auditService.log).not.toHaveBeenCalled();
+      });
+
+      it('rejects an assigneeId that is not a member of this project with 404 and names nobody', async () => {
+        // The strongest case: the foreign user is a real member of ANOTHER
+        // tenant, and the global user lookup would happily return their name.
+        // The identity seam must be consulted instead, so no name is read at
+        // all — `userRepo.findById` (the caller's own snapshot) is not the seam
+        // for an assignee and must not be used as one.
+        const err = await service
+          .updateTask('task-1', { assigneeId: 'user-foreign', version: 1 }, ctx)
+          .then(() => null)
+          .catch((e: Error) => e);
+
+        expect(err).toMatchObject({ statusCode: 404, code: 'NOT_FOUND' });
+        expect((err as Error).message).not.toContain('Foreign');
+        expect(taskRepo.updateWithVersion).not.toHaveBeenCalled();
+        expect(auditService.log).not.toHaveBeenCalled();
+        expect(userRepo.findById).not.toHaveBeenCalledWith('user-foreign');
+      });
+
+      it('still accepts references of its own project and denormalizes the right names', async () => {
+        projectStatuses.set('status-ok', 'In Progress');
+        projectSprints.set('sprint-ok', 'Sprint 7');
+        projectMembers.add('user-ok');
+
+        await service.updateTask(
+          'task-1',
+          { statusId: 'status-ok', sprintId: 'sprint-ok', assigneeId: 'user-ok', typeId: 'type-1', version: 1 },
+          ctx,
+        );
+
+        expect(taskRepo.updateWithVersion).toHaveBeenCalledWith(
+          'task-1',
+          1,
+          expect.objectContaining({
+            statusId: 'status-ok',
+            // The names come from the SAME lookups that proved ownership, so
+            // they cannot be a foreign entity's.
+            statusName: 'In Progress',
+            sprintName: 'Sprint 7',
+            assigneeId: 'user-ok',
+            assigneeSnapshot: { displayName: 'user-ok in project-1' },
+          }),
+        );
+      });
+
+      it('treats assigneeId: null as UNASSIGN — cleared, not a missing reference', async () => {
+        // `null` is how the schema says "unassign". It must not be run through
+        // the ownership check as if it named somebody, and it must clear the
+        // snapshot rather than leave a stale display name on the task.
+        await service.updateTask('task-1', { assigneeId: null, version: 1 }, ctx);
+
+        expect(taskRepo.updateWithVersion).toHaveBeenCalledWith(
+          'task-1',
+          1,
+          expect.objectContaining({ assigneeId: null, assigneeSnapshot: null }),
+        );
+      });
+
+      it('treats sprintId: null as "move to backlog" and nulls the denormalized name', async () => {
+        await service.updateTask('task-1', { sprintId: null, version: 1 }, ctx);
+
+        expect(taskRepo.updateWithVersion).toHaveBeenCalledWith(
+          'task-1',
+          1,
+          expect.objectContaining({ sprintId: null, sprintName: null }),
+        );
+      });
+
+      it('rejects the foreign reference BEFORE writing any other changed field', async () => {
+        await expect(
+          service.updateTask('task-1', { title: 'legit', statusId: 'status-foreign', version: 1 }, ctx),
+        ).rejects.toMatchObject({ statusCode: 404 });
+        // A partial write would leave the task updated but the request failed.
+        expect(taskRepo.updateWithVersion).not.toHaveBeenCalled();
+      });
+
+      it('leaves the denormalized name ALONE when the status is not being changed', async () => {
+        await service.updateTask('task-1', { title: 'Just a title', version: 1 }, ctx);
+
+        expect(taskRepo.updateWithVersion).toHaveBeenCalledWith(
+          'task-1',
+          1,
+          expect.not.objectContaining({ statusName: expect.anything() }),
+        );
+      });
+    });
+
+    describe('bulkUpdateTasks', () => {
+      it('rejects a foreign statusId with 404 and bulk-writes NOTHING', async () => {
+        await expect(
+          service.bulkUpdateTasks('project-1', ['t1'], { statusId: 'status-foreign' }, ctx),
+        ).rejects.toMatchObject({ statusCode: 404, code: 'NOT_FOUND' });
+        expect(taskRepo.bulkUpdateWithVersion).not.toHaveBeenCalled();
+        expect(auditService.logMany).not.toHaveBeenCalled();
+      });
+
+      it('rejects a foreign sprintId with 404 and bulk-writes NOTHING', async () => {
+        await expect(
+          service.bulkUpdateTasks('project-1', ['t1'], { sprintId: 'sprint-foreign' }, ctx),
+        ).rejects.toMatchObject({ statusCode: 404, code: 'NOT_FOUND' });
+        expect(taskRepo.bulkUpdateWithVersion).not.toHaveBeenCalled();
+      });
+
+      it('rejects a foreign assigneeId with 404, names nobody and bulk-writes NOTHING', async () => {
+        const err = await service
+          .bulkUpdateTasks('project-1', ['t1'], { assigneeId: 'user-foreign' }, ctx)
+          .then(() => null)
+          .catch((e: Error) => e);
+
+        expect(err).toMatchObject({ statusCode: 404, code: 'NOT_FOUND' });
+        expect((err as Error).message).not.toContain('Foreign');
+        expect(taskRepo.bulkUpdateWithVersion).not.toHaveBeenCalled();
+        expect(auditText()).not.toContain('Foreign');
+      });
+
+      it('rejects the WHOLE request, not just the offending task — no partial bulk write', async () => {
+        // `t1` is a perfectly valid task of project-1. A per-id skip would let
+        // it be updated while the caller is told the request failed, which is
+        // how a rejected request still mutates data.
+        taskRepo.findByIds = vi
+          .fn()
+          .mockResolvedValue([makeTask({ id: 't1', version: 1 }), makeTask({ id: 't2', version: 1 })]);
+
+        await expect(
+          service.bulkUpdateTasks('project-1', ['t1', 't2'], { statusId: 'status-foreign' }, ctx),
+        ).rejects.toMatchObject({ statusCode: 404 });
+        expect(taskRepo.bulkUpdateWithVersion).not.toHaveBeenCalled();
+        expect(auditService.logMany).not.toHaveBeenCalled();
+      });
+
+      it('still denormalizes the correct name for a status of its own project', async () => {
+        projectStatuses.set('status-ok', 'Done');
+
+        await service.bulkUpdateTasks('project-1', ['t1'], { statusId: 'status-ok' }, ctx);
+
+        expect(taskRepo.bulkUpdateWithVersion).toHaveBeenCalledWith([{ id: 't1', version: 1 }], {
+          statusId: 'status-ok',
+          statusName: 'Done',
+        });
+      });
+
+      it('still unassigns in bulk when assigneeId is null', async () => {
+        await service.bulkUpdateTasks('project-1', ['t1'], { assigneeId: null }, ctx);
+
+        expect(taskRepo.bulkUpdateWithVersion).toHaveBeenCalledWith([{ id: 't1', version: 1 }], {
+          assigneeId: null,
+          assigneeSnapshot: null,
+        });
+      });
+    });
+
+    describe('no cross-tenant displayName reaches the audit trail', () => {
+      it('the VALID path audits ids only — never a name from an unscoped lookup', async () => {
+        projectStatuses.set('status-ok', 'In Progress');
+
+        await service.updateTask('task-1', { statusId: 'status-ok', version: 1 }, ctx);
+
+        const text = auditText();
+
+        // The audit change records the id, which the caller supplied; it must
+        // not carry a display name resolved outside the caller's project.
+        expect(text).toContain('status-ok');
+        expect(text).not.toContain('In Progress');
+      });
+
+      it('the audit trail of a REJECTED write is empty — a refused change leaves no trace of a foreign id', async () => {
+        await service
+          .updateTask('task-1', { assigneeId: 'user-foreign', sprintId: 'sprint-foreign', version: 1 }, ctx)
+          .catch(() => undefined);
+
+        expect(auditService.log).not.toHaveBeenCalled();
+        expect(auditText()).not.toContain('user-foreign');
+        expect(auditText()).not.toContain('sprint-foreign');
+      });
     });
   });
 
@@ -938,9 +1272,77 @@ describe('TaskService', () => {
     });
   });
 
-  describe('getBoardPages (one HTTP request, parallel column queries)', () => {
+  describe('getBoardPages (one HTTP request, bounded-parallel column queries)', () => {
     const COL_A = '550e8400-e29b-41d4-a716-4466554400a1';
     const COL_B = '550e8400-e29b-41d4-a716-4466554400b2';
+
+    /**
+     * The board fan-out is BOUNDED, and this asserts the bound rather than the
+     * intent.
+     *
+     * A board can hold `MAX_IDS_PER_DOCUMENT` (500) columns and an initial load
+     * fetches EVERY one of them. Issued unbounded, one request asks the driver
+     * for up to ~500 concurrent checkouts against a pool of `maxPoolSize: 5` —
+     * which queues rather than fails, so nothing breaks, but the request becomes
+     * a head-of-line blocker for everything else sharing the Worker's pool. The
+     * repository mock therefore counts how many `findBoardPage` calls are in
+     * flight AT ONCE, and the peak must never exceed the configured width.
+     *
+     * The mock settles only on an explicit release, so an unbounded
+     * implementation is observed at FULL width (peak === column count) and
+     * cannot pass by accident.
+     */
+    it('never exceeds the configured column concurrency, whatever the column count', async () => {
+      const COLUMN_COUNT = 40;
+      let inFlight = 0;
+      let peak = 0;
+      const releases: (() => void)[] = [];
+
+      taskRepo.findBoardPage = vi.fn().mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            inFlight += 1;
+            peak = Math.max(peak, inFlight);
+            releases.push(() => {
+              inFlight -= 1;
+              resolve({ tasks: [], hasMore: false, nextCursor: null });
+            });
+          }),
+      );
+
+      const columns = Array.from({ length: COLUMN_COUNT }, (_unused, index) => ({
+        id: `550e8400-e29b-41d4-a716-44665544${String(index).padStart(4, '0')}`,
+        statusIds: [`status-${index}`],
+        position: index,
+      }));
+      const wideBoard: BoardConfig = {
+        projectId: 'project-1',
+        columns,
+        version: 1,
+        createdAt: '2025-01-01T00:00:00.000Z',
+        updatedAt: '2025-01-01T00:00:00.000Z',
+      };
+      const pending = boardService(wideBoard).getBoardPages('project-1', {}, ctx);
+
+      // Release one drained generation per tick, so the next query only starts
+      // once a slot is genuinely free — which is what makes the peak meaningful
+      // rather than an artefact of releasing everything at once.
+      for (let tick = 0; tick < COLUMN_COUNT; tick += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        releases.splice(0).forEach((release) => release());
+      }
+
+      const page = await pending;
+
+      // The bound must not be met by dropping columns, nor by serialising the
+      // whole board — every column is still fetched, several at a time.
+      expect(taskRepo.findBoardPage).toHaveBeenCalledTimes(COLUMN_COUNT);
+      expect(Object.keys(page)).toHaveLength(COLUMN_COUNT);
+      expect(peak, 'the board fan-out must stay within its configured width').toBeLessThanOrEqual(
+        BOARD_COLUMN_CONCURRENCY,
+      );
+      expect(peak, 'the fan-out must still run several columns at a time').toBeGreaterThan(1);
+    });
 
     function makeBoard(): BoardConfig {
       return {

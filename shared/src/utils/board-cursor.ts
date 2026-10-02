@@ -8,10 +8,12 @@
  *
  * The wire payload is versioned (`v`) so the format can be extended without
  * breaking old cursors — bump the version and branch in
- * {@link decodeBoardCursor}. No globals are used (`btoa`/`Buffer` differ
- * across Workers/Node/browsers); the base64url codec below is self-contained.
+ * {@link decodeBoardCursor}. The base64url codec is the package's own
+ * (`utils/base64url.ts`), shared with the comment cursor: no globals are used,
+ * because `btoa`/`Buffer` differ across Workers/Node/browsers.
  */
 import { TASK_PRIORITY_LEVELS, type TaskPriorityLevel } from '../constants/priority.js';
+import { decodeBase64Url, encodeBase64Url } from './base64url.js';
 
 /** Sort keys of the last card of a loaded board column page. */
 export interface BoardPageCursor {
@@ -31,53 +33,6 @@ export class InvalidBoardCursorError extends Error {
 const CURSOR_VERSION = 1;
 /** Generous upper bound: the canonical payload is ~32 chars. */
 const MAX_CURSOR_LENGTH = 64;
-const BASE64URL_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
-
-function encodeBytes(bytes: Uint8Array): string {
-  let out = '';
-
-  for (let i = 0; i < bytes.length; i += 3) {
-    const b0 = bytes[i] ?? 0;
-    const b1 = bytes[i + 1] ?? 0;
-    const b2 = bytes[i + 2] ?? 0;
-    const triplet = (b0 << 16) | (b1 << 8) | b2;
-
-    out += BASE64URL_ALPHABET[(triplet >> 18) & 63];
-    out += BASE64URL_ALPHABET[(triplet >> 12) & 63];
-
-    if (i + 1 < bytes.length) out += BASE64URL_ALPHABET[(triplet >> 6) & 63];
-    if (i + 2 < bytes.length) out += BASE64URL_ALPHABET[triplet & 63];
-  }
-
-  return out;
-}
-
-function decodeBytes(text: string): Uint8Array {
-  const values = new Uint8Array(text.length);
-
-  for (let i = 0; i < text.length; i += 1) {
-    const index = BASE64URL_ALPHABET.indexOf(text[i] ?? '');
-
-    if (index < 0) throw new InvalidBoardCursorError('Board cursor is not base64url');
-    values[i] = index;
-  }
-
-  const bytes: number[] = [];
-
-  for (let i = 0; i < values.length; i += 4) {
-    const c0 = values[i] ?? 0;
-    const c1 = values[i + 1] ?? 0;
-    const c2 = values[i + 2];
-    const c3 = values[i + 3];
-    const triplet = (c0 << 18) | (c1 << 12) | ((c2 ?? 0) << 6) | (c3 ?? 0);
-
-    bytes.push((triplet >> 16) & 255);
-    if (c2 !== undefined) bytes.push((triplet >> 8) & 255);
-    if (c3 !== undefined) bytes.push(triplet & 255);
-  }
-
-  return Uint8Array.from(bytes);
-}
 
 function isValidLevel(value: unknown): value is TaskPriorityLevel {
   return (
@@ -111,7 +66,7 @@ export function encodeBoardCursor(cursor: BoardPageCursor): string {
     bytes[i] = code;
   }
 
-  return encodeBytes(bytes);
+  return encodeBase64Url(bytes);
 }
 
 /**
@@ -125,7 +80,11 @@ export function decodeBoardCursor(value: unknown): BoardPageCursor {
     throw new InvalidBoardCursorError('Board cursor must be a short non-empty string');
   }
 
-  const json = String.fromCharCode(...decodeBytes(value));
+  const bytes = decodeBase64Url(value);
+
+  if (bytes === null) throw new InvalidBoardCursorError('Board cursor is not base64url');
+
+  const json = String.fromCharCode(...bytes);
   let parsed: unknown;
 
   try {

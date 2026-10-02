@@ -99,6 +99,49 @@ export function isTaskNumberConflict(err: unknown): boolean {
 }
 
 /**
+ * Run a write and retry ONCE when it loses the insert race on a fresh `_id`.
+ *
+ * There is one `E11000` that is not a domain conflict: `upsert: true` against a
+ * document that does not exist YET. Two concurrent probes both see "no
+ * document", both try to insert, and the loser can get
+ * `Plan executor error during findAndModify … E11000 duplicate key error …
+ * index: _id_`. The write itself is correct and the retry finds the winner's
+ * document, so the operation converges on the second attempt.
+ *
+ * How OFTEN that happens is not stated here, deliberately. The shape of the race
+ * is a property of how the server serialises concurrent upserts on one key; the
+ * RATE is a property of the deployment — server version, topology, storage engine
+ * — and measurements of it do not transfer: 60 concurrent first-time upserts on a
+ * single standalone produced no `E11000` at all across 30 rounds, where an
+ * earlier measurement on different infrastructure reported roughly one in nine.
+ * A retry that is correct at a rate of one in nine is still correct at zero, and
+ * an unreproducible rate in a comment is a claim a reader will cite as a
+ * guarantee. The mechanism above is what the seam is for; the rate is not.
+ *
+ * ## Why ONE retry and not a loop
+ * A second `E11000` from the same operation is no longer a race to re-enter: it
+ * means something else is writing the same key, and re-running would turn a
+ * storage anomaly into an unbounded retry loop on the unauthenticated login
+ * path. The second failure propagates untouched, so it reaches the caller's own
+ * error handling instead of being absorbed here.
+ *
+ * This is deliberately NOT {@link withConflictOnDuplicate}: that turns the race
+ * into a 409 for the caller, which is right for an entity insert and wrong for a
+ * counter, whose retry re-reads the post-image of a document that now exists.
+ */
+export async function withRetryOnDuplicate<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (err) {
+    if (isDuplicateKeyError(err)) {
+      return await operation();
+    }
+
+    throw err;
+  }
+}
+
+/**
  * Run an insert and translate a lost uniqueness race into a domain conflict.
  *
  * Only `E11000` is translated — every other driver error (a `maxTimeMS`

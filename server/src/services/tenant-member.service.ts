@@ -3,7 +3,7 @@ import { MemberStatus, TenantRole, TenantStatus, InvitationStatus, INVITATION_TT
 import type { Tenant, TenantMember, MyInvitation } from '@task-board/shared';
 import { AppError, ConflictError, ForbiddenError, NotFoundError } from '../errors/app-error.js';
 import { withConflictOnDuplicate } from '../db/duplicate-key.js';
-import { buildRateLimitHeaders, createRateLimiter } from '../utils/rate-limiter.js';
+import { buildRateLimitHeaders, createRateLimiter, isAtCapacity } from '../utils/rate-limiter.js';
 import { logger } from '../utils/logger.js';
 import { MyInvitationSchema } from '../schemas/tenant.js';
 import { TenantRepository } from '../repositories/tenant.repository.js';
@@ -35,6 +35,31 @@ type EmailSender = Pick<EmailService, 'sendInvitationEmail'>;
  * a legitimate bulk onboarding of 20 distinct people is unaffected.
  */
 const INVITE_COOLDOWN_MS = 60 * 1000;
+
+/**
+ * How many (workspace, address) cooldown counters the shared invitation limiter
+ * may hold at once.
+ *
+ * The cooldown limiter is keyed by a value the CALLER supplies — the target
+ * address — so its key space is attacker-shaped: it grows with the number of
+ * distinct addresses one caller invites, not with the number of invitations it
+ * is allowed. The per-user budget below is what bounds that growth
+ * ({@link INVITE_MAX_PER_USER} keys per user per hour), but the map is shared by
+ * every tenant in the isolate, so one spray that outruns the budget — or simply
+ * many tenants inviting at once — can fill a map every OTHER tenant's
+ * invitations then share. Without a cap that is a cross-tenant denial of
+ * service caused by one caller's key choices.
+ *
+ * 1 000 live keys is far above what the budget can produce from a single caller
+ * (20/hour, so 20 keys in any given minute from one user) and comfortably above
+ * the honest steady state of an active workspace, while still capping what one
+ * isolate holds. At the cap the limiter refuses NEW keys — never a live one — and
+ * the refusal is reported as its own outcome, so this path can say what actually
+ * happened instead of telling an admin their invite was "already sent recently"
+ * when no such cooldown exists.
+ */
+export const INVITE_COOLDOWN_MAX_KEYS = 1000;
+
 /**
  * Per-user invitation budget — {@link INVITE_MAX_PER_USER} outbound
  * invitation e-mails per requester per {@link INVITE_USER_WINDOW_MS}.
@@ -48,7 +73,7 @@ const INVITE_COOLDOWN_MS = 60 * 1000;
 const INVITE_MAX_PER_USER = 20;
 const INVITE_USER_WINDOW_MS = 60 * 60 * 1000;
 // Module-level: the budget must survive across requests (see utils/rate-limiter.ts).
-const inviteCooldown = createRateLimiter(1, INVITE_COOLDOWN_MS);
+const inviteCooldown = createRateLimiter(1, INVITE_COOLDOWN_MS, { maxKeys: INVITE_COOLDOWN_MAX_KEYS });
 const inviteUserBudget = createRateLimiter(INVITE_MAX_PER_USER, INVITE_USER_WINDOW_MS);
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -824,7 +849,12 @@ export class TenantMemberService {
       throw new AppError(
         429,
         'RATE_LIMITED',
-        'Invitation limit reached. Try again later.',
+        // Same rule as the cooldown below: a full budget limiter is a fact about
+        // the process, not about this user's allowance, and must not be reported
+        // as one they spent.
+        isAtCapacity(budget)
+          ? 'The invitation limiter is at capacity. Try again later.'
+          : 'Invitation limit reached. Try again later.',
         undefined,
         buildRateLimitHeaders(INVITE_MAX_PER_USER, budget),
       );
@@ -833,10 +863,17 @@ export class TenantMemberService {
     const cooldown = inviteCooldown(`invite:${tenantId}:${normalizedTarget}`);
 
     if (cooldown.limited) {
+      // The two rejections share a status and the headers, and must NOT share a
+      // message: "already sent to this address" is a claim about a cooldown that
+      // may not exist, and an admin reading it would go looking for an
+      // invitation that was never sent. At capacity the truth is about the
+      // process, so it is reported as such.
       throw new AppError(
         429,
         'RATE_LIMITED',
-        'An invitation was already sent to this address recently. Try again later.',
+        isAtCapacity(cooldown)
+          ? 'The invitation limiter is at capacity. Try again later.'
+          : 'An invitation was already sent to this address recently. Try again later.',
         undefined,
         buildRateLimitHeaders(1, cooldown),
       );

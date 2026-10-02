@@ -18,6 +18,7 @@
  * | ------ | ---------- | -------------- |
  * | {@link QUERY_MAX_TIME_MS_LIST} (5 s) | task list / search / audit pages + their counts | The heaviest legitimate measured path is the regex search pair: 728–766 ms find + 351 ms count ≈ 1.1 s on a 25k-task project, on a **warm local** Mongo. 5 s is ~4.5× that headroom, so normal traffic never trips it, while still aborting a runaway before the Worker budget is gone. |
  * | {@link QUERY_MAX_TIME_MS_BOARD} (2 s) | board column pages | Keyset pagination with a fixed 50-card page: measured 5–87 ms, bounded by column size and not by scroll depth. 2 s is >20× the worst measured page. |
+ * | {@link QUERY_MAX_TIME_MS_COUNTER} (2 s) | the rate-limit counter probe | A single-document `findOneAndUpdate` on `_id`, so the work is bounded by a bounded array (the window, ≤ `ceiling + 1` entries) rather than by the collection. It sits on the UNAUTHENTICATED login path, where a slow probe is also a slow refusal, so it gets the same budget as the board page rather than the list budget. |
  *
  * Both values are exported so tests and the error mapping can assert on them
  * instead of re-declaring magic numbers.
@@ -38,6 +39,17 @@ export const QUERY_MAX_TIME_MS_LIST = 5_000;
  * read that is cheap by construction; see the table in the module docblock.
  */
 export const QUERY_MAX_TIME_MS_BOARD = 2_000;
+
+/**
+ * Budget for the rate-limit counter probe (`RateLimitCounterRepository`).
+ *
+ * 2 s, and NEVER 0: a `maxTimeMS` of 0 means "no limit" to the server, not
+ * "expire immediately", so passing it would silently disable the one mechanism
+ * that stops the database working after the Worker is gone. A probe that runs
+ * long enough to expire here falls through to the in-process tier, which still
+ * refuses a saturated key — the budget bounds latency, it is not the ceiling.
+ */
+export const QUERY_MAX_TIME_MS_COUNTER = 2_000;
 
 /**
  * MongoDB server error code for `MaxTimeMSExpired` — the error returned when a

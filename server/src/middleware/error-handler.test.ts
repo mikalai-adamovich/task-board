@@ -349,17 +349,23 @@ describe('errorHandler request-id correlation (M-10)', () => {
     return app;
   }
 
-  it('includes the incoming X-Request-Id at error level and echoes the header', async () => {
+  it('echoes the incoming X-Request-Id but reports the SERVER id in the envelope', async () => {
     const res = await createAppWithRequestId().request('/boom', {
       headers: { 'X-Request-Id': REQUEST_ID },
     });
 
     expect(res.status).toBe(404);
+    // The header still carries the caller's own id, so a gateway sees its id
+    // come back...
     expect(res.headers.get('X-Request-Id')).toBe(REQUEST_ID);
 
     const err = (await errorBody(res)) as { requestId?: string };
 
-    expect(err.requestId).toBe(REQUEST_ID);
+    // ...while the envelope carries the id the logs are keyed on, which a caller
+    // cannot choose. If these were the same value, a client could replay one id
+    // across unrelated failures and merge them into a single apparent chain.
+    expect(err.requestId).not.toBe(REQUEST_ID);
+    expect(err.requestId).toMatch(UUID_PATTERN);
   });
 
   it('generates a request id when the header is absent', async () => {

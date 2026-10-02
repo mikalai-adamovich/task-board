@@ -1,6 +1,7 @@
 import { BaseRepository } from './base.repository.js';
 import { randomUUID } from 'node:crypto';
 import type { TaskRelationship, TaskRelationshipType } from '@task-board/shared';
+import { MAX_RELATIONSHIPS_PER_TASK } from '../db/read-bounds.js';
 
 export interface TaskRelationshipDocument {
   _id?: import('mongodb').ObjectId;
@@ -30,8 +31,18 @@ export class TaskRelationshipRepository extends BaseRepository<TaskRelationshipD
     return toDomain(doc);
   }
 
+  /**
+   * Relationships touching one task, in either direction.
+   *
+   * Capped at {@link MAX_RELATIONSHIPS_PER_TASK}: edges are authored by hand, so
+   * the list is small by construction, and the cap keeps a mis-built graph from
+   * turning one task's detail response into an unbounded body.
+   */
   async findByTask(taskId: string): Promise<TaskRelationship[]> {
-    const docs = await this.collection.find({ $or: [{ sourceTaskId: taskId }, { targetTaskId: taskId }] }).toArray();
+    const docs = await this.collection
+      .find({ $or: [{ sourceTaskId: taskId }, { targetTaskId: taskId }] })
+      .limit(MAX_RELATIONSHIPS_PER_TASK)
+      .toArray();
 
     return docs.map(toDomain);
   }

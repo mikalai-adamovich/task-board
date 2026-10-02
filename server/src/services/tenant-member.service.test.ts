@@ -6,7 +6,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { TenantMember } from '@task-board/shared';
 import { MemberStatus, InvitationStatus } from '@task-board/shared';
-import { TenantMemberService } from './tenant-member.service.js';
+import { TenantMemberService, INVITE_COOLDOWN_MAX_KEYS } from './tenant-member.service.js';
 import { AppError, ConflictError } from '../errors/app-error.js';
 
 // ─── Mock Factories ──────────────────────────────────────────────────────────
@@ -1090,5 +1090,76 @@ describe('TenantMemberService — membership transitions are auditable (D-09)', 
     await expect(service.removeMember('user-2', 'tenant-1', 'user-3')).rejects.toThrow();
     expect(auditService.log).not.toHaveBeenCalled();
     expect(memberRepo.delete).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The invitation cooldown limiter being FULL — its cross-tenant consequence and
+ * what the caller is told.
+ *
+ * LAST in the file on purpose: it saturates the module-level cooldown limiter,
+ * which every describe above shares. Filled early, the rest of this file would
+ * silently become tests of a limiter with no capacity left — which is the
+ * condition under test here.
+ */
+describe('TenantMemberService — the shared invitation limiter at capacity', () => {
+  function buildService() {
+    const tenantRepo = createMockTenantRepo();
+    const memberRepo = createMockTenantMemberRepo();
+    const userRepo = createMockUserRepo();
+    const emailService = createMockEmailService();
+
+    memberRepo.findByUserAndTenant.mockResolvedValue(makeMember());
+    tenantRepo.findById.mockResolvedValue({ id: 'tenant-1', name: 'Test Workspace', status: 'ACTIVE' });
+    userRepo.findByEmail.mockResolvedValue(null);
+    userRepo.create.mockResolvedValue({ id: 'user-new', email: 'x@example.com' });
+    userRepo.findById.mockResolvedValue({ id: 'user-1', displayName: 'Owner', email: 'owner@example.com' });
+    memberRepo.create.mockResolvedValue(makeMember({ id: 'member-new', userId: 'user-new' }));
+
+    return {
+      emailService,
+      service: new TenantMemberService(
+        tenantRepo as never,
+        memberRepo as never,
+        userRepo as never,
+        emailService as never,
+        createMockAuditService() as never,
+      ),
+    };
+  }
+
+  it('says the limiter is full rather than claiming a cooldown this address never had', async () => {
+    const { service } = buildService();
+
+    // One invite per requester: each requester spends 1 of its 20/hour budget, so
+    // the per-source ceiling is never what stops the fill — only the shared map is.
+    // The map is module-level and earlier describes in this file have already
+    // invited above, so the fill runs until the limiter reports itself full rather
+    // than for a fixed count.
+    for (let i = 0; i < INVITE_COOLDOWN_MAX_KEYS + 500; i++) {
+      const refused = await service
+        .inviteUser(`filler-${i}`, 'tenant-1', `filler-${i}@example.com`, 'MEMBER')
+        .catch((e: unknown) => e);
+
+      if ((refused as AppError).message?.includes('at capacity')) {
+        break;
+      }
+    }
+
+    // A different tenant entirely: the map it shares is the isolate's, so this
+    // caller is refused for a reason that has nothing to do with its own history.
+    const err = (await service
+      .inviteUser('innocent-owner', 'tenant-2', 'innocent@example.com', 'MEMBER')
+      .catch((e: unknown) => e)) as AppError;
+
+    expect(err.statusCode).toBe(429);
+    expect(err.code).toBe('RATE_LIMITED');
+    expect(err.message).toBe('The invitation limiter is at capacity. Try again later.');
+    // NOT the cooldown message: nothing was ever sent to this address, and an
+    // admin reading that claim would go looking for an invitation that does not exist.
+    expect(err.message).not.toContain('already sent');
+    // The header contract is unchanged — both rejections are ordinary 429s.
+    expect(Number(err.headers?.['Retry-After'])).toBeGreaterThan(0);
+    expect(err.headers?.['RateLimit-Remaining']).toBe('0');
   });
 });

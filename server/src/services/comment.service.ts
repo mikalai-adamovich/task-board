@@ -1,4 +1,5 @@
-import type { Comment, CreateComment, UpdateComment, IdentitySnapshot } from '@task-board/shared';
+import type { Comment, CommentPage, CreateComment, UpdateComment, IdentitySnapshot } from '@task-board/shared';
+import { encodeCommentCursor, type CommentPageCursor } from '@task-board/shared';
 import { ForbiddenError, NotFoundError } from '../errors/app-error.js';
 import { CommentRepository } from '../repositories/comment.repository.js';
 import { ensurePermission, rbacService } from './rbac.service.js';
@@ -134,10 +135,37 @@ export class CommentService {
     }
   }
 
-  async getCommentsByTask(taskId: string, context: CallerContext): Promise<Comment[]> {
+  /**
+   * One page of a task's comment thread, newest window first.
+   *
+   * `limit` is the page size the route already validated (at most
+   * `COMMENT_PAGE_SIZE`); `cursor` is the decoded resume key of the page below
+   * this one. The tenant assertion happens BEFORE the read, exactly as it did
+   * for the unpaginated version, so a cross-tenant task is still a 404 and
+   * never reaches the collection.
+   *
+   * The cursor is re-encoded here rather than in the route, so the string the
+   * caller receives is produced by the same package that parses it — the route
+   * hands over a decoded key and never sees a payload.
+   */
+  async getCommentsByTask(
+    taskId: string,
+    query: { limit: number; cursor?: CommentPageCursor | undefined },
+    context: CallerContext,
+  ): Promise<CommentPage> {
     await this.requireTaskInTenant(taskId, context);
 
-    return this.commentRepo.findByTask(taskId);
+    const page = await this.commentRepo.findPageByTask(taskId, query);
+
+    return {
+      comments: page.comments,
+      hasMore: page.hasMore,
+      // A cursor is only useful when there is more to fetch: `hasMore` is derived
+      // from the probe row, so a page that reports more always has an oldest
+      // comment to resume from, and a page that does not never advertises one.
+      nextCursor: page.hasMore && page.nextCursor ? encodeCommentCursor(page.nextCursor) : null,
+      limit: query.limit,
+    };
   }
 
   async createComment(taskId: string, input: CreateComment, context: CallerContext): Promise<Comment> {

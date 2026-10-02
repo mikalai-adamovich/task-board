@@ -144,6 +144,9 @@ export function authRateLimit(): MiddlewareHandler<AppEnv> {
         undefined,
         buildRateLimitHeaders(AUTH_MAX_REQUESTS, {
           limited: true,
+          // A missing key is the caller over the limiter's own budget in the
+          // strictest sense: there is nothing to count against.
+          outcome: 'limited',
           remaining: 0,
           retryAfterSeconds: 1,
         }),

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ProjectRepository } from './project.repository.js';
 import type { ProjectDocument } from './project.repository.js';
+import { MAX_PROJECTS_PER_TENANT } from '../db/read-bounds.js';
 import type { Collection, InsertOneResult, DeleteResult } from 'mongodb';
 
 // ─── Mock Collection Helper ──────────────────────────────────────────────────
@@ -79,19 +80,23 @@ describe('ProjectRepository', () => {
   });
 
   describe('findByTenant', () => {
-    it('returns all projects for a tenant', async () => {
+    it('returns all projects for a tenant, under the row bound', async () => {
       const toArray = vi
         .fn()
         .mockResolvedValue([
           makeDoc({ id: 'p1', name: 'Project 1' }),
           makeDoc({ id: 'p2', name: 'Project 2', key: 'PR2' }),
         ]);
+      const limit = vi.fn(() => ({ toArray }));
 
-      collection.find.mockReturnValue({ toArray });
+      collection.find.mockReturnValue({ limit });
 
       const result = await repo.findByTenant('tenant-1');
 
       expect(collection.find).toHaveBeenCalledWith({ tenantId: 'tenant-1' });
+      // The bound is part of the contract, not an implementation detail: this
+      // list grows with the workspace's whole history.
+      expect(limit).toHaveBeenCalledWith(MAX_PROJECTS_PER_TENANT);
       expect(result).toHaveLength(2);
     });
   });

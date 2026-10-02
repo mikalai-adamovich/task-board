@@ -9,6 +9,7 @@ import { CommentService } from './services/comment.service.js';
 import { FilterService } from './services/filter.service.js';
 import { LabelService } from './services/label.service.js';
 import { ProjectService } from './services/project.service.js';
+import { RateLimitAuthorityService } from './services/rate-limit-authority.service.js';
 import { SprintService } from './services/sprint.service.js';
 import { StatusService } from './services/status.service.js';
 import { TaskRelationshipService } from './services/task-relationship.service.js';
@@ -110,6 +111,7 @@ const SERVICE_TABLE: { key: keyof Services; ctor: new (...args: never[]) => obje
   { key: 'labels', ctor: LabelService },
   { key: 'preferences', ctor: UserPreferencesService },
   { key: 'projects', ctor: ProjectService },
+  { key: 'rateLimits', ctor: RateLimitAuthorityService },
   { key: 'relationships', ctor: TaskRelationshipService },
   { key: 'sprints', ctor: SprintService },
   { key: 'statuses', ctor: StatusService },

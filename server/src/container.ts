@@ -21,6 +21,7 @@ import { EmailService, ConsoleEmailService } from './services/email.service.js';
 import { FilterService } from './services/filter.service.js';
 import { LabelService } from './services/label.service.js';
 import { ProjectService } from './services/project.service.js';
+import { RateLimitAuthorityService } from './services/rate-limit-authority.service.js';
 import { SprintService } from './services/sprint.service.js';
 import { StatusService } from './services/status.service.js';
 import { TaskRelationshipService } from './services/task-relationship.service.js';
@@ -39,6 +40,10 @@ import { FilterRepository, type FilterDocument } from './repositories/filter.rep
 import { LabelRepository, type LabelDocument } from './repositories/label.repository.js';
 import { ProjectMemberRepository, type ProjectMemberDocument } from './repositories/project-member.repository.js';
 import { ProjectRepository, type ProjectDocument } from './repositories/project.repository.js';
+import {
+  RateLimitCounterRepository,
+  type RateLimitCounterDocument,
+} from './repositories/rate-limit-counter.repository.js';
 import { SprintRepository, type SprintDocument } from './repositories/sprint.repository.js';
 import { StatusRepository, type StatusDocument } from './repositories/status.repository.js';
 import {
@@ -85,6 +90,7 @@ export interface Services {
   labels: LabelService;
   preferences: UserPreferencesService;
   projects: ProjectService;
+  rateLimits: RateLimitAuthorityService;
   relationships: TaskRelationshipService;
   sprints: SprintService;
   statuses: StatusService;
@@ -114,6 +120,9 @@ function buildRepositories() {
     labelRepo: new LabelRepository(getCollection<LabelDocument>('labels')),
     projectMemberRepo: new ProjectMemberRepository(getCollection<ProjectMemberDocument>('project_members')),
     projectRepo: new ProjectRepository(getCollection<ProjectDocument>('projects')),
+    rateLimitCounterRepo: new RateLimitCounterRepository(
+      getCollection<RateLimitCounterDocument>('rate_limit_counters'),
+    ),
     relationshipRepo: new TaskRelationshipRepository(getCollection<TaskRelationshipDocument>('task_relationships')),
     sprintRepo: new SprintRepository(getCollection<SprintDocument>('sprints')),
     statusRepo: new StatusRepository(getCollection<StatusDocument>('statuses')),
@@ -176,6 +185,7 @@ export function buildServices(env: ContainerEnv): Services {
     labelRepo,
     projectMemberRepo,
     projectRepo,
+    rateLimitCounterRepo,
     relationshipRepo,
     sprintRepo,
     statusRepo,
@@ -216,6 +226,7 @@ export function buildServices(env: ContainerEnv): Services {
       labelRepo,
       projectMemberRepo,
       projectRepo,
+      rateLimitCounterRepo,
       relationshipRepo,
       sprintRepo,
       statusRepo,
@@ -242,24 +253,38 @@ export function buildServices(env: ContainerEnv): Services {
     emailService = new ConsoleEmailService();
   }
 
+  // The rate-limit authority is built once here and handed to AuthService, which
+  // is its only caller: the four authentication buckets are the only probes the
+  // authoritative store answers. It is request-scoped because its repository is,
+  // and REQUIRED because an `if (authority)` guard would let a request through
+  // with no ceiling applied at all instead of failing the graph.
+  const rateLimits = new RateLimitAuthorityService(rateLimitCounterRepo);
+
   return {
     auth: new AuthService(
       userRepo,
       tenantRepo,
       tenantMemberRepo,
+      rateLimits,
       env.JWT_SECRET,
       emailService,
       env.FRONTEND_URL || 'http://localhost:4200',
-      // The mode-aware login ceiling.
-      env.DB_CLIENT_MODE,
-      env.RATE_LIMIT_INSTANCE_BUDGET,
     ),
     audit: auditService,
     boards: new BoardService(boardRepo, statusRepo, projectRepo, auditService, projectMemberRepo),
     // auditService + projectRepo let comment actions audit-log with the
     // tenant/project context and tenant-assert bare task ids.
     comments: new CommentService(commentRepo, userRepo, taskRepo, projectMemberRepo, auditService, projectRepo),
-    filters: new FilterService(filterRepo, projectRepo),
+    // The reference seams are REQUIRED: a saved filter persists the ids its
+    // criteria name, so without them the container would quietly accept a filter
+    // carrying another project's status, sprint, label or member.
+    filters: new FilterService(filterRepo, projectRepo, {
+      statusRepo,
+      taskTypeRepo,
+      sprintRepo,
+      labelRepo,
+      projectMemberRepo,
+    }),
     labels: new LabelService(labelRepo, taskRepo, projectRepo, auditService, projectMemberRepo),
     preferences: new UserPreferencesService(
       new UserPreferencesRepository(getCollection<UserPreferencesDocument>('user_preferences')),
@@ -278,6 +303,7 @@ export function buildServices(env: ContainerEnv): Services {
     // service call can no longer bypass it. It is required, and the point lookup
     // `findByUserAndTenant` replaces the `$lookup` aggregate the route used.
     projects: projectService,
+    rateLimits,
     relationships: new TaskRelationshipService(
       relationshipRepo,
       taskRepo,

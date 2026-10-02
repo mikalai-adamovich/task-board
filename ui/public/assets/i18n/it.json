@@ -753,6 +753,9 @@
   "comments": {
     "title": "Commenti",
     "loadError": "Impossibile caricare i commenti.",
+    "loadOlder": "Carica commenti meno recenti",
+    "loadingOlder": "Caricamento",
+    "loadOlderError": "Impossibile caricare i commenti meno recenti.",
     "noComments": "Nessun commento. Inizia la discussione.",
     "submit": "Commenta",
     "submitting": "Pubblicazione",

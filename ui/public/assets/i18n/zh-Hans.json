@@ -753,6 +753,9 @@
   "comments": {
     "title": "评论",
     "loadError": "加载评论失败。",
+    "loadOlder": "加载更早的评论",
+    "loadingOlder": "加载中",
+    "loadOlderError": "无法加载更早的评论。",
     "noComments": "还没有评论。开始讨论吧。",
     "submit": "评论",
     "submitting": "发布中",

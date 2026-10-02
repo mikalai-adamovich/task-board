@@ -1,6 +1,7 @@
 import { BaseRepository } from './base.repository.js';
 import { randomUUID } from 'node:crypto';
 import type { TaskType } from '@task-board/shared';
+import { MAX_PROJECT_TASK_TYPES } from '../db/read-bounds.js';
 
 // Required MongoDB indexes:
 // - { id: 1 } (unique)
@@ -42,8 +43,18 @@ export class TaskTypeRepository extends BaseRepository<TaskTypeDocument, TaskTyp
     return toDomain(doc);
   }
 
+  /**
+   * The project's task types, in display order.
+   *
+   * Capped at {@link MAX_PROJECT_TASK_TYPES}: a hand-maintained vocabulary, so
+   * the bound only fires on data that is not a type list.
+   */
   async findByProject(projectId: string): Promise<TaskType[]> {
-    const docs = await this.collection.find({ projectId }).sort({ position: 1 }).toArray();
+    const docs = await this.collection
+      .find({ projectId })
+      .sort({ position: 1 })
+      .limit(MAX_PROJECT_TASK_TYPES)
+      .toArray();
 
     return docs.map(toDomain);
   }

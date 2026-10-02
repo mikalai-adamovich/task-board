@@ -54,6 +54,7 @@ function createSvc() {
         .mockResolvedValue({ data: [], pagination: { page: 1, limit: 30, total: 0, totalPages: 0 } }),
       getTask: vi.fn().mockResolvedValue({ id: TASK_ID }),
       getTaskByKey: vi.fn().mockResolvedValue({ id: TASK_ID }),
+      resolveTaskId: vi.fn().mockImplementation((ref: string) => Promise.resolve(ref)),
     },
     tenants: {
       getTenantForUser: vi.fn().mockResolvedValue({ id: TENANT_ID }),

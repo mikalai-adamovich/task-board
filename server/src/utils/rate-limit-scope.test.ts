@@ -131,6 +131,27 @@ describe('the divided ceiling is what the limiter actually enforces', () => {
 });
 
 describe('the counter must NOT live in the Durable Object it protects (Q4)', () => {
+  /**
+   * Every module that DECIDES a rate limit, not every module that mentions one.
+   *
+   * The list grew from two to four when MongoDB became the authoritative
+   * counter: the two new modules decide the verdict whenever the store answers,
+   * so a Durable Object reference in either of them would reintroduce exactly
+   * the failure this guards — and a scan that did not read them would have gone
+   * green while the property it claims to hold had stopped being true.
+   *
+   * The property is now STRONGER than when this was written: the store is
+   * reachable in every `DB_CLIENT_MODE` (`durable`, `per-request`, `singleton`),
+   * because it is the database the auth path already needs, so nothing about the
+   * rollback can take the counter with it.
+   */
+  const DECIDING_MODULES = [
+    'rate-limiter.ts',
+    'rate-limit-scope.ts',
+    join('..', 'services', 'rate-limit-authority.service.ts'),
+    join('..', 'repositories', 'rate-limit-counter.repository.ts'),
+  ];
+
   it('the limiter and its scope module reference no Durable Object binding', () => {
     // The rollback to `per-request` exists BECAUSE the Durable Object can be
     // the thing that is broken. A counter stored in that same Durable Object
@@ -138,13 +159,24 @@ describe('the counter must NOT live in the Durable Object it protects (Q4)', () 
     // control would fail OPEN at the moment it is most needed. This is a
     // source-level guard because the property is architectural: no unit test
     // can observe "this module does not reach for the DO".
-    for (const file of ['rate-limiter.ts', 'rate-limit-scope.ts']) {
+    for (const file of DECIDING_MODULES) {
       const source = readFileSync(join(SRC_DIR, file), 'utf8');
 
       expect(source, `${file} must not reference a Durable Object`).not.toMatch(
         /MONGO_DO|DurableObjectNamespace|\.getDurableObject|env\.MONGO_DO/,
       );
     }
+  });
+
+  it('the scan is not vacuous — it really reads the modules it lists', () => {
+    // `readFileSync` of a path that does not exist throws rather than passes, so
+    // the live risk is the opposite one: a module that decides a verdict and is
+    // simply absent from the list. The two new modules are pinned to the thing
+    // that makes each of them decide something, so dropping one from the list
+    // fails here instead of quietly narrowing the scan.
+    expect(readFileSync(join(SRC_DIR, DECIDING_MODULES[0] ?? ''), 'utf8')).toContain('createRateLimiter');
+    expect(readFileSync(join(SRC_DIR, DECIDING_MODULES[2] ?? ''), 'utf8')).toContain('RateLimitCounterRepository');
+    expect(readFileSync(join(SRC_DIR, DECIDING_MODULES[3] ?? ''), 'utf8')).toContain('findOneAndUpdate');
   });
 });
 

@@ -18,6 +18,26 @@ export interface Comment {
   updatedAt: string;
 }
 
+/**
+ * One page of a task's comment thread (`GET /api/tasks/:taskId/comments`).
+ *
+ * The thread is walked from the NEWEST comment backwards, but each page is
+ * returned OLDEST-FIRST inside itself, so a client renders a page in the order
+ * it arrives and appends the next (older) page above what it already has.
+ * `nextCursor` is the opaque resume key for that next page; it is `null` exactly
+ * when `hasMore` is false.
+ */
+export interface CommentPage {
+  /** The page's comments, oldest first, at most `COMMENT_PAGE_SIZE`. */
+  comments: Comment[];
+  /** Whether older comments exist beyond this page (server state, from the probe row). */
+  hasMore: boolean;
+  /** Opaque cursor for the next (older) page — pass it back verbatim as `?cursor=`. */
+  nextCursor: string | null;
+  /** The page size this response was produced with. */
+  limit: number;
+}
+
 /** Create comment request body type */
 export interface CreateComment {
   body: string;

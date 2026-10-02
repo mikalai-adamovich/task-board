@@ -65,7 +65,10 @@ describe('SprintRepository', () => {
   describe('findByProject', () => {
     it('returns all sprints for a project', async () => {
       const toArray = vi.fn().mockResolvedValue([makeDoc()]);
-      const sort = vi.fn().mockReturnValue({ toArray });
+      // The cursor carries `limit` because the read is bounded — the mock models
+      // the whole chain the repository issues.
+      const limit = vi.fn().mockReturnValue({ toArray });
+      const sort = vi.fn().mockReturnValue({ limit });
 
       collection.find.mockReturnValue({ sort });
 

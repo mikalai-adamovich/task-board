@@ -29,8 +29,14 @@ const app = new Hono<AppEnv>();
 
 // ── Global middleware (order matters) ──────────────────────────────────────────
 // Request ids come FIRST so every log line and error envelope can be
-// correlated. A well-formed incoming X-Request-Id is trusted; anything else
-// gets a fresh UUID. The id is echoed on every response as X-Request-Id.
+// correlated. The correlation id is ALWAYS minted here, never taken from the
+// caller: an id the observability stack and the audit log join on must not be a
+// value the caller chooses, or one replayed id would merge unrelated activity
+// into a single apparent chain. A well-formed incoming X-Request-Id is still
+// RECORDED, as a separate `upstreamRequestId`, and it is what gets echoed back
+// on the response header — so a gateway keeps seeing its own id come back while
+// the logs and the audit trail use one this process minted. See
+// `middleware/request-id.ts`.
 app.use('*', requestIdMiddleware);
 
 // The compensating security headers, on EVERY response of this tier

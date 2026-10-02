@@ -4,12 +4,19 @@
 
 // ─── Utilities ───────────────────────────────────────────────────────────────
 export { valuesOf } from './utils/values-of.js';
+export { decodeBase64Url, encodeBase64Url } from './utils/base64url.js';
 export {
   encodeBoardCursor,
   decodeBoardCursor,
   InvalidBoardCursorError,
   type BoardPageCursor,
 } from './utils/board-cursor.js';
+export {
+  encodeCommentCursor,
+  decodeCommentCursor,
+  InvalidCommentCursorError,
+  type CommentPageCursor,
+} from './utils/comment-cursor.js';
 export { TENANT_SLUG_MAX_LENGTH, TENANT_SLUG_PATTERN, generateSlugFromName, isValidTenantSlug } from './utils/slug.js';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -44,6 +51,7 @@ export {
   type TaskPriorityLevel,
 } from './constants/priority.js';
 export { BOARD_PAGE_SIZE } from './constants/board.js';
+export { COMMENT_PAGE_SIZE, COMMENT_CURSOR_MAX_LENGTH } from './constants/comment.js';
 export { TASK_SEARCH_MIN_LENGTH, TASK_SEARCH_MAX_LENGTH } from './constants/task-search.js';
 // Bounds the server enforces and the client mirrors, in one place.
 export { TENANT_NAME_MAX_LENGTH, TENANT_DESCRIPTION_MAX_LENGTH } from './constants/tenant-bounds.js';
@@ -119,7 +127,7 @@ export type { TaskType, CreateTaskType, UpdateTaskType } from './types/task-type
 
 export type { Label, CreateLabel, UpdateLabel } from './types/label.js';
 
-export type { Comment, CreateComment, UpdateComment } from './types/comment.js';
+export type { Comment, CommentPage, CreateComment, UpdateComment } from './types/comment.js';
 
 export type { TaskRelationship, CreateTaskRelationship } from './types/task-relationship.js';
 

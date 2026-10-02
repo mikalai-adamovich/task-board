@@ -6,6 +6,25 @@ import { ForbiddenError } from '../errors/app-error.js';
 /**
  * All permission actions in the v5 system.
  * Derived from the spec §2.4 permission matrix.
+ *
+ * ## Every action here is enforced somewhere, or it does not belong here
+ *
+ * An action that no route, middleware or service passes to a permission check is
+ * a row in a security-relevant table that reads as a control and is not one: a
+ * reader — the next engineer, the next reviewer, an agent handed a tool
+ * contract — reasonably concludes `view_task` gates task reads, and it gates
+ * nothing. Reads are authorised by tenant and project scope
+ * (`assertProjectInTenant` / `assertTenantEntity`) instead, so such a row
+ * protected nobody while claiming to.
+ *
+ * `view_task`, `view_comment`, `manage_filters` and `view_task_history` were
+ * removed for exactly that reason: declared in the union and populated in the
+ * matrix, enforced nowhere. They come back together with the call site that
+ * enforces them — never on their own, because an action added ahead of its
+ * enforcement reproduces the defect this removed.
+ *
+ * `permission-enforcement.guardrail.test.ts` asserts the invariant and fails on
+ * an action added without one.
  */
 export type PermissionAction =
   | 'manage_tenant'
@@ -18,17 +37,13 @@ export type PermissionAction =
   | 'create_task'
   | 'edit_task'
   | 'delete_task'
-  | 'view_task'
   | 'manage_labels'
   | 'manage_statuses'
   | 'manage_boards'
   | 'create_comment'
   | 'edit_comment'
   | 'delete_comment'
-  | 'view_comment'
   | 'manage_task_relationships'
-  | 'manage_filters'
-  | 'view_task_history'
   | 'view_audit_events';
 
 // ─── Permission Matrix ───────────────────────────────────────────────────────
@@ -62,15 +77,11 @@ const tenantPermissions: Record<string, TenantRole[]> = {
  * | edit_project_config       | Yes | No  | No  |
  * | create_task / edit_task   | Yes | Yes | No  |
  * | delete_task               | Yes | No  | No  |
- * | view_task                 | Yes | Yes | Yes |
  * | manage_labels             | Yes | Limited* | No  |
  * | manage_statuses           | Yes | No  | No  |
  * | manage_boards             | Yes | No  | No  |
  * | create/edit/delete comment| Yes | Yes | No  |
- * | view_comment              | Yes | Yes | Yes |
  * | manage_task_relationships | Yes | Yes | No  |
- * | manage_filters            | Yes | Yes | Yes |
- * | view_task_history         | Yes | Yes | Yes |
  * | view_audit_events         | Yes | No  | No  |
  *
  * *Limited = editors can create labels from task but not bulk-delete (enforced at service level)
@@ -84,19 +95,13 @@ const projectPermissions: Record<string, ProjectRole[]> = {
   create_task: [ProjectRole.PROJECT_ADMIN, ProjectRole.EDITOR],
   edit_task: [ProjectRole.PROJECT_ADMIN, ProjectRole.EDITOR],
   delete_task: [ProjectRole.PROJECT_ADMIN],
-  view_task: [ProjectRole.PROJECT_ADMIN, ProjectRole.EDITOR, ProjectRole.VIEWER],
   manage_labels: [ProjectRole.PROJECT_ADMIN, ProjectRole.EDITOR],
   manage_statuses: [ProjectRole.PROJECT_ADMIN],
   manage_boards: [ProjectRole.PROJECT_ADMIN],
   create_comment: [ProjectRole.PROJECT_ADMIN, ProjectRole.EDITOR],
   edit_comment: [ProjectRole.PROJECT_ADMIN, ProjectRole.EDITOR],
   delete_comment: [ProjectRole.PROJECT_ADMIN, ProjectRole.EDITOR],
-  view_comment: [ProjectRole.PROJECT_ADMIN, ProjectRole.EDITOR, ProjectRole.VIEWER],
   manage_task_relationships: [ProjectRole.PROJECT_ADMIN, ProjectRole.EDITOR],
-  manage_filters: [ProjectRole.PROJECT_ADMIN, ProjectRole.EDITOR, ProjectRole.VIEWER],
-  // Task History is daily-use and visible to all project roles;
-  // administrative audit events stay PROJECT_ADMIN-only (+ tenant bypass).
-  view_task_history: [ProjectRole.PROJECT_ADMIN, ProjectRole.EDITOR, ProjectRole.VIEWER],
   view_audit_events: [ProjectRole.PROJECT_ADMIN],
 };
 

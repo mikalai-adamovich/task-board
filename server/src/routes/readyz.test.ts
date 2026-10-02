@@ -55,14 +55,21 @@ describe('GET /api/readyz', () => {
     expect(await res.json()).toEqual({
       status: 'ok',
       configuration: { ok: true, missing: [] },
-      // The login limiter's scope is reported so an operator can see
-      // what the deployment is actually enforcing (this env declares no mode,
-      // which the app treats as its own default, `per-request`).
+      // The login limiter's FALLBACK scope is reported so an operator can see
+      // what the degraded tier enforces (this env declares no mode, which the app
+      // treats as its own default, `per-request`).
       rateLimit: {
         loginAttempts:
           'per-instance counter, 4 assumed instances (undeclared) — ceiling 2 per instance, ~10 deployment-wide',
         mode: 'per-request',
         instanceBudgetDeclared: false,
+        // The string above describes the ADVISORY / FALLBACK tier. The ENFORCED
+        // ceiling is counted in MongoDB, which does not divide by instances, so
+        // without these fields an operator would read "ceiling 2 per instance" as
+        // the deployment's real login ceiling, and it has not been one since the
+        // counter authority landed.
+        authoritativeTier: 'mongodb',
+        authoritativeLoginMax: 10,
       },
     });
     expect(connectMongo).toHaveBeenCalledWith(ENV.MONGODB_URI);

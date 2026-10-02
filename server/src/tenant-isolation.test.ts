@@ -136,12 +136,23 @@ interface Entity {
   projectId: string;
   tenantId: string;
   label: string;
+  /** Task number, for the `KEY-NUMBER` form of `:taskId`. */
+  number?: number;
 }
 
 const ENTITIES = new Map<string, Entity>();
+/** Every seeded entity of a kind gets the SAME task number within its project. */
+let taskNumber = 0;
 
 function seed(kind: string, entityId: string, projectId: string, tenantId: string): Entity {
-  const entity = { id: entityId, projectId, tenantId, label: kind };
+  const entity: Entity = { id: entityId, projectId, tenantId, label: kind };
+
+  // `PROJ-42` addresses a task by its number inside its project, so the seeded
+  // tasks carry one and the resolver has something to resolve.
+  if (kind === 'task') {
+    taskNumber += 1;
+    entity.number = taskNumber;
+  }
 
   ENTITIES.set(entityId, entity);
 
@@ -443,6 +454,33 @@ class FakeServices {
         id: 'task-by-key',
         tenantId: context.tenantId,
       }),
+      /**
+       * The shared `:taskId` resolution every task-addressed route now calls
+       * before its operation. Modelled tenant-scoped like the real service: a
+       * `KEY-NUMBER` whose project key belongs to another tenant resolves to
+       * nothing, so a foreign reference cannot be laundered into a 200 by
+       * addressing the task through its key instead of its id.
+       */
+      resolveTaskId: async (ref: string, context: { tenantId: string }) => {
+        const match = /^([A-Z][A-Z0-9]*)-([0-9]+)$/.exec(ref);
+
+        if (!match) return this.assertEntity(ref, context, 'Task').id;
+
+        const [, projectKey, number] = match;
+        const projectId = Object.entries(PROJECT_KEYS).find(
+          ([id, key]) => key === projectKey && PROJECT_TENANT[id] === context.tenantId,
+        )?.[0];
+
+        if (!projectId) throw new NotFoundError('Task not found');
+
+        const task = [...ENTITIES.values()].find(
+          (entity) => entity.label === 'task' && entity.projectId === projectId && entity.number === Number(number),
+        );
+
+        if (!task) throw new NotFoundError('Task not found');
+
+        return task.id;
+      },
       updateTask: async (taskId: string, _input: unknown, context: { tenantId: string }) =>
         payload(this.assertEntity(taskId, context, 'Task')),
       deleteTask: async (taskId: string, context: { tenantId: string }) => this.assertEntity(taskId, context, 'Task'),
@@ -560,10 +598,21 @@ class FakeServices {
 
   get comments() {
     return {
-      getCommentsByTask: async (taskId: string, context: { tenantId: string }) => {
+      getCommentsByTask: async (
+        taskId: string,
+        _query: { limit: number; cursor?: unknown },
+        context: { tenantId: string },
+      ) => {
         this.assertEntity(taskId, context, 'Task');
 
-        return [payload(this.assertEntity(taskId, context, 'Task'))];
+        // The page shape the route reads; the isolation assertion is what this
+        // row exists for, so the values around it are deliberately inert.
+        return {
+          comments: [payload(this.assertEntity(taskId, context, 'Task'))],
+          hasMore: false,
+          nextCursor: null,
+          limit: 30,
+        };
       },
       createComment: async (taskId: string, _input: unknown, context: { tenantId: string }) => {
         const task = this.assertEntity(taskId, context, 'Task');
@@ -1082,16 +1131,16 @@ const ROUTE_TABLE: RouteCase[] = [
 // ─── The table's own correspondence to the routes it enumerates ───────────────
 
 /**
- * The table above is only worth something if it covers every id-bearing route
- * mounted behind the tenant context. It did not: `GET /api/projects/by-key/:key`
- * had no row, so it was asserted neither cross-tenant nor same-tenant, and
- * nothing was red.
+ * The table above is only worth something if it covers every route mounted
+ * behind the tenant context. It did not: `GET /api/projects/by-key/:key` had no
+ * row, so it was asserted neither cross-tenant nor same-tenant, and nothing was
+ * red.
  *
  * So the registrations are DERIVED from the two artefacts that define them —
  * the `tenantScoped.route(…)` mounts in `app.ts` and the route registrations in
  * the mounted modules — and checked against the table in both directions. A new
- * tenant-scoped id-bearing route with no row fails; a row for a route that no
- * longer exists fails; editing the content of a row never does.
+ * tenant-scoped route with no row fails; a row for a route that no longer exists
+ * fails; editing the content of a row never does.
  */
 
 /** Symbol → module, from `app.ts`'s own imports (`./x.js` → `x.ts`). */
@@ -1166,17 +1215,73 @@ const SEEDED_IDS: readonly (readonly [string, string])[] = [
 const PARAM_SHAPE = (path: string): string => path.replace(/:[A-Za-z_][A-Za-z0-9_]*/g, ':id');
 const SEEDED_SHAPE = (path: string): string =>
   SEEDED_IDS.reduce((shaped, [value, placeholder]) => shaped.split(value).join(placeholder), path);
-const APP_SOURCE = readFileSync(join(SRC_DIR, 'app.ts'), 'utf8');
-/** Every `METHOD /api<path>` the tenant-scoped sub-app registers with an id in it. */
-const DERIVED_ROUTE_KEYS = tenantScopedMounts(APP_SOURCE)
-  .flatMap(({ prefix, file }) => {
-    const source = readFileSync(join(ROUTES_DIR, file), 'utf8');
 
-    return [...source.matchAll(ROUTE_REGISTRATION)]
-      .filter((registration) => (registration[2] ?? '').includes(':'))
-      .map((registration) => routeKey(registration[1] ?? '', `/api${prefix}${registration[2] ?? ''}`));
-  })
-  .map((key) => PARAM_SHAPE(key));
+/**
+ * Every `METHOD /api<path>` the tenant-scoped sub-app registers — id-bearing
+ * AND paramless.
+ *
+ * The paramless registrations used to be dropped by a `.filter(…includes(':'))`
+ * here, which is the same defect one level down: a new paramless tenant-scoped
+ * mount (`GET /api/audit/summary`) vanished from the derived list, so the
+ * two-way check below could not see it, so the guardrail stayed green on exactly
+ * the omission it exists to catch. The filter is gone; a registration the table
+ * genuinely cannot express now has to be named in {@link DERIVED_EXEMPTIONS}
+ * with a reason, where adding it is a visible, reviewable act.
+ *
+ * `readModule` is a parameter so a test can drive the derivation over SYNTHETIC
+ * sources and observe what a new mount does to it, rather than only ever
+ * running it against the tree as it happens to be.
+ */
+function deriveTenantScopedRouteKeys(appSource: string, readModule: (file: string) => string): string[] {
+  return tenantScopedMounts(appSource)
+    .flatMap(({ prefix, file }) => {
+      const source = readModule(file);
+
+      return [...source.matchAll(ROUTE_REGISTRATION)].map((registration) =>
+        routeKey(registration[1] ?? '', `/api${prefix}${registration[2] ?? ''}`),
+      );
+    })
+    .map((key) => PARAM_SHAPE(key));
+}
+
+const APP_SOURCE = readFileSync(join(SRC_DIR, 'app.ts'), 'utf8');
+const readRouteModule = (file: string): string => readFileSync(join(ROUTES_DIR, file), 'utf8');
+const DERIVED_ROUTE_KEYS = deriveTenantScopedRouteKeys(APP_SOURCE, readRouteModule);
+/**
+ * Derived registrations that carry no row, each with the reason it cannot carry
+ * one. Nothing is filtered out silently: a new entry here is a decision someone
+ * can read, and `assertCorrespondence` ignores an exemption with no reason
+ * string, so this list cannot be padded by accident.
+ *
+ * Two distinct reasons appear, and the difference matters:
+ *
+ *  - **Not mounted behind the tenant context at all.** The derivation scans a
+ *    whole module file, and two modules export BOTH a tenant-scoped factory and
+ *    one mounted outside it (`createCrossTenantTaskRoutes`, and the global half
+ *    of the preferences routes). Their routes are in the file, so they are in the
+ *    derived list, but `app.ts` mounts them on the auth-only tier — asserting them
+ *    against the tenant table would assert the wrong tier's contract. Their real
+ *    isolation is asserted where they live: `GET /api/tasks/my` by the
+ *    membership block below, the global preferences by the preferences service
+ *    tests.
+ *  - **Genuinely tenant-scoped, but no id to substitute.** `GET`/`POST
+ *    /api/projects` take no path parameter, so the table's cross-tenant row has
+ *    no foreign id to send and the "same request in the caller's own tenant"
+ *    row has nothing to distinguish from it. Their tenant scoping comes from the
+ *    tenant context alone and is asserted by the project service tests.
+ */
+const DERIVED_EXEMPTIONS: Readonly<Record<string, string>> = {
+  'GET /api/projects/':
+    'tenant-scoped but paramless — no path id to substitute for a cross-tenant row; scoping comes from the tenant context alone (project.service.test.ts)',
+  'POST /api/projects/':
+    'tenant-scoped but paramless — no path id to substitute for a cross-tenant row; scoping comes from the tenant context alone (project.service.test.ts)',
+  'GET /api/tasks/my':
+    'mounted OUTSIDE the tenant-scoped sub-app (createCrossTenantTaskRoutes, auth only); asserted by the membership-scoping block below',
+  'GET /api/preferences':
+    'mounted OUTSIDE the tenant-scoped sub-app (global preferences, auth only); asserted by the preferences service tests',
+  'PUT /api/preferences':
+    'mounted OUTSIDE the tenant-scoped sub-app (global preferences, auth only); asserted by the preferences service tests',
+};
 
 describe('cross-tenant isolation — route table (W-10 / G-02)', () => {
   let services: FakeServices;
@@ -1372,13 +1477,68 @@ describe('cross-tenant isolation — route table (W-10 / G-02)', () => {
     expect(services.auditCalls.byTenant).not.toContain(B.tenant);
   });
 
-  it('0: the table covers exactly the id-bearing routes the tenant-scoped sub-app registers', () => {
+  it('0: the table covers exactly the routes the tenant-scoped sub-app registers', () => {
     // Derivation, not restatement: the mounts come from `app.ts` and the
     // registrations from the mounted modules. `A` supplies the concrete ids the
     // table rows interpolate.
     const declared = ROUTE_TABLE.map((route) => PARAM_SHAPE(SEEDED_SHAPE(routeKey(route.method, route.path(A)))));
 
-    assertCorrespondence('tenant-scoped route table', declared, DERIVED_ROUTE_KEYS);
+    assertCorrespondence('tenant-scoped route table', declared, DERIVED_ROUTE_KEYS, { exempt: DERIVED_EXEMPTIONS });
+  });
+
+  /**
+   * The negative direction of that assertion, which is the one this defect lived
+   * in: a PARAMLESS tenant-scoped mount with no row must FAIL the guardrail.
+   *
+   * Before, the derivation filtered those registrations out before the check
+   * ever saw them, so the omission this suite exists to catch was invisible to
+   * it. The synthetic mount below is added to a real route module and the real
+   * derivation is run over it, so the assertion is about the shipped check and
+   * not about a restatement of it.
+   */
+  it('0a: a synthetic PARAMLESS tenant-scoped mount fails the guardrail (the filter that hid it is gone)', () => {
+    const SYNTHETIC_PATH = '/tasks/summary';
+    const withSyntheticMount = (file: string): string => {
+      const source = readRouteModule(file);
+
+      return file === 'tasks.ts'
+        ? `${source}\nrouter.get('${SYNTHETIC_PATH}', async (c) => c.json({ data: [] }));\n`
+        : source;
+    };
+    const derived = deriveTenantScopedRouteKeys(APP_SOURCE, withSyntheticMount);
+    const syntheticKey = `GET /api${SYNTHETIC_PATH}`;
+
+    // Sanity: the synthetic mount really is in the derivation. Without this the
+    // next assertion could pass because the derivation dropped it again.
+    expect(derived, 'the synthetic mount must reach the derived list').toContain(syntheticKey);
+
+    // …and the table, which has no row for it, must now disagree.
+    const declared = ROUTE_TABLE.map((route) => PARAM_SHAPE(SEEDED_SHAPE(routeKey(route.method, route.path(A)))));
+
+    expect(() =>
+      assertCorrespondence('synthetic paramless mount', declared, derived, { exempt: DERIVED_EXEMPTIONS }),
+    ).toThrow(/the declared table and the derived list disagree/);
+  });
+
+  /**
+   * …and the same mount passes once it is EXEMPTED WITH A REASON, which is the
+   * only legitimate way for a paramless registration to stay unasserted. An
+   * exemption without a reason is not an exemption (see `assertCorrespondence`),
+   * so the escape hatch cannot be used silently.
+   */
+  it('0b: the same mount passes when it is exempted WITH A reason', () => {
+    const SYNTHETIC_PATH = '/tasks/summary';
+    const withSyntheticMount = (file: string): string =>
+      file === 'tasks.ts'
+        ? `${readRouteModule(file)}\nrouter.get('${SYNTHETIC_PATH}', async (c) => c.json({ data: [] }));\n`
+        : readRouteModule(file);
+    const derived = deriveTenantScopedRouteKeys(APP_SOURCE, withSyntheticMount);
+    const declared = ROUTE_TABLE.map((route) => PARAM_SHAPE(SEEDED_SHAPE(routeKey(route.method, route.path(A)))));
+    const justified = { ...DERIVED_EXEMPTIONS, [`GET /api${SYNTHETIC_PATH}`]: 'test-only synthetic mount' };
+
+    expect(() =>
+      assertCorrespondence('synthetic paramless mount', declared, derived, { exempt: justified }),
+    ).not.toThrow();
   });
 
   it('an unauthenticated request is rejected on every id-bearing route', async () => {

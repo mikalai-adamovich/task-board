@@ -57,13 +57,17 @@ describe('router-level notFound handler (M-045 / M-247)', () => {
       expect(typeof body.error.message).toBe('string');
     });
 
-    it('attaches the requestId to the envelope and echoes it as X-Request-Id', async () => {
+    it('echoes the caller id on the header and reports the server id in the envelope', async () => {
       const res = await app.request('/api/does-not-exist', {
         headers: { 'X-Request-Id': '11111111-2222-3333-4444-555555555555' },
       });
       const body = (await res.json()) as { error: { requestId?: string } };
 
-      expect(body.error.requestId).toBe('11111111-2222-3333-4444-555555555555');
+      // The envelope carries the id the logs are keyed on — minted here, not
+      // taken from the header — while the header still echoes the caller's own
+      // id so the upstream keeps seeing it come back.
+      expect(body.error.requestId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+      expect(body.error.requestId).not.toBe('11111111-2222-3333-4444-555555555555');
       expect(res.headers.get('X-Request-Id')).toBe('11111111-2222-3333-4444-555555555555');
     });
 

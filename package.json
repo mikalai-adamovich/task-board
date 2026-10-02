@@ -25,6 +25,7 @@
     "test:server": "npm test --workspace=server",
     "test:ui": "npm test --workspace=ui",
     "test:e2e": "npm run e2e --workspace=ui",
+    "test:integration": "npm run test:integration --workspace=@task-board/server",
     "typecheck": "npm run typecheck --workspace=shared && npm run typecheck --workspace=server",
     "check:fast": "npm run build:shared && npm run lint && npm run typecheck && npm run typecheck --workspace=@task-board/ui",
     "check": "npm run check:fast && npm run test --workspace=@task-board/server && npm run test --workspace=@task-board/ui",

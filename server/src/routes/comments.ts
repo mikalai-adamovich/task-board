@@ -1,8 +1,10 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
+import { decodeCommentCursor, InvalidCommentCursorError, type CommentPageCursor } from '@task-board/shared';
 import type { AppEnv } from '../types/context.js';
-import { param, pathParamValidation, validateBody } from '../middleware/validation.js';
-import { CreateCommentSchema, UpdateCommentSchema } from '../schemas/comment.js';
+import { param, pathParamValidation, validateBody, validateQuery } from '../middleware/validation.js';
+import { CreateCommentSchema, CommentPageQuerySchema, UpdateCommentSchema } from '../schemas/comment.js';
+import { ValidationError } from '../errors/app-error.js';
 import type { CallerContext } from '../services/tenant-assert.js';
 
 /**
@@ -27,20 +29,56 @@ export function createCommentRoutes(): Hono<AppEnv> {
   router.use('*', pathParamValidation());
 
   /**
-   * Bare task ids are tenant-asserted inside the service, and
-   * authorization (create_comment / edit_comment / delete_comment) is enforced
-   * there after the task's project is resolved — the route paths carry no
-   * projectId.
+   * The `:taskId` is resolved through the ONE shared resolver before it reaches
+   * the comment service, because the parameter schema accepts both a UUID and
+   * `KEY-NUMBER` — a comment route that only understood the UUID form 404'd on
+   * a form the API had already declared legal.
+   *
+   * Authorization (create_comment / edit_comment / delete_comment) is enforced
+   * inside the service after the task's project is resolved — the route paths
+   * carry no projectId, and a resolved task id is tenant-asserted there.
    */
-  router.get('/tasks/:taskId/comments', async (c) => {
-    const taskId = param(c, 'taskId');
-    const comments = await c.get('svc').comments.getCommentsByTask(taskId, callerContext(c));
+  /**
+   * GET /tasks/:taskId/comments — one page of the thread, newest window first.
+   *
+   * The envelope is the `{ data, pagination }` pair the task and audit lists
+   * already use, with cursor semantics instead of page numbers: `limit` (default
+   * and maximum `COMMENT_PAGE_SIZE`), `hasMore` and the opaque `nextCursor` to
+   * pass back as `?cursor=`. There is no `total`: counting a thread is itself
+   * an unbounded read of a collection that is open-ended by design, and the
+   * board made the same call for the same reason.
+   *
+   * A malformed cursor is a 400 in the standard `VALIDATION_ERROR` envelope —
+   * decoded here, next to the query validation, rather than inside the service
+   * so a bad query parameter can never surface as a 500.
+   */
+  router.get('/tasks/:taskId/comments', validateQuery(CommentPageQuerySchema), async (c) => {
+    const taskId = await c.get('svc').tasks.resolveTaskId(param(c, 'taskId'), callerContext(c));
+    const q = c.req.valid('query');
+    let cursor: CommentPageCursor | undefined;
 
-    return c.json({ data: comments });
+    if (q.cursor !== undefined) {
+      try {
+        cursor = decodeCommentCursor(q.cursor);
+      } catch (err) {
+        if (err instanceof InvalidCommentCursorError) {
+          throw new ValidationError('Invalid comment cursor');
+        }
+
+        throw err;
+      }
+    }
+
+    const page = await c.get('svc').comments.getCommentsByTask(taskId, { limit: q.limit, cursor }, callerContext(c));
+
+    return c.json({
+      data: page.comments,
+      pagination: { limit: page.limit, hasMore: page.hasMore, nextCursor: page.nextCursor },
+    });
   });
 
   router.post('/tasks/:taskId/comments', validateBody(CreateCommentSchema), async (c) => {
-    const taskId = param(c, 'taskId');
+    const taskId = await c.get('svc').tasks.resolveTaskId(param(c, 'taskId'), callerContext(c));
     const body = c.req.valid('json');
     const comment = await c.get('svc').comments.createComment(taskId, body, callerContext(c));
 

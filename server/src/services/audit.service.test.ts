@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { AuditService } from './audit.service.js';
 import { AuditEnrichmentService, UNKNOWN_LABEL } from './audit-enrichment.service.js';
+import { runWithRequestCorrelation, type RequestCorrelation } from '../middleware/request-id.js';
 import type { AuditServiceUserRepo } from './audit.service.js';
 import type { AuditEventRepository } from '../repositories/audit-event.repository.js';
 import type { AuditEvent } from '@task-board/shared';
@@ -19,7 +20,10 @@ function createMockAuditRepo() {
     createMany: vi.fn().mockResolvedValue(undefined),
     findByProject: vi.fn(),
     findByTenant: vi.fn(),
-  } as unknown as AuditEventRepository & { createMany: ReturnType<typeof vi.fn> };
+  } as unknown as AuditEventRepository & {
+    create: ReturnType<typeof vi.fn>;
+    createMany: ReturnType<typeof vi.fn>;
+  };
 }
 
 function createMockUserRepo(): AuditServiceUserRepo {
@@ -370,6 +374,139 @@ describe('AuditService queries enrich pages (R3-P7)', () => {
     const result = await service.queryByProject('p1');
 
     expect(result.data[0]?.entityLabel).toBe('Sprint 1');
+  });
+});
+
+describe('AuditService correlates every write with the request that caused it', () => {
+  const SERVER_ID = crypto.randomUUID();
+  const UPSTREAM_ID = '123e4567-e89b-12d3-a456-426614174000';
+
+  /** Run `fn` as if it were executing inside a request with this correlation. */
+  function inRequest<T>(
+    fn: () => Promise<T>,
+    correlation: RequestCorrelation = { requestId: SERVER_ID, upstreamRequestId: UPSTREAM_ID },
+  ): Promise<T> {
+    return runWithRequestCorrelation(correlation, fn);
+  }
+
+  it('stamps the SERVER correlation id on a single event', async () => {
+    const auditRepo = createMockAuditRepo();
+    const service = new AuditService(auditRepo, createMockUserRepo());
+
+    await inRequest(() =>
+      service.log({
+        tenantId: 'tenant-1',
+        projectId: 'project-1',
+        entityType: 'TASK',
+        entityId: 'task-1',
+        action: 'UPDATED',
+        actorId: 'user-1',
+      }),
+    );
+
+    // The audit row and the log line for the same operation are joined by this
+    // id — which is why it is minted here rather than read off a header.
+    expect(auditRepo.create).toHaveBeenCalledWith(expect.objectContaining({ requestId: SERVER_ID }));
+  });
+
+  it('records the caller id as a SEPARATE, clearly-labelled field', async () => {
+    const auditRepo = createMockAuditRepo();
+    const service = new AuditService(auditRepo, createMockUserRepo());
+
+    await inRequest(() =>
+      service.log({
+        tenantId: 'tenant-1',
+        projectId: 'project-1',
+        entityType: 'TASK',
+        entityId: 'task-1',
+        action: 'UPDATED',
+        actorId: 'user-1',
+      }),
+    );
+
+    const written = auditRepo.create.mock.calls.at(0)?.[0] as { requestId: string; upstreamRequestId: string };
+
+    expect(written.upstreamRequestId).toBe(UPSTREAM_ID);
+    expect(written.requestId).not.toBe(UPSTREAM_ID);
+  });
+
+  it('stamps the correlation on every event of a batch, from ONE lookup', async () => {
+    const auditRepo = createMockAuditRepo();
+    const service = new AuditService(auditRepo, createMockUserRepo());
+
+    await inRequest(() =>
+      service.logMany('user-1', [
+        { tenantId: 't', projectId: 'p', entityType: 'TASK', entityId: 'task-1', action: 'UPDATED' },
+        { tenantId: 't', projectId: 'p', entityType: 'TASK', entityId: 'task-2', action: 'UPDATED' },
+      ]),
+    );
+
+    const events = auditRepo.createMany.mock.calls.at(0)?.[0] ?? [];
+
+    expect(events.every((e: { requestId: string }) => e.requestId === SERVER_ID)).toBe(true);
+  });
+
+  it('stamps a system event too, so a purge run is attributable when it is a request', async () => {
+    const auditRepo = createMockAuditRepo();
+    const service = new AuditService(auditRepo, createMockUserRepo());
+
+    await inRequest(() =>
+      service.logSystem({
+        tenantId: 'tenant-1',
+        projectId: null,
+        entityType: 'TENANT',
+        entityId: 't1',
+        action: 'DELETED',
+      }),
+    );
+
+    expect(auditRepo.create).toHaveBeenCalledWith(expect.objectContaining({ requestId: SERVER_ID }));
+  });
+
+  it('omits the correlation entirely outside a request — no requestId, no fabricated id', async () => {
+    const auditRepo = createMockAuditRepo();
+    const service = new AuditService(auditRepo, createMockUserRepo());
+
+    // The scheduled purge / a script runs with no request context. An audit row
+    // that claims a correlation id here would name a request that never existed.
+    await service.log({
+      tenantId: 'tenant-1',
+      projectId: null,
+      entityType: 'TENANT',
+      entityId: 'tenant-1',
+      action: 'DELETED',
+      actorId: 'user-1',
+    });
+
+    const written = auditRepo.create.mock.calls.at(0)?.[0] as Record<string, unknown>;
+
+    expect(written).not.toHaveProperty('requestId');
+    expect(written).not.toHaveProperty('upstreamRequestId');
+  });
+
+  it('records no upstream id when the caller sent none, without inventing one', async () => {
+    const auditRepo = createMockAuditRepo();
+    const service = new AuditService(auditRepo, createMockUserRepo());
+
+    await inRequest(
+      () =>
+        service.log({
+          tenantId: 'tenant-1',
+          projectId: null,
+          entityType: 'TENANT',
+          entityId: 'tenant-1',
+          action: 'DELETED',
+          actorId: 'user-1',
+        }),
+      { requestId: SERVER_ID, upstreamRequestId: null },
+    );
+
+    const written = auditRepo.create.mock.calls.at(0)?.[0] as { requestId: string; upstreamRequestId: string | null };
+
+    expect(written.requestId).toBe(SERVER_ID);
+    // Null, not a generated stand-in: "the caller sent no id" and "an id we made
+    // up" must not look alike in an audit row.
+    expect(written.upstreamRequestId).toBeNull();
   });
 });
 

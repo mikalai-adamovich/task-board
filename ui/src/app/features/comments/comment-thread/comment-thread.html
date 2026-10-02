@@ -7,8 +7,26 @@
         <div hlmAlertDescription>{{ error() | transloco }}</div>
       </hlm-alert>
     } @else {
-      <!-- Comment list -->
+      <!-- Comment list: older pages go ABOVE the loaded ones, so the thread
+           reads oldest-first with the newest comment where it always was. -->
       <div class="flex flex-col gap-4">
+        @if (hasMore()) {
+          <button
+            hlmBtn
+            variant="outline"
+            size="sm"
+            class="self-start"
+            data-testid="load-older"
+            [disabled]="loadingOlder()"
+            (click)="loadOlder()"
+          >
+            @if (loadingOlder()) {
+              <hlm-spinner class="mr-1" /> {{ 'comments.loadingOlder' | transloco }}
+            } @else {
+              {{ 'comments.loadOlder' | transloco }}
+            }
+          </button>
+        }
         @for (comment of comments(); track comment.id) {
           <div class="flex gap-3">
             <hlm-avatar class="size-8 shrink-0">

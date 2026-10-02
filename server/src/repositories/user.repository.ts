@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Collection } from 'mongodb';
 import type { User } from '@task-board/shared';
+import { MAX_BULK_ID_LOOKUP } from '../db/read-bounds.js';
 
 // guardrail:no-base-repository 2026-09-29 — two reasons. (1) `findById` and
 // `findByIds` here filter `deletedAt: null`; the base's do not, so inheriting
@@ -63,11 +64,18 @@ export class UserRepository {
   /**
    * Bulk lookup by ids — single `$in` query. Used by batch enrichment paths
    * (e.g. audit-log label resolution) to avoid N+1 per-event lookups.
+   *
+   * Capped at {@link MAX_BULK_ID_LOOKUP}: the `$in` set is caller-supplied and the
+   * answer grows with it, so without a ceiling the enrichment path inherits the
+   * size of whatever id list reached it.
    */
   async findByIds(ids: string[]): Promise<User[]> {
     if (ids.length === 0) return [];
 
-    const docs = await this.collection.find({ id: { $in: ids }, deletedAt: null }).toArray();
+    const docs = await this.collection
+      .find({ id: { $in: ids }, deletedAt: null })
+      .limit(MAX_BULK_ID_LOOKUP)
+      .toArray();
 
     return docs.map(toDomain);
   }
