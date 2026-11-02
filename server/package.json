@@ -18,15 +18,15 @@
     "@task-board/shared": "*",
     "bcryptjs": "^3.0.3",
     "hono": "^4.13.5",
-    "mongodb": "^7.6.0",
-    "resend": "^6.25.0",
-    "zod": "^4.5.4"
+    "mongodb": "^7.7.0",
+    "resend": "^6.35.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260702.1",
-    "@types/node": "^26.4.0",
+    "@types/node": "^26.6.6",
     "typescript": "~6.0.3",
     "vitest": "^3.2.7",
-    "wrangler": "^4.144.0"
+    "wrangler": "^4.156.0"
   }
 }
